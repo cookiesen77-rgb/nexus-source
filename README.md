@@ -120,7 +120,7 @@ src/
 
 扫码添加微信交流：
 
-<img src="./doc/wx.jpg" width="200" alt="微信二维码" />
+<img src="./doc/wx-group.jpg" width="200" alt="微信二维码" />
 
 ## 📄 License
 
