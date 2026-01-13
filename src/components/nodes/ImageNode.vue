@@ -15,11 +15,11 @@
                 <TrashOutline />
               </n-icon>
             </button>
-            <button class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
+            <!-- <button class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
               <n-icon :size="14">
                 <ExpandOutline />
               </n-icon>
-            </button>
+            </button> -->
           </div>
         </div>
         <!-- Model name | 模型名称 -->
@@ -56,8 +56,84 @@
         </div>
 
         <!-- Image display | 图片显示 -->
-        <div v-else-if="data.url" class="rounded-xl overflow-hidden">
-          <img :src="data.url" :alt="data.label" class="w-full h-auto object-cover" />
+        <div 
+          v-else-if="data.url" 
+          class="rounded-xl overflow-hidden relative" 
+          ref="imageContainerRef"
+        >
+          <img 
+            :src="data.url" 
+            :alt="data.label" 
+            class="w-full h-auto object-cover"
+            :class="{ 'pointer-events-none': isInpaintMode }"
+          />
+          
+          <!-- Inpaint canvas with events | 涂抹画布（带事件） -->
+          <canvas 
+            v-if="isInpaintMode"
+            ref="canvasRef"
+            class="absolute inset-0 w-full h-full cursor-none z-10"
+            @mousedown.stop.prevent="onCanvasPaint"
+            @mousemove.stop="onCanvasMove"
+            @mouseup.stop="onPaintEnd"
+            @mouseleave="onPaintEnd"
+          />
+          
+          <!-- Brush cursor | 画笔光标 -->
+          <div 
+            v-show="brushCursor.visible && isInpaintMode"
+            class="absolute pointer-events-none border-2 border-purple-500 rounded-full bg-purple-400/30 transition-none"
+            :style="{
+              width: brushSize * 2 + 'px',
+              height: brushSize * 2 + 'px',
+              left: brushCursor.x - brushSize + 'px',
+              top: brushCursor.y - brushSize + 'px'
+            }"
+          />
+          
+          <!-- Inpaint toolbar | 涂抹工具栏 -->
+          <div 
+            v-show="isInpaintMode"
+            class="absolute top-1.5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-2 py-1 bg-white/95 dark:bg-gray-800/95 backdrop-blur-sm rounded-full shadow-md border border-gray-200/80 dark:border-gray-700 z-[9999]"
+            @mousedown.stop
+            @click.stop
+          >
+            <!-- Mode indicator | 模式指示 -->
+            <div class="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 pr-1.5 border-r border-gray-200 dark:border-gray-600">
+              <n-icon :size="12"><BrushOutline /></n-icon>
+              <span>擦除</span>
+            </div>
+            
+            <!-- Size slider | 大小滑块 -->
+            <div class="flex items-center gap-1 w-16">
+              <div class="w-1.5 h-1.5 rounded-full bg-purple-400"></div>
+              <input 
+                type="range" 
+                v-model="brushSize" 
+                min="10" 
+                max="80" 
+                class="w-full h-0.5 bg-gray-200 rounded-lg appearance-none cursor-pointer slider-purple"
+              />
+              <div class="w-2.5 h-2.5 rounded-full bg-purple-400"></div>
+            </div>
+            
+            <!-- Reset button | 重置按钮 -->
+            <button 
+              @click="clearMask"
+              class="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+              title="清除"
+            >
+              <n-icon :size="12" class="text-gray-400"><RefreshOutline /></n-icon>
+            </button>
+            
+            <!-- Apply button | 应用按钮 -->
+            <button 
+              @click="applyInpaint"
+              class="px-2 py-0.5 bg-purple-500 hover:bg-purple-600 text-white text-xs rounded transition-colors"
+            >
+              应用
+            </button>
+          </div>
         </div>
 
         <!-- Upload placeholder | 上传占位 -->
@@ -93,6 +169,17 @@
     <!-- Right side - Action buttons | 右侧 - 操作按钮 -->
     <div v-show="showActions && data.url"
       class="absolute right-10 top-1/2 -translate-y-1/2 translate-x-full flex flex-col gap-2 z-[1000]">
+      <!-- Inpaint button | 涂抹重绘按钮 -->
+      <!-- <button @click="toggleInpaintMode"
+        class="action-btn group p-2 bg-white rounded-lg transition-all border border-gray-200 flex items-center gap-0 hover:gap-1.5 w-max"
+        :class="{ 'border-purple-400 bg-purple-50': isInpaintMode }">
+        <n-icon :size="16" :class="isInpaintMode ? 'text-purple-500' : 'text-gray-600'">
+          <BrushOutline />
+        </n-icon>
+        <span
+          class="text-xs max-w-0 overflow-hidden group-hover:max-w-[80px] transition-all duration-200 whitespace-nowrap"
+          :class="isInpaintMode ? 'text-purple-500' : 'text-gray-600'">局部重绘</span>
+      </button> -->
       <!-- Image generation button | 图片生图按钮 -->
       <button @click="handleImageGen"
         class="action-btn group p-2 bg-white rounded-lg transition-all border border-gray-200 flex items-center gap-0 hover:gap-1.5  w-max">
@@ -141,7 +228,7 @@
 import { ref, nextTick } from 'vue'
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { NIcon } from 'naive-ui'
-import { TrashOutline, ExpandOutline, ImageOutline, CloseCircleOutline, CopyOutline, VideocamOutline, DownloadOutline, EyeOutline } from '@vicons/ionicons5'
+import { TrashOutline, ExpandOutline, ImageOutline, CloseCircleOutline, CopyOutline, VideocamOutline, DownloadOutline, EyeOutline, BrushOutline, RefreshOutline, ColorWandOutline } from '@vicons/ionicons5'
 import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes } from '../../stores/canvas'
 
 const props = defineProps({
@@ -154,6 +241,214 @@ const { updateNodeInternals } = useVueFlow()
 
 // Hover state | 悬浮状态
 const showActions = ref(true)
+
+// Inpainting state | 涂抹重绘状态
+const isInpaintMode = ref(false)
+const brushSize = ref(40)
+const isDrawing = ref(false)
+const canvasRef = ref(null)
+const imageContainerRef = ref(null)
+const interactionLayerRef = ref(null)
+const brushCursor = ref({ x: 0, y: 0, visible: false })
+const maskData = ref(null)
+
+// Toggle inpaint mode | 切换涂抹模式
+const toggleInpaintMode = () => {
+  isInpaintMode.value = !isInpaintMode.value
+  if (isInpaintMode.value) {
+    nextTick(() => initCanvas())
+  } else {
+    clearMask()
+  }
+}
+
+// Initialize canvas | 初始化画布
+const initCanvas = () => {
+  setTimeout(() => {
+    const canvas = canvasRef.value
+    if (!canvas) return
+    
+    // Set canvas internal size to match its CSS rendered size | 设置画布内部尺寸匹配 CSS 渲染尺寸
+    // clientWidth/clientHeight give the CSS box size
+    canvas.width = canvas.clientWidth
+    canvas.height = canvas.clientHeight
+    
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+  }, 100)
+}
+
+// Ensure canvas size matches display | 确保画布尺寸匹配显示
+const syncCanvasSize = () => {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+    canvas.width = canvas.clientWidth
+    canvas.height = canvas.clientHeight
+  }
+}
+
+// Canvas paint handlers | 画布绘制处理器
+const onCanvasPaint = (e) => {
+  syncCanvasSize()
+  isDrawing.value = true
+  paintAt(e.offsetX, e.offsetY)
+  brushCursor.value = { x: e.offsetX, y: e.offsetY, visible: true }
+}
+
+const onCanvasMove = (e) => {
+  brushCursor.value = { x: e.offsetX, y: e.offsetY, visible: true }
+  if (isDrawing.value) {
+    paintAt(e.offsetX, e.offsetY)
+  }
+}
+
+const onPaintEnd = () => {
+  isDrawing.value = false
+  brushCursor.value.visible = false
+}
+
+// Paint at coordinates | 在坐标绘制
+const paintAt = (x, y) => {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  
+  const ctx = canvas.getContext('2d')
+  ctx.beginPath()
+  ctx.arc(x, y, brushSize.value, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(139, 92, 246, 0.5)'
+  ctx.fill()
+}
+
+// Hide brush cursor | 隐藏画笔光标
+const hideBrushCursor = () => {
+  brushCursor.value.visible = false
+}
+
+// Clear mask | 清除蒙版
+const clearMask = () => {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  maskData.value = null
+}
+
+// Apply inpaint and create workflow | 应用重绘并创建工作流
+const applyInpaint = () => {
+  debugger
+  const canvas = canvasRef.value
+  if (!canvas || canvas.width === 0 || canvas.height === 0) {
+    window.$message?.error('画布未初始化')
+    return
+  }
+  
+  // Get the original image and resize mask to match | 获取原图并调整蒙版大小匹配
+  const container = imageContainerRef.value
+  const img = container?.querySelector('img')
+  if (!img) {
+    window.$message?.error('未找到图片')
+    return
+  }
+  
+  // Create mask at original image resolution | 创建原图分辨率的蒙版
+  const maskCanvas = document.createElement('canvas')
+  const imgWidth = img.naturalWidth || img.width
+  const imgHeight = img.naturalHeight || img.height
+  maskCanvas.width = imgWidth
+  maskCanvas.height = imgHeight
+  const maskCtx = maskCanvas.getContext('2d')
+  
+  // Fill black background | 填充黑色背景
+  maskCtx.fillStyle = '#000000'
+  maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height)
+  
+  // Scale factor from display to original | 从显示尺寸到原图的缩放因子
+  const scaleX = imgWidth / canvas.width
+  const scaleY = imgHeight / canvas.height
+  
+  // Get painted areas and scale to original resolution | 获取绑制区域并缩放到原图分辨率
+  const originalData = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
+  
+  // Draw scaled white areas on mask | 在蒙版上绘制缩放后的白色区域
+  maskCtx.fillStyle = '#FFFFFF'
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const i = (y * canvas.width + x) * 4
+      if (originalData.data[i + 3] > 0) {
+        // Scale and draw | 缩放并绘制
+        maskCtx.fillRect(
+          Math.floor(x * scaleX),
+          Math.floor(y * scaleY),
+          Math.ceil(scaleX),
+          Math.ceil(scaleY)
+        )
+      }
+    }
+  }
+  
+  // Convert to base64 (remove data URL prefix for API) | 转换为 base64（移除前缀用于 API）
+  const dataUrl = maskCanvas.toDataURL('image/png')
+  const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '')
+  maskData.value = base64Data
+  
+  // Create inpaint workflow | 创建重绘工作流
+  createInpaintWorkflow()
+}
+
+// Create inpaint workflow | 创建重绘工作流
+const createInpaintWorkflow = () => {
+  const currentNode = nodes.value.find(n => n.id === props.id)
+  const nodeX = currentNode?.position?.x || 0
+  const nodeY = currentNode?.position?.y || 0
+  
+  // Create text node for prompt | 创建文本节点用于提示词
+  const textNodeId = addNode('text', { x: nodeX + 300, y: nodeY - 100 }, {
+    content: '请输入重绘提示词...',
+    label: '重绘提示词'
+  })
+  
+  // Create imageConfig node for inpainting | 创建图生图配置节点
+  const configNodeId = addNode('imageConfig', { x: nodeX + 600, y: nodeY }, {
+    model: 'doubao-seedream-4-5-251128',
+    size: '1024x1024',
+    label: '局部重绘',
+    inpaintMode: true
+  })
+  
+  // Update current node with mask data | 更新当前节点的蒙版数据
+  updateNode(props.id, {
+    maskData: maskData.value,
+    hasInpaintMask: true
+  })
+  
+  // Connect image node to config node | 连接图片节点到配置节点
+  addEdge({
+    source: props.id,
+    target: configNodeId,
+    sourceHandle: 'right',
+    targetHandle: 'left'
+  })
+  
+  // Connect text node to config node | 连接文本节点到配置节点
+  addEdge({
+    source: textNodeId,
+    target: configNodeId,
+    sourceHandle: 'right',
+    targetHandle: 'left'
+  })
+  
+  // Exit inpaint mode | 退出涂抹模式
+  isInpaintMode.value = false
+  
+  // Force Vue Flow to recalculate | 强制重新计算
+  setTimeout(() => {
+    updateNodeInternals([textNodeId, configNodeId])
+  }, 50)
+  
+  window.$message?.success('已创建局部重绘工作流')
+}
 
 // Convert file to base64 | 将文件转换为 base64
 const fileToBase64 = (file) => {
@@ -320,5 +615,33 @@ const handleVideoGen = () => {
 .image-node {
   cursor: default;
   position: relative;
+}
+
+/* Slider styling | 滑块样式 */
+.slider-purple::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8b5cf6;
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.slider-purple::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8b5cf6;
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* Inpaint mode cursor | 涂抹模式光标 */
+.cursor-none {
+  cursor: none;
 }
 </style>

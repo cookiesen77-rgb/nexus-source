@@ -18,9 +18,9 @@
           >
             <n-icon :size="14"><TrashOutline /></n-icon>
           </button>
-          <button class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
+          <!-- <button class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
             <n-icon :size="14"><ExpandOutline /></n-icon>
-          </button>
+          </button> -->
         </div>
       </div>
       <!-- Model name | 模型名称 -->
