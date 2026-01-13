@@ -6,6 +6,17 @@
 ![Vite](https://img.shields.io/badge/Vite-5.2-646CFF?logo=vite)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
+## 📸 截图
+
+### 首页
+![首页](./doc/home.png)
+
+### 画布
+![画布](./doc/canvas.png)
+
+### API 配置
+![API 配置](./doc/api-config.png)
+
 ## ✨ 特性
 
 - 🎨 **可视化节点编排** - 基于 Vue Flow 的无限画布，支持拖拽、缩放、连接
