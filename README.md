@@ -115,6 +115,12 @@ src/
 4. 推送到分支 (`git push origin feature/amazing-feature`)
 5. 提交 Pull Request
 
+## 联系我
+
+扫码添加微信交流：
+
+<img src="./doc/wx.jpg" width="200" alt="微信二维码" />
+
 ## 📄 License
 
 [MIT](./LICENSE)
