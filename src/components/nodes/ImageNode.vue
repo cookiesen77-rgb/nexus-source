@@ -509,7 +509,7 @@ const handleImageGen = () => {
 
   // Create text node for prompt | 创建文本节点用于提示词
   const textNodeId = addNode('text', { x: nodeX + 300, y: nodeY - 100 }, {
-    content: '请输入提示词...',
+    content: '',
     label: '提示词'
   })
 
@@ -570,7 +570,7 @@ const handleVideoGen = () => {
 
   // Create text node for prompt | 创建文本节点用于提示词
   const textNodeId = addNode('text', { x: nodeX + 300, y: nodeY - 100 }, {
-    content: '请输入提示词...',
+    content: '',
     label: '提示词'
   })
 

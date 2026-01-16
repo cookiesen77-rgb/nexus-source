@@ -38,18 +38,6 @@ export const SEEDREAM_QUALITY_OPTIONS = [
 // Image generation models | 图片生成模型
 export const IMAGE_MODELS = [
     {
-        label: '豆包 Seedream 4.5 (免费)',
-        key: 'free/doubao-seedream-4.5',
-        sizes: SEEDREAM_SIZE_OPTIONS.map(s => s.key),
-        qualities: SEEDREAM_QUALITY_OPTIONS,
-        getSizesByQuality: (quality) => quality === '4k' ? SEEDREAM_4K_SIZE_OPTIONS : SEEDREAM_SIZE_OPTIONS,
-        defaultParams: {
-            size: '2048x2048',
-            quality: 'standard',
-            style: 'vivid'
-        }
-    },
-    {
         label: '豆包 Seedream 4.5',
         key: 'doubao-seedream-4-5-251128',
         sizes: SEEDREAM_SIZE_OPTIONS.map(s => s.key),
