@@ -15,6 +15,7 @@
     "build:electron:local": "vite build --mode electron && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never --config.mac.hardenedRuntime=false",
     "build:electron:local:dir": "vite build --mode electron && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir --publish never --config.mac.hardenedRuntime=false",
     "build:tauri": "tauri build",
+    "tauri": "tauri",
     "preview": "vite preview"
   },
   "dependencies": {
