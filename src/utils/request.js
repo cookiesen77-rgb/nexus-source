@@ -4,14 +4,35 @@
  */
 
 import axios from 'axios'
+import { DEFAULT_API_BASE_URL } from './constants'
+import { formatErrorMessage } from './errorResolver'
 
-// Base URL from environment or default
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://api.chatfire.site/v1'
+// Base URL is fixed to NexusAPI
+const BASE_URL = DEFAULT_API_BASE_URL
+
+const safeJsonParse = (data, headers = {}) => {
+  if (data === null || data === undefined) return data
+  if (typeof data !== 'string') return data
+
+  const trimmed = data.trim()
+  if (!trimmed) return data
+
+  const contentType = (headers?.['content-type'] || headers?.['Content-Type'] || '').toLowerCase()
+  const looksJson = contentType.includes('application/json') || /^[{\[]/.test(trimmed)
+  if (!looksJson) return data
+
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return data
+  }
+}
 
 // Create axios instance | 创建 axios 实例
 const instance = axios.create({
   baseURL: BASE_URL,
-  timeout: 30000000
+  timeout: 30000,
+  transformResponse: [(data, headers) => safeJsonParse(data, headers)]
 })
 
 // Request interceptor | 请求拦截器
@@ -23,9 +44,16 @@ instance.interceptors.request.use(
     // Skip auth for certain endpoints | 跳过某些端点的认证
     const noAuthEndpoints = ['/model/page', '/model/fullName', '/model/types']
     const isNoAuth = noAuthEndpoints.some(ep => config.url?.includes(ep))
+
+    // Query 模式：附加 key 参数，不加 Authorization
+    if (config.authMode === 'query') {
+      config.params = { ...(config.params || {}), key: apiKey }
+      delete config.headers?.Authorization
+      return config
+    }
     
     if (apiKey && !isNoAuth) {
-      config.headers['Authorization'] = `Bearer ${apiKey}`
+      config.headers = { ...(config.headers || {}), Authorization: `Bearer ${apiKey}` }
     }
     
     return config
@@ -65,7 +93,19 @@ instance.interceptors.response.use(
     
     if (response) {
       const { status, data } = response
-      const message = data?.message || data?.error?.message || error.message
+      const rawMessage =
+        data?.message_zh ||
+        data?.error?.message_zh ||
+        data?.message ||
+        data?.error?.message ||
+        (typeof data?.error === 'string' ? data.error : null) ||
+        error.message
+      const message = formatErrorMessage(rawMessage, { status })
+
+      // 让上层拿到更准确的报错文本（用于节点错误提示）| normalize error.message for UI
+      if (message && typeof message === 'string') {
+        error.message = message
+      }
       
       if (status === 401) {
         window.$message?.error('API Key 无效或已过期')
@@ -75,7 +115,8 @@ instance.interceptors.response.use(
         window.$message?.error(message || '请求失败')
       }
     } else {
-      window.$message?.error(error.message || '网络错误')
+      const fallback = formatErrorMessage(error.message, {})
+      window.$message?.error(fallback || '网络错误')
     }
     
     return Promise.reject(error)
@@ -87,7 +128,8 @@ instance.interceptors.response.use(
  * @param {string} url - Base URL
  */
 export const setBaseUrl = (url) => {
-  instance.defaults.baseURL = url
+  // Base URL is locked; ignore custom values and enforce the default
+  instance.defaults.baseURL = DEFAULT_API_BASE_URL
 }
 
 /**

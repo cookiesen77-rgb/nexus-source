@@ -42,6 +42,19 @@
           </n-dropdown>
         </div>
 
+        <!-- Size selector (Sora etc.) | 清晰度/尺寸（Sora 等模型需要） -->
+        <div v-if="hasSizeOptions" class="flex items-center justify-between">
+          <span class="text-xs text-[var(--text-secondary)]">尺寸</span>
+          <n-dropdown :options="sizeOptions" @select="handleSizeSelect">
+            <button class="flex items-center gap-1 text-sm text-[var(--text-primary)] hover:text-[var(--accent-color)]">
+              {{ displaySize }}
+              <n-icon :size="12">
+                <ChevronForwardOutline />
+              </n-icon>
+            </button>
+          </n-dropdown>
+        </div>
+
         <!-- Duration selector | 时长选择 -->
         <div class="flex items-center justify-between">
           <span class="text-xs text-[var(--text-secondary)]">时长</span>
@@ -86,7 +99,7 @@
       </div> -->
 
         <!-- Generate button | 生成按钮 -->
-        <button @click="handleGenerate" :disabled="loading || !isConfigured"
+        <button @click="handleGenerate" :disabled="!isConfigured"
           class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-[var(--accent-color)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           <n-spin v-if="loading" :size="14" />
           <template v-else>
@@ -141,7 +154,8 @@ import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { NIcon, NDropdown, NSpin } from 'naive-ui'
 import { ChevronForwardOutline, ChevronDownOutline, TrashOutline, VideocamOutline, CopyOutline } from '@vicons/ionicons5'
 import { useVideoGeneration, useApiConfig } from '../../hooks'
-import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes, edges } from '../../stores/canvas'
+import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes, getNodeById, getIncomingEdges } from '../../stores/canvas'
+import { addAsset } from '../../stores/assets'
 import { videoModelOptions, getModelRatioOptions, getModelDurationOptions, getModelConfig, DEFAULT_VIDEO_MODEL } from '../../stores/models'
 
 const props = defineProps({
@@ -150,7 +164,7 @@ const props = defineProps({
 })
 
 // Vue Flow instance | Vue Flow 实例
-const { updateNodeInternals } = useVueFlow()
+const { updateNodeInternals, updateEdgeData } = useVueFlow()
 
 // API config hook | API 配置 hook
 const { isConfigured } = useApiConfig()
@@ -165,14 +179,15 @@ const showActions = ref(false)
 const localModel = ref(props.data?.model || DEFAULT_VIDEO_MODEL)
 const localRatio = ref(props.data?.ratio || '16:9')
 const localDuration = ref(props.data?.dur || 5)
+const localSize = ref(props.data?.size || '')
 
 // Get connected images with roles | 获取连接的图片及其角色
 const connectedImages = computed(() => {
-  const connectedEdges = edges.value.filter(e => e.target === props.id)
+  const connectedEdges = getIncomingEdges(props.id)
   const images = []
 
   for (const edge of connectedEdges) {
-    const sourceNode = nodes.value.find(n => n.id === edge.source)
+    const sourceNode = getNodeById(edge.source)
     if (sourceNode?.type === 'image' && sourceNode.data?.url) {
       images.push({
         nodeId: sourceNode.id,
@@ -222,6 +237,23 @@ const durationOptions = computed(() => {
   return getModelDurationOptions(localModel.value)
 })
 
+// Size options based on model (Sora etc.) | 基于模型的尺寸选项（如 Sora small/large）
+const sizeOptions = computed(() => {
+  const sizes = currentModelConfig.value?.sizes
+  if (!Array.isArray(sizes) || sizes.length === 0) return []
+  return sizes
+    .map(s => (typeof s === 'string' ? { label: s, key: s } : { label: s.label, key: s.key }))
+    .filter(o => o.key)
+})
+
+const hasSizeOptions = computed(() => sizeOptions.value.length > 0)
+
+const displaySize = computed(() => {
+  if (!hasSizeOptions.value) return ''
+  const option = sizeOptions.value.find(o => o.key === localSize.value)
+  return option?.label || localSize.value || sizeOptions.value[0]?.label || ''
+})
+
 // Handle model selection | 处理模型选择
 const handleModelSelect = (key) => {
   localModel.value = key
@@ -235,6 +267,22 @@ const handleModelSelect = (key) => {
   if (config?.defaultParams?.duration) {
     localDuration.value = config.defaultParams.duration
     updates.dur = config.defaultParams.duration
+  }
+  // Sora 等模型需要 size | set default size if available
+  if (Array.isArray(config?.sizes) && config.sizes.length > 0) {
+    const normalized = config.sizes
+      .map(s => (typeof s === 'string' ? { label: s, key: s } : { label: s.label, key: s.key }))
+      .filter(o => o.key)
+    const nextSize = config?.defaultParams?.size && normalized.some(o => o.key === config.defaultParams.size)
+      ? config.defaultParams.size
+      : normalized[0]?.key
+    if (nextSize) {
+      localSize.value = nextSize
+      updates.size = nextSize
+    }
+  } else if (localSize.value) {
+    localSize.value = ''
+    updates.size = ''
   }
   updateNode(props.id, updates)
 }
@@ -258,21 +306,30 @@ const handleRatioSelect = (key) => {
 
 // Handle duration selection | 处理时长选择
 const handleDurationSelect = (key) => {
-  localDuration.value = key
-  updateNode(props.id, { dur: key })
+  const normalized = Number.isFinite(Number(key)) ? Number(key) : key
+  localDuration.value = normalized
+  updateNode(props.id, { dur: normalized })
+}
+
+// Handle size selection | 处理尺寸选择
+const handleSizeSelect = (key) => {
+  localSize.value = key
+  updateNode(props.id, { size: key })
 }
 
 // Get connected inputs by role | 根据角色获取连接的输入
 const getConnectedInputs = () => {
-  const connectedEdges = edges.value.filter(e => e.target === props.id)
+  const connectedEdges = getIncomingEdges(props.id)
 
   let prompt = ''
   let first_frame_image = ''
   let last_frame_image = ''
   const images = [] // input_reference images | 参考图
 
+  const imageEdges = []
+
   for (const edge of connectedEdges) {
-    const sourceNode = nodes.value.find(n => n.id === edge.source)
+    const sourceNode = getNodeById(edge.source)
     if (!sourceNode) continue
 
     if (sourceNode.type === 'text') {
@@ -280,16 +337,37 @@ const getConnectedInputs = () => {
     } else if (sourceNode.type === 'image' && sourceNode.data?.url) {
       const imageData = sourceNode.data.base64 || sourceNode.data.url
       const role = edge.data?.imageRole || 'first_frame_image'
-
-      if (role === 'first_frame_image') {
-        first_frame_image = imageData
-      } else if (role === 'last_frame_image') {
-        last_frame_image = imageData
-      } else if (role === 'input_reference') {
-        images.push(imageData)
-      }
+      imageEdges.push({ edgeId: edge.id, role, imageData })
     }
   }
+
+  const firstEdges = imageEdges.filter(e => e.role === 'first_frame_image')
+  const lastEdges = imageEdges.filter(e => e.role === 'last_frame_image')
+  const refEdges = imageEdges.filter(e => e.role === 'input_reference')
+
+  if (firstEdges.length > 0) {
+    first_frame_image = firstEdges[0].imageData
+  }
+  if (lastEdges.length > 0) {
+    last_frame_image = lastEdges[0].imageData
+  }
+
+  // Auto-assign last frame when two images are connected but no last frame set
+  if (!last_frame_image && firstEdges.length >= 2) {
+    const edgeToPromote = firstEdges[1]
+    last_frame_image = edgeToPromote.imageData
+    if (edgeToPromote?.edgeId) {
+      updateEdgeData(edgeToPromote.edgeId, { imageRole: 'last_frame_image' })
+    }
+    window.$message?.info?.('已将第二张图片自动设置为尾帧')
+  }
+
+  const extraFirst = firstEdges.slice(last_frame_image ? 1 : 2)
+  const extraLast = lastEdges.slice(1)
+
+  images.push(...refEdges.map(e => e.imageData))
+  images.push(...extraFirst.map(e => e.imageData))
+  images.push(...extraLast.map(e => e.imageData))
 
   return { prompt, first_frame_image, last_frame_image, images }
 }
@@ -375,6 +453,11 @@ const handleGenerate = async () => {
       params.ratio = localRatio.value
     }
 
+    // Add model-specific size (Sora etc.) | 添加模型尺寸参数（如 Sora small/large）
+    if (hasSizeOptions.value && localSize.value) {
+      params.size = localSize.value
+    }
+
     // Add duration | 添加时长
     if (localDuration.value) {
       params.dur = localDuration.value
@@ -387,13 +470,26 @@ const handleGenerate = async () => {
       updateNode(videoNodeId, {
         url: result.url,
         loading: false,
+        error: '',
         label: '视频生成',
         model: localModel.value,
         updatedAt: Date.now()
       })
+
+      setTimeout(() => {
+        updateNodeInternals(videoNodeId)
+      }, 50)
       
       // Mark this config node as executed | 标记配置节点已执行
       updateNode(props.id, { executed: true, outputNodeId: videoNodeId })
+
+      // Add to asset history | 添加到资产历史
+      addAsset({
+        type: 'video',
+        src: result.url,
+        title: '视频生成',
+        model: localModel.value
+      })
     }
     window.$message?.success('视频生成成功')
   } catch (err) {
@@ -404,6 +500,9 @@ const handleGenerate = async () => {
       label: '生成失败',
       updatedAt: Date.now()
     })
+    setTimeout(() => {
+      updateNodeInternals(videoNodeId)
+    }, 50)
     window.$message?.error(err.message || '视频生成失败')
   }
 }
@@ -415,10 +514,50 @@ const handleDelete = () => {
 
 // Initialize on mount | 挂载时初始化
 onMounted(() => {
+  const config = getModelConfig(localModel.value || DEFAULT_VIDEO_MODEL)
+  const updates = {}
   if (!localModel.value) {
     localModel.value = DEFAULT_VIDEO_MODEL
-    updateNode(props.id, { model: localModel.value })
+    updates.model = localModel.value
   }
+
+  // 同步默认 ratio/dur/size（如果当前值无效）| normalize defaults
+  if (config?.defaultParams?.ratio && !localRatio.value) {
+    localRatio.value = config.defaultParams.ratio
+    updates.ratio = config.defaultParams.ratio
+  }
+  if (config?.defaultParams?.duration && !localDuration.value) {
+    localDuration.value = config.defaultParams.duration
+    updates.dur = config.defaultParams.duration
+  }
+  const durationOptionsList = getModelDurationOptions(localModel.value)
+  if (durationOptionsList.length > 0) {
+    const valid = durationOptionsList.some(option => option.key === localDuration.value)
+    if (!valid) {
+      const fallback = config?.defaultParams?.duration ?? durationOptionsList[0]?.key
+      if (fallback !== undefined) {
+        localDuration.value = fallback
+        updates.dur = fallback
+      }
+    }
+  }
+  if (Array.isArray(config?.sizes) && config.sizes.length > 0) {
+    const normalized = config.sizes
+      .map(s => (typeof s === 'string' ? { label: s, key: s } : { label: s.label, key: s.key }))
+      .filter(o => o.key)
+    const isValid = normalized.some(o => o.key === localSize.value)
+    if (!isValid) {
+      const nextSize = config?.defaultParams?.size && normalized.some(o => o.key === config.defaultParams.size)
+        ? config.defaultParams.size
+        : normalized[0]?.key
+      if (nextSize) {
+        localSize.value = nextSize
+        updates.size = nextSize
+      }
+    }
+  }
+
+  if (Object.keys(updates).length > 0) updateNode(props.id, updates)
 })
 
 // Watch for model changes from props | 监听 props 中模型变化

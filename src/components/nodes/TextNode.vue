@@ -9,7 +9,7 @@
       <div class="flex items-center justify-between px-3 py-2 border-b border-[var(--border-color)]">
         <span class="text-sm font-medium text-[var(--text-secondary)]">{{ data.label }}</span>
         <div class="flex items-center gap-1">
-          <button @click="handleDelete" class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
+          <button @click.stop="handleDelete" class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
             <n-icon :size="14">
               <TrashOutline />
             </n-icon>
@@ -88,12 +88,13 @@
  * Text node component | 文本节点组件
  * Allows user to input and edit text content
  */
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, onUnmounted } from 'vue'
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { NIcon, NSpin } from 'naive-ui'
 import { TrashOutline, ExpandOutline, CopyOutline, ImageOutline, VideocamOutline } from '@vicons/ionicons5'
 import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes } from '../../stores/canvas'
-import { useChat, useApiConfig } from '../../hooks'
+import { DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_SIZE } from '../../config/models'
+import { useApiConfig, usePolish } from '../../hooks'
 
 const props = defineProps({
   id: String,
@@ -106,11 +107,8 @@ const { updateNodeInternals } = useVueFlow()
 // API config hook | API 配置 hook
 const { isConfigured: isApiConfigured } = useApiConfig()
 
-// Chat hook for polish | 润色用的 Chat hook
-const { send: sendChat } = useChat({
-  systemPrompt: '你是一个专业的AI绘画提示词专家。将用户输入的内容美化成高质量的生图提示词，包含风格、光线、構图、细节等要素。直接返回提示词，不要其他解释。',
-  model: 'gpt-4o-mini'
-})
+// AI polish hook | AI 润色 hook（上下文增强）
+const { polish } = usePolish()
 
 // Local content state | 本地内容状态
 const content = ref(props.data?.content || '')
@@ -130,8 +128,36 @@ watch(() => props.data?.content, (newVal) => {
 
 // Update content in store | 更新存储中的内容
 const updateContent = () => {
+  if (syncTimer) {
+    clearTimeout(syncTimer)
+    syncTimer = 0
+  }
   updateNode(props.id, { content: content.value })
 }
+
+// Keep store in sync while typing (debounced) | 输入时同步到 store（防抖，减少卡顿）
+let syncTimer = 0
+let lastSyncedValue = content.value
+const SYNC_DELAY = 200
+
+const stopContentWatch = watch(content, (val) => {
+  if (val === props.data?.content) return
+  lastSyncedValue = val
+  if (syncTimer) clearTimeout(syncTimer)
+  syncTimer = setTimeout(() => {
+    syncTimer = 0
+    updateNode(props.id, { content: lastSyncedValue })
+  }, SYNC_DELAY)
+})
+
+onUnmounted(() => {
+  if (syncTimer) {
+    clearTimeout(syncTimer)
+    syncTimer = 0
+    updateNode(props.id, { content: lastSyncedValue })
+  }
+  stopContentWatch()
+})
 
 // Handle AI polish | 处理 AI 润色
 const handlePolish = async () => {
@@ -148,14 +174,16 @@ const handlePolish = async () => {
   const originalContent = content.value
 
   try {
-    // Call chat API to polish the prompt | 调用 AI 润色提示词
-    const result = await sendChat(input, true)
+    // Call AI polish with canvas context | 调用 AI 润色（带画布上下文）
+    const result = await polish({ text: input, focusNodeId: props.id, stream: false })
     
-    if (result) {
-      content.value = result
-      updateNode(props.id, { content: result })
-      window.$message?.success('提示词已润色')
+    if (!result) {
+      window.$message?.warning('润色结果为空，请重试')
+      return
     }
+    content.value = result
+    updateNode(props.id, { content: result })
+    window.$message?.success('提示词已润色')
   } catch (err) {
     content.value = originalContent
     window.$message?.error(err.message || '润色失败')
@@ -188,8 +216,8 @@ const handleImageGen = () => {
 
   // Create imageConfig node | 创建text生图配置节点
   const configNodeId = addNode('imageConfig', { x: nodeX + 400, y: nodeY }, {
-    model: 'doubao-seedream-4-5-251128',
-    size: '1024x1024',
+    model: DEFAULT_IMAGE_MODEL,
+    size: DEFAULT_IMAGE_SIZE,
     label: '文生图'
   })
 

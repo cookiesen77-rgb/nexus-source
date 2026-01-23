@@ -3,7 +3,9 @@
  */
 
 export * from './constants'
+export * from './clone'
 export * from './schema'
+export * from './contextBuilder'
 import request, { setBaseUrl, getBaseUrl } from './request'
 
 export { request, setBaseUrl, getBaseUrl }

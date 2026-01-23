@@ -83,7 +83,7 @@
         </div>
 
         <!-- Generate button | 生成按钮 -->
-        <button @click="handleGenerate" :disabled="loading || !isConfigured"
+        <button @click="handleGenerate" :disabled="!isConfigured"
           class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-[var(--accent-color)] hover:bg-[var(--accent-hover)] text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           <n-spin v-if="loading" :size="14" />
           <template v-else>
@@ -143,7 +143,8 @@ import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { NIcon, NDropdown, NSpin } from 'naive-ui'
 import { ChevronDownOutline, ChevronForwardOutline, CopyOutline, TrashOutline } from '@vicons/ionicons5'
 import { useImageGeneration, useApiConfig } from '../../hooks'
-import { updateNode, addNode, addEdge, nodes, edges, duplicateNode, removeNode } from '../../stores/canvas'
+import { updateNode, addNode, addEdge, nodes, duplicateNode, removeNode, getNodeById, getIncomingEdges, getOutgoingEdges } from '../../stores/canvas'
+import { addAsset } from '../../stores/assets'
 import { imageModelOptions, getModelSizeOptions, getModelQualityOptions, getModelConfig, DEFAULT_IMAGE_MODEL } from '../../stores/models'
 
 const props = defineProps({
@@ -215,25 +216,51 @@ const displaySize = computed(() => {
 
 // Initialize on mount | 挂载时初始化
 onMounted(() => {
+  const modelKey = localModel.value || DEFAULT_IMAGE_MODEL
+  const config = getModelConfig(modelKey)
+  const updates = {}
+
   // Set default model if not set | 如果未设置则设置默认模型
   if (!localModel.value) {
-    localModel.value = DEFAULT_IMAGE_MODEL
-    updateNode(props.id, { model: localModel.value })
+    localModel.value = modelKey
+    updates.model = modelKey
+  }
+
+  // Validate quality | 校验画质
+  const qOptions = getModelQualityOptions(modelKey)
+  if (qOptions.length > 0 && !qOptions.some(o => o.key === localQuality.value)) {
+    const nextQuality = config?.defaultParams?.quality || qOptions[0].key
+    localQuality.value = nextQuality
+    updates.quality = nextQuality
+  }
+
+  // Validate size | 校验尺寸
+  const sOptions = getModelSizeOptions(modelKey, localQuality.value)
+  if (sOptions.length > 0 && !sOptions.some(o => o.key === localSize.value)) {
+    const preferred = config?.defaultParams?.size
+    const nextSize = preferred && sOptions.some(o => o.key === preferred) ? preferred : sOptions[0].key
+    localSize.value = nextSize
+    updates.size = nextSize
+  }
+
+  if (Object.keys(updates).length > 0) {
+    updateNode(props.id, updates)
   }
 })
 
 // Get connected nodes | 获取连接的节点
 const getConnectedInputs = () => {
-  const connectedEdges = edges.value.filter(e => e.target === props.id)
-  let prompt = ''
+  const connectedEdges = getIncomingEdges(props.id)
+  const promptParts = []
   const refImages = []
 
   for (const edge of connectedEdges) {
-    const sourceNode = nodes.value.find(n => n.id === edge.source)
+    const sourceNode = getNodeById(edge.source)
     if (!sourceNode) continue
 
     if (sourceNode.type === 'text') {
-      prompt = sourceNode.data?.content || ''
+      const text = (sourceNode.data?.content || '').trim()
+      if (text) promptParts.push(text)
     } else if (sourceNode.type === 'image') {
       // Prefer base64, fallback to url | 优先使用 base64，回退到 url
       const imageData = sourceNode.data?.base64 || sourceNode.data?.url
@@ -243,7 +270,7 @@ const getConnectedInputs = () => {
     }
   }
 
-  return { prompt, refImages }
+  return { prompt: promptParts.join('\n\n'), refImages }
 }
 
 // Computed connected prompt | 计算连接的提示词
@@ -276,15 +303,21 @@ const handleModelSelect = (key) => {
 // Handle quality selection | 处理画质选择
 const handleQualitySelect = (quality) => {
   localQuality.value = quality
-  // Update size to first option of new quality | 更新尺寸为新画质的第一个选项
+  // 如果该模型尺寸与画质无关，则保留当前尺寸；否则尽量保持合法值
   const newSizeOptions = getModelSizeOptions(localModel.value, quality)
-  if (newSizeOptions.length > 0) {
-    const defaultSize = quality === '4k' ? newSizeOptions.find(o => o.key.includes('4096'))?.key || newSizeOptions[4]?.key : newSizeOptions[4]?.key
-    localSize.value = defaultSize || newSizeOptions[0].key
-    updateNode(props.id, { quality, size: localSize.value })
-  } else {
+  if (newSizeOptions.length === 0) {
     updateNode(props.id, { quality })
+    return
   }
+
+  const isSizeValid = newSizeOptions.some(o => o.key === localSize.value)
+  if (!isSizeValid) {
+    const config = getModelConfig(localModel.value)
+    const preferred = config?.defaultParams?.size
+    localSize.value = preferred && newSizeOptions.some(o => o.key === preferred) ? preferred : newSizeOptions[0].key
+  }
+
+  updateNode(props.id, { quality, size: localSize.value })
 }
 
 // Handle size selection | 处理尺寸选择
@@ -304,12 +337,12 @@ const createdImageNodeId = ref(null)
 // Find connected output image node (empty image node) | 查找已连接的输出图片节点（空白图片节点）
 const findConnectedOutputImageNode = () => {
   // Find edges where this node is the source | 查找以当前节点为源的边
-  const outputEdges = edges.value.filter(e => e.source === props.id)
+  const outputEdges = getOutgoingEdges(props.id)
   
   for (const edge of outputEdges) {
-    const targetNode = nodes.value.find(n => n.id === edge.target)
+    const targetNode = getNodeById(edge.target)
     // Check if target is an image node with empty or no url | 检查目标是否为空白图片节点
-    if (targetNode?.type === 'image' && (!targetNode.data?.url || targetNode.data?.url === '')) {
+    if (targetNode?.type === 'image' && !targetNode.data?.loading && (!targetNode.data?.url || targetNode.data?.url === '')) {
       return targetNode.id
     }
   }
@@ -330,12 +363,30 @@ const handleGenerate = async () => {
     return
   }
 
+  const format = currentModelConfig.value?.format
+  const supportsRefImages = format === 'gemini-image' || format === 'openai-image-edit' || format === 'kling-image'
+  const maxRefImages = currentModelConfig.value?.key === 'gemini-3-pro-image-preview' ? 14 : refImages.length
+  const limitedRefImages = maxRefImages < refImages.length ? refImages.slice(0, maxRefImages) : refImages
+
+  if (refImages.length > maxRefImages) {
+    window.$message?.warning?.(`参考图最多支持 ${maxRefImages} 张，已自动取前 ${maxRefImages} 张`)
+  }
+
+  // 当前模型不支持参考图时：仅提示词可用；否则直接报错提醒
+  if (!supportsRefImages && refImages.length > 0) {
+    if (!prompt) {
+      window.$message?.warning('当前模型不支持参考图输入，请添加提示词或切换到支持参考图的模型')
+      return
+    }
+    window.$message?.warning('当前模型不支持参考图输入，已忽略参考图（仅使用提示词）')
+  }
+
   // Check for existing connected empty image node | 检查是否已有连接的空白图片节点
   let imageNodeId = findConnectedOutputImageNode()
   
   if (imageNodeId) {
     // Use existing empty image node | 使用已有的空白图片节点
-    updateNode(imageNodeId, { loading: true })
+    updateNode(imageNodeId, { loading: true, error: '' })
   } else {
     // Get current node position | 获取当前节点位置
     const currentNode = nodes.value.find(n => n.id === props.id)
@@ -375,26 +426,45 @@ const handleGenerate = async () => {
       n: 1
     }
 
-    // Add reference image if provided | 如果有参考图则添加
-    if (refImages.length > 0) {
-      params.image = refImages[0]
+    // Add reference images if supported | 支持参考图的模型才发送参考图
+    if (supportsRefImages && limitedRefImages.length > 0) {
+      params.images = limitedRefImages
     }
 
     const result = await generate(params)
 
-    // Update image node with generated URL | 更新图片节点 URL
-    if (result && result.length > 0) {
-      updateNode(imageNodeId, {
-        url: result[0].url,
-        loading: false,
-        label: '文生图',
-        model: localModel.value,
-        updatedAt: Date.now()
-      })
-      
-      // Mark this config node as executed | 标记配置节点已执行
-      updateNode(props.id, { executed: true, outputNodeId: imageNodeId })
+    const first = Array.isArray(result) ? result[0] : null
+    const persistentUrl = (typeof first?.base64 === 'string' && first.base64) ? first.base64 : first?.url
+
+    if (!persistentUrl || typeof persistentUrl !== 'string') {
+      throw new Error('未获取到可用的图片结果（请检查模型返回字段或稍后重试）')
     }
+
+    updateNode(imageNodeId, {
+      url: persistentUrl,
+      loading: false,
+      error: '',
+      label: '文生图',
+      model: localModel.value,
+      updatedAt: Date.now()
+    })
+
+    // Ensure Vue Flow recalculates dimensions after image loads | 图片加载后刷新节点尺寸
+    setTimeout(() => {
+      updateNodeInternals(imageNodeId)
+    }, 50)
+    
+    // Mark this config node as executed | 标记配置节点已执行
+    updateNode(props.id, { executed: true, outputNodeId: imageNodeId })
+
+    // Add to asset history | 添加到资产历史
+    addAsset({
+      type: 'image',
+      src: persistentUrl,
+      title: '文生图',
+      model: localModel.value
+    })
+
     window.$message?.success('图片生成成功')
   } catch (err) {
     // Update node to show error | 更新节点显示错误
@@ -403,6 +473,10 @@ const handleGenerate = async () => {
       error: err.message || '生成失败',
       updatedAt: Date.now()
     })
+
+    setTimeout(() => {
+      updateNodeInternals(imageNodeId)
+    }, 50)
     window.$message?.error(err.message || '图片生成失败')
   }
 }

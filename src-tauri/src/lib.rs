@@ -1,0 +1,713 @@
+use sha2::{Digest, Sha256};
+use serde_json::Value;
+use base64::{engine::general_purpose, Engine as _};
+use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::Duration;
+use std::sync::mpsc::{Receiver, Sender, channel, RecvTimeoutError};
+use std::thread;
+use tauri::Manager;
+use futures_util::StreamExt;
+use tokio::io::AsyncWriteExt;
+
+const IMAGE_CACHE_DIR: &str = "nexus-image-cache";
+const MEDIA_CACHE_DIR: &str = "nexus-media-cache";
+const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_MEDIA_BYTES: u64 = 300 * 1024 * 1024;
+const REQUEST_TIMEOUT_SECS: u64 = 60;
+
+fn hash_key(key: &str) -> String {
+  let mut hasher = Sha256::new();
+  hasher.update(key.as_bytes());
+  hex::encode(hasher.finalize())
+}
+
+fn canvas_store_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  let dir = app
+    .path()
+    .app_data_dir()
+    .map_err(|e| e.to_string())?
+    .join("nexus-canvas");
+  std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+  Ok(dir)
+}
+
+fn canvas_store_path(app: &tauri::AppHandle, project_id: &str) -> Result<PathBuf, String> {
+  let dir = canvas_store_dir(app)?;
+  Ok(dir.join(format!("{}.json", hash_key(project_id))))
+}
+
+#[derive(Debug)]
+struct CanvasSaveRequest {
+  project_id: String,
+  canvas: Value,
+}
+
+static CANVAS_SAVE_SENDER: OnceLock<Sender<CanvasSaveRequest>> = OnceLock::new();
+
+fn ensure_canvas_save_worker(app: tauri::AppHandle) -> Sender<CanvasSaveRequest> {
+  if let Some(sender) = CANVAS_SAVE_SENDER.get() {
+    return sender.clone();
+  }
+
+  let (tx, rx) = channel::<CanvasSaveRequest>();
+  let _ = CANVAS_SAVE_SENDER.set(tx.clone());
+  thread::spawn(move || canvas_save_worker(app, rx));
+  tx
+}
+
+fn canvas_save_worker(app: tauri::AppHandle, rx: Receiver<CanvasSaveRequest>) {
+  let mut pending: HashMap<String, Value> = HashMap::new();
+  let debounce = Duration::from_millis(650);
+
+  loop {
+    match rx.recv_timeout(debounce) {
+      Ok(r) => {
+        pending.insert(r.project_id, r.canvas);
+        continue;
+      }
+      Err(RecvTimeoutError::Timeout) => {}
+      Err(RecvTimeoutError::Disconnected) => break,
+    }
+
+    if pending.is_empty() {
+      continue;
+    }
+
+    let batch = std::mem::take(&mut pending);
+    for (project_id, canvas) in batch {
+      let _ = save_project_canvas_to_disk_blocking(&app, project_id, canvas);
+    }
+  }
+
+  if pending.is_empty() {
+    return;
+  }
+  let batch = std::mem::take(&mut pending);
+  for (project_id, canvas) in batch {
+    let _ = save_project_canvas_to_disk_blocking(&app, project_id, canvas);
+  }
+}
+
+fn save_project_canvas_to_disk_blocking(app: &tauri::AppHandle, project_id: String, canvas: Value) -> Result<(), String> {
+  if project_id.trim().is_empty() {
+    return Err("projectId 不能为空".to_string());
+  }
+
+  let path = canvas_store_path(app, &project_id)?;
+  let bytes = serde_json::to_vec(&canvas).map_err(|e| e.to_string())?;
+  let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+  std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+  std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+fn sanitize_extension(ext: &str) -> Option<String> {
+  let trimmed = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+  if trimmed.len() < 2 || trimmed.len() > 6 {
+    return None;
+  }
+  if !trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+    return None;
+  }
+  Some(trimmed)
+}
+
+fn extension_from_url(url: &str) -> Option<String> {
+  let parsed = reqwest::Url::parse(url).ok()?;
+  let ext = Path::new(parsed.path()).extension()?.to_str()?;
+  sanitize_extension(ext)
+}
+
+fn extension_from_content_type(content_type: Option<&str>) -> Option<String> {
+  let ct = content_type?.to_ascii_lowercase();
+  let ext = if ct.starts_with("image/png") {
+    "png"
+  } else if ct.starts_with("image/jpeg") || ct.starts_with("image/jpg") {
+    "jpg"
+  } else if ct.starts_with("image/webp") {
+    "webp"
+  } else if ct.starts_with("image/gif") {
+    "gif"
+  } else if ct.starts_with("image/svg+xml") {
+    "svg"
+  } else if ct.starts_with("image/avif") {
+    "avif"
+  } else if ct.starts_with("image/heic") {
+    "heic"
+  } else if ct.starts_with("image/heif") {
+    "heif"
+  } else if ct.starts_with("video/mp4") {
+    "mp4"
+  } else if ct.starts_with("video/webm") {
+    "webm"
+  } else if ct.starts_with("video/quicktime") {
+    "mov"
+  } else if ct.starts_with("audio/mpeg") {
+    "mp3"
+  } else if ct.starts_with("audio/mp4") || ct.starts_with("audio/m4a") {
+    "m4a"
+  } else if ct.starts_with("audio/wav") {
+    "wav"
+  } else {
+    return None;
+  };
+
+  Some(ext.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn save_project_canvas(app: tauri::AppHandle, project_id: String, canvas: Value) -> Result<(), String> {
+  let app_clone = app.clone();
+  tauri::async_runtime::spawn_blocking(move || save_project_canvas_to_disk_blocking(&app_clone, project_id, canvas))
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn enqueue_save_project_canvas(app: tauri::AppHandle, project_id: String, canvas: Value) -> Result<(), String> {
+  if project_id.trim().is_empty() {
+    return Err("projectId 不能为空".to_string());
+  }
+  let sender = ensure_canvas_save_worker(app);
+  sender
+    .send(CanvasSaveRequest { project_id, canvas })
+    .map_err(|_| "画布保存队列已关闭".to_string())?;
+  Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn compress_json_lz4_base64(value: Value) -> Result<String, String> {
+  let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+  let compressed = lz4_flex::compress_prepend_size(&bytes);
+  Ok(general_purpose::STANDARD.encode(compressed))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn decompress_json_lz4_base64(b64: String) -> Result<Value, String> {
+  let compressed = general_purpose::STANDARD.decode(b64).map_err(|e| e.to_string())?;
+  let decompressed = lz4_flex::decompress_size_prepended(&compressed).map_err(|e| e.to_string())?;
+  let value: Value = serde_json::from_slice(&decompressed).map_err(|e| e.to_string())?;
+  Ok(value)
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct MemoryItem {
+  #[serde(default)]
+  id: String,
+  #[serde(default)]
+  content: String,
+  #[serde(default)]
+  importance: f32,
+  #[serde(default)]
+  updated_at: i64,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct ChatMessage {
+  role: String,
+  content: String,
+}
+
+fn normalize_text(text: &str) -> String {
+  text.replace("\r\n", "\n").trim().to_string()
+}
+
+fn is_cjk(ch: char) -> bool {
+  ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+}
+
+fn tokenize(text: &str) -> Vec<String> {
+  let t = normalize_text(text).to_lowercase();
+  if t.is_empty() {
+    return vec![];
+  }
+
+  let mut tokens: Vec<String> = vec![];
+  let mut buf = String::new();
+  for ch in t.chars() {
+    if is_cjk(ch) {
+      if !buf.is_empty() {
+        for part in buf.split(|c: char| !(c.is_ascii_alphanumeric())) {
+          if !part.is_empty() {
+            tokens.push(part.to_string());
+          }
+        }
+        buf.clear();
+      }
+      tokens.push(ch.to_string());
+      continue;
+    }
+    buf.push(ch);
+  }
+  if !buf.is_empty() {
+    for part in buf.split(|c: char| !(c.is_ascii_alphanumeric())) {
+      if !part.is_empty() {
+        tokens.push(part.to_string());
+      }
+    }
+  }
+  tokens
+}
+
+fn score_match(query: &str, doc: &str) -> f32 {
+  let q = tokenize(query);
+  let d = tokenize(doc);
+  if q.is_empty() || d.is_empty() {
+    return 0.0;
+  }
+  let qset: std::collections::HashSet<String> = q.into_iter().collect();
+  let dset: std::collections::HashSet<String> = d.into_iter().collect();
+  let mut hit = 0.0;
+  for tok in qset.iter() {
+    if dset.contains(tok) {
+      hit += 1.0;
+    }
+  }
+  let denom = ((qset.len() as f32) * (dset.len() as f32)).sqrt().max(1.0);
+  hit / denom
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn search_memory(query: String, items: Vec<MemoryItem>, limit: Option<usize>, min_score: Option<f32>) -> Vec<MemoryItem> {
+  let q = normalize_text(&query);
+  if q.is_empty() {
+    return vec![];
+  }
+  let limit = limit.unwrap_or(6).max(1);
+  let min_score = min_score.unwrap_or(0.12);
+  let now = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_millis() as i64)
+    .unwrap_or(0);
+
+  let mut scored: Vec<(f32, MemoryItem)> = items
+    .into_iter()
+    .map(|mut item| {
+      item.content = normalize_text(&item.content);
+      let base = score_match(&q, &item.content);
+      let importance = item.importance.clamp(0.0, 1.0);
+      let recency_days = if item.updated_at > 0 {
+        ((now - item.updated_at) as f32) / (1000.0 * 60.0 * 60.0 * 24.0)
+      } else {
+        30.0
+      };
+      let recency = (recency_days / 30.0).clamp(0.0, 1.0);
+      let recency_boost = 1.0 - recency;
+      let score = base * 0.7 + importance * 0.2 + recency_boost * 0.1;
+      (score, item)
+    })
+    .filter(|(s, _)| *s >= min_score)
+    .collect();
+
+  scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+  scored.into_iter().take(limit).map(|(_, i)| i).collect()
+}
+
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct ContextConfig {
+  #[serde(default)]
+  max_chars: i64,
+  #[serde(default)]
+  max_history: i64,
+  #[serde(default)]
+  max_memory_items: i64,
+  #[serde(default)]
+  max_canvas_chars: i64,
+  #[serde(default)]
+  max_memory_chars: i64,
+  #[serde(default)]
+  max_summary_chars: i64,
+}
+
+fn clamp_i64(n: i64, a: i64, b: i64) -> i64 {
+  n.max(a).min(b)
+}
+
+fn estimate_chars(messages: &[ChatMessage]) -> usize {
+  messages.iter().map(|m| m.content.len()).sum()
+}
+
+fn compact_lines(lines: &[String], max_chars: usize) -> String {
+  let mut out: Vec<String> = vec![];
+  let mut used = 0usize;
+  for line in lines {
+    let t = normalize_text(line);
+    if t.is_empty() {
+      continue;
+    }
+    if used + t.len() > max_chars {
+      break;
+    }
+    used += t.len();
+    out.push(t);
+  }
+  out.join("\n")
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn build_chat_messages(
+  user_text: String,
+  system_prompt: String,
+  conversation: Vec<ChatMessage>,
+  memory_summary: String,
+  memory_items: Vec<MemoryItem>,
+  canvas_context: String,
+  config: Option<ContextConfig>,
+) -> Vec<ChatMessage> {
+  let user_query = normalize_text(&user_text);
+  let sys = normalize_text(&system_prompt);
+
+  let cfg = config.unwrap_or_default();
+  let max_chars = clamp_i64(if cfg.max_chars > 0 { cfg.max_chars } else { 12000 }, 2000, 50000) as usize;
+  let max_history = clamp_i64(if cfg.max_history > 0 { cfg.max_history } else { 16 }, 4, 64) as usize;
+  let max_memory_items = clamp_i64(if cfg.max_memory_items > 0 { cfg.max_memory_items } else { 6 }, 0, 30) as usize;
+  let max_canvas_chars = clamp_i64(if cfg.max_canvas_chars > 0 { cfg.max_canvas_chars } else { 1200 }, 0, 8000) as usize;
+  let max_memory_chars = clamp_i64(if cfg.max_memory_chars > 0 { cfg.max_memory_chars } else { 1200 }, 0, 8000) as usize;
+  let max_summary_chars = clamp_i64(if cfg.max_summary_chars > 0 { cfg.max_summary_chars } else { 600 }, 0, 4000) as usize;
+
+  let mut out: Vec<ChatMessage> = vec![];
+  if !sys.is_empty() {
+    out.push(ChatMessage { role: "system".to_string(), content: sys.clone() });
+  }
+
+  let mem_summary = normalize_text(&memory_summary);
+  if !mem_summary.is_empty() && max_summary_chars > 0 {
+    out.push(ChatMessage {
+      role: "system".to_string(),
+      content: format!("【长期记忆摘要】\n{}", mem_summary.chars().take(max_summary_chars).collect::<String>()),
+    });
+  }
+
+  if !memory_items.is_empty() && max_memory_items > 0 && max_memory_chars > 0 {
+    let mut lines: Vec<String> = vec![];
+    for m in memory_items.iter().take(max_memory_items) {
+      let c = normalize_text(&m.content);
+      if c.is_empty() {
+        continue;
+      }
+      let snippet: String = c.chars().take(260).collect();
+      lines.push(format!("- {}", snippet));
+    }
+    let packed = compact_lines(&lines, max_memory_chars);
+    if !packed.is_empty() {
+      out.push(ChatMessage {
+        role: "system".to_string(),
+        content: format!("【长期记忆（检索命中）】\n{}", packed),
+      });
+    }
+  }
+
+  let canvas = normalize_text(&canvas_context);
+  if !canvas.is_empty() && max_canvas_chars > 0 {
+    out.push(ChatMessage {
+      role: "system".to_string(),
+      content: format!("【当前项目上下文】\n{}", canvas.chars().take(max_canvas_chars).collect::<String>()),
+    });
+  }
+
+  // history: keep last max_history, keep order
+  let filtered: Vec<ChatMessage> = conversation
+    .into_iter()
+    .filter(|m| !m.role.is_empty() && m.role != "system" && !normalize_text(&m.content).is_empty())
+    .collect();
+  let start = filtered.len().saturating_sub(max_history);
+  for m in filtered.iter().skip(start) {
+    out.push(ChatMessage { role: m.role.clone(), content: normalize_text(&m.content) });
+  }
+
+  out.push(ChatMessage { role: "user".to_string(), content: user_query.clone() });
+
+  // compress if exceed budget
+  if estimate_chars(&out) <= max_chars {
+    return out;
+  }
+
+  // fallback: keep fewer history
+  let keep_history = clamp_i64((max_history as i64) / 2, 2, max_history as i64) as usize;
+  let start2 = filtered.len().saturating_sub(keep_history);
+  let mut base: Vec<ChatMessage> = vec![];
+  if !sys.is_empty() {
+    base.push(ChatMessage { role: "system".to_string(), content: sys.clone() });
+  }
+  if !mem_summary.is_empty() && max_summary_chars > 0 {
+    base.push(ChatMessage {
+      role: "system".to_string(),
+      content: format!("【长期记忆摘要】\n{}", mem_summary.chars().take(max_summary_chars.min(360)).collect::<String>()),
+    });
+  }
+  if !canvas.is_empty() {
+    base.push(ChatMessage {
+      role: "system".to_string(),
+      content: format!("【当前项目上下文】\n{}", canvas.chars().take(360).collect::<String>()),
+    });
+  }
+  for m in filtered.iter().skip(start2) {
+    base.push(ChatMessage { role: m.role.clone(), content: normalize_text(&m.content) });
+  }
+  base.push(ChatMessage { role: "user".to_string(), content: user_query.clone() });
+
+  if estimate_chars(&base) <= max_chars {
+    return base;
+  }
+
+  // final: system + user
+  let mut minimal: Vec<ChatMessage> = vec![];
+  if !sys.is_empty() {
+    minimal.push(ChatMessage { role: "system".to_string(), content: sys });
+  }
+  minimal.push(ChatMessage { role: "user".to_string(), content: user_query });
+  minimal
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn load_project_canvas(app: tauri::AppHandle, project_id: String) -> Result<Option<Value>, String> {
+  if project_id.trim().is_empty() {
+    return Ok(None);
+  }
+
+  let path = canvas_store_path(&app, &project_id)?;
+
+  tauri::async_runtime::spawn_blocking(move || -> Result<Option<Value>, String> {
+    if !path.exists() {
+      return Ok(None);
+    }
+    let raw = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let value: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    Ok(Some(value))
+  })
+  .await
+  .map_err(|e| e.to_string())?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn delete_project_canvas(app: tauri::AppHandle, project_id: String) -> Result<(), String> {
+  if project_id.trim().is_empty() {
+    return Ok(());
+  }
+  let path = canvas_store_path(&app, &project_id)?;
+  tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    if path.exists() {
+      std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+  })
+  .await
+  .map_err(|e| e.to_string())??;
+  Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn cache_remote_image(
+  app: tauri::AppHandle,
+  url: String,
+  auth_token: Option<String>,
+) -> Result<String, String> {
+  if url.starts_with("data:") || url.starts_with("blob:") {
+    return Ok(url);
+  }
+
+  let cache_root = app
+    .path()
+    .app_cache_dir()
+    .map_err(|e| e.to_string())?
+    .join(IMAGE_CACHE_DIR);
+
+  std::fs::create_dir_all(&cache_root).map_err(|e| e.to_string())?;
+
+  let token_ref = auth_token.as_deref().unwrap_or("");
+  let mut hasher = Sha256::new();
+  hasher.update(url.as_bytes());
+  if !token_ref.is_empty() {
+    hasher.update(token_ref.as_bytes());
+  }
+  let hash = hex::encode(hasher.finalize());
+  let file_stem = format!("image-{}", hash);
+
+  if let Some(ext) = extension_from_url(&url) {
+    let cached = cache_root.join(format!("{}.{}", file_stem, ext));
+    if cached.exists() {
+      return Ok(cached.to_string_lossy().to_string());
+    }
+  }
+
+  let client = reqwest::Client::builder()
+    .user_agent("Nexus/1.0")
+    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+    .build()
+    .map_err(|e| e.to_string())?;
+
+  let mut request = client.get(&url);
+  if !token_ref.is_empty() {
+    request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token_ref));
+  }
+
+  let response = request.send().await.map_err(|e| e.to_string())?;
+  if !response.status().is_success() {
+    return Err(format!("HTTP {}", response.status()));
+  }
+
+  let content_type = response
+    .headers()
+    .get(reqwest::header::CONTENT_TYPE)
+    .and_then(|v| v.to_str().ok())
+    .map(|v| v.to_string());
+
+  let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+  if bytes.len() as u64 > MAX_IMAGE_BYTES {
+    return Err("图片过大，已拒绝缓存".to_string());
+  }
+  let ext = extension_from_url(&url)
+    .or_else(|| extension_from_content_type(content_type.as_deref()))
+    .unwrap_or_else(|| "png".to_string());
+  let target = cache_root.join(format!("{}.{}", file_stem, ext));
+
+  if !target.exists() {
+    std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+  }
+
+  Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn cache_remote_media(
+  app: tauri::AppHandle,
+  url: String,
+  auth_token: Option<String>,
+) -> Result<String, String> {
+  if url.starts_with("data:") || url.starts_with("blob:") {
+    return Ok(url);
+  }
+
+  let cache_root = app
+    .path()
+    .app_cache_dir()
+    .map_err(|e| e.to_string())?
+    .join(MEDIA_CACHE_DIR);
+
+  std::fs::create_dir_all(&cache_root).map_err(|e| e.to_string())?;
+
+  let token_ref = auth_token.as_deref().unwrap_or("");
+  let mut hasher = Sha256::new();
+  hasher.update(url.as_bytes());
+  if !token_ref.is_empty() {
+    hasher.update(token_ref.as_bytes());
+  }
+  let hash = hex::encode(hasher.finalize());
+  let file_stem = format!("media-{}", hash);
+
+  if let Some(ext) = extension_from_url(&url) {
+    let cached = cache_root.join(format!("{}.{}", file_stem, ext));
+    if cached.exists() {
+      return Ok(cached.to_string_lossy().to_string());
+    }
+  }
+
+  let client = reqwest::Client::builder()
+    .user_agent("Nexus/1.0")
+    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+    .build()
+    .map_err(|e| e.to_string())?;
+
+  let mut request = client.get(&url);
+  if !token_ref.is_empty() {
+    request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token_ref));
+  }
+
+  let response = request.send().await.map_err(|e| e.to_string())?;
+  if !response.status().is_success() {
+    return Err(format!("HTTP {}", response.status()));
+  }
+
+  let content_type = response
+    .headers()
+    .get(reqwest::header::CONTENT_TYPE)
+    .and_then(|v| v.to_str().ok())
+    .map(|v| v.to_string());
+
+  let ext = extension_from_url(&url)
+    .or_else(|| extension_from_content_type(content_type.as_deref()))
+    .unwrap_or_else(|| "bin".to_string());
+  let target = cache_root.join(format!("{}.{}", file_stem, ext));
+
+  if target.exists() {
+    return Ok(target.to_string_lossy().to_string());
+  }
+
+  let mut file = tokio::fs::File::create(&target).await.map_err(|e| e.to_string())?;
+  let mut size: u64 = 0;
+  let mut stream = response.bytes_stream();
+  while let Some(chunk) = stream.next().await {
+    let bytes = chunk.map_err(|e| e.to_string())?;
+    size += bytes.len() as u64;
+    if size > MAX_MEDIA_BYTES {
+      let _ = tokio::fs::remove_file(&target).await;
+      return Err("媒体文件过大，已拒绝缓存".to_string());
+    }
+    file.write_all(&bytes).await.map_err(|e| e.to_string())?;
+  }
+  file.flush().await.map_err(|e| e.to_string())?;
+
+  Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn log_frontend(level: String, message: String, context: Option<String>) {
+  let detail = if let Some(ctx) = context {
+    if ctx.trim().is_empty() {
+      message
+    } else {
+      format!("{message} | {ctx}")
+    }
+  } else {
+    message
+  };
+
+  match level.as_str() {
+    "trace" => log::trace!("[frontend] {detail}"),
+    "debug" => log::debug!("[frontend] {detail}"),
+    "warn" | "warning" => log::warn!("[frontend] {detail}"),
+    "error" => log::error!("[frontend] {detail}"),
+    _ => log::info!("[frontend] {detail}")
+  }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+  tauri::Builder::default()
+    .setup(|app| {
+      let level = if cfg!(debug_assertions) {
+        log::LevelFilter::Debug
+      } else {
+        log::LevelFilter::Info
+      };
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(level)
+          .max_file_size(2 * 1024 * 1024)
+          .build(),
+      )?;
+      log::info!("Nexus app started");
+      Ok(())
+    })
+    .invoke_handler(tauri::generate_handler![
+      cache_remote_image,
+      cache_remote_media,
+      log_frontend,
+      save_project_canvas,
+      enqueue_save_project_canvas,
+      compress_json_lz4_base64,
+      decompress_json_lz4_base64,
+      search_memory,
+      build_chat_messages,
+      load_project_canvas,
+      delete_project_canvas
+    ])
+    .run(tauri::generate_context!())
+    .expect("error while running tauri application");
+}

@@ -37,7 +37,12 @@ const setStored = (key, value) => {
  */
 export const useApiConfig = () => {
   const apiKey = ref(getStored(STORAGE_KEYS.API_KEY))
-  const baseUrl = ref(getStored(STORAGE_KEYS.BASE_URL, DEFAULT_API_BASE_URL))
+  const baseUrl = ref(DEFAULT_API_BASE_URL)
+  // Clear any legacy custom base URL
+  setStored(STORAGE_KEYS.BASE_URL, '')
+  
+  // Always enforce the default base URL
+  setRequestBaseUrl(DEFAULT_API_BASE_URL)
   
   const isConfigured = computed(() => !!apiKey.value)
 
@@ -46,29 +51,22 @@ export const useApiConfig = () => {
     setStored(STORAGE_KEYS.API_KEY, newKey)
   })
 
-  watch(baseUrl, (newUrl) => {
-    setRequestBaseUrl(newUrl)
-    setStored(STORAGE_KEYS.BASE_URL, newUrl)
-  })
-
   const setApiKey = (key) => {
     apiKey.value = key
     setStored(STORAGE_KEYS.API_KEY, key)
-  }
-
-  const setBaseUrl = (url) => {
-    baseUrl.value = url
-    setStored(STORAGE_KEYS.BASE_URL, url)
+    setRequestBaseUrl(DEFAULT_API_BASE_URL)
   }
 
   const configure = (config) => {
     if (config.apiKey) setApiKey(config.apiKey)
-    if (config.baseUrl) setBaseUrl(config.baseUrl)
+    setRequestBaseUrl(DEFAULT_API_BASE_URL)
   }
 
   const clear = () => {
     apiKey.value = ''
     baseUrl.value = DEFAULT_API_BASE_URL
+    setStored(STORAGE_KEYS.BASE_URL, '')
+    setRequestBaseUrl(DEFAULT_API_BASE_URL)
   }
 
   return {
@@ -76,7 +74,6 @@ export const useApiConfig = () => {
     baseUrl,
     isConfigured,
     setApiKey,
-    setBaseUrl,
     configure,
     clear
   }

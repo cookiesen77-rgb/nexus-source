@@ -5,7 +5,6 @@
     <header class="flex items-center justify-between px-4 md:px-8 py-4 border-b border-[var(--border-color)]">
       <div class="flex items-center gap-2">
         <!-- <img src="../assets/logo.png" alt="Logo" class="w-8 h-8" /> -->
-        <!-- <span class="text-lg font-bold text-[var(--text-primary)]">火宝无限画布</span> -->
       </div>
       <div class="flex items-center gap-4">
         <button 
@@ -38,8 +37,10 @@
       <!-- Welcome section | 欢迎区域 -->
       <section class="text-center mb-12">
         <div class="flex items-center justify-center gap-4 mb-8">
-          <img src="../assets/logo.png" alt="Logo" class="w-12 h-12 md:w-16 md:h-16" />
-          <h1 class="text-2xl md:text-4xl font-bold text-[var(--text-primary)]">欢迎来到火宝无限画布</h1>
+          <div class="w-12 h-12 md:w-16 md:h-16 rounded-2xl bg-[var(--bg-secondary)]/70 backdrop-blur border border-[var(--border-color)] shadow-sm flex items-center justify-center">
+            <img src="../assets/logo.png" alt="Nexus Logo" class="w-10 h-10 md:w-12 md:h-12 dark:invert" />
+          </div>
+          <h1 class="text-2xl md:text-4xl font-bold text-[var(--text-primary)]">欢迎来到 Nexus</h1>
         </div>
         
         <!-- Input area | 输入区域 -->
@@ -333,7 +334,7 @@ const getProjectActions = (project) => [
 ]
 
 // Handle project action | 处理项目操作
-const handleProjectAction = (key, project) => {
+const handleProjectAction = async (key, project) => {
   switch (key) {
     case 'rename':
       renameTargetId.value = project.id
@@ -341,7 +342,7 @@ const handleProjectAction = (key, project) => {
       showRenameModal.value = true
       break
     case 'duplicate':
-      const newId = duplicateProject(project.id)
+      const newId = await duplicateProject(project.id)
       if (newId) {
         window.$message?.success('项目已复制')
       }
@@ -435,7 +436,7 @@ const scrollToProjects = () => {
 }
 
 // Initialize projects store on mount | 挂载时初始化项目存储
-onMounted(() => {
-  initProjectsStore()
+onMounted(async () => {
+  await initProjectsStore()
 })
 </script>

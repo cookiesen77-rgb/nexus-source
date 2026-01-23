@@ -1,7 +1,6 @@
-# AI Canvas
+# Nexus
 
-一个基于 Vue Flow 的可视化 AI 创作画布，支持文生图、视频生成等 AI 工作流的节点式编排。
-[体验地址](https://marketing.chatfire.site/huobao-canvas/)
+一个基于 Vue Flow 的可视化 AI 创作画布，支持文生图、视频生成等 AI 工作流的节点式编排。默认对接 NexusAPI（`https://nexusapi.cn/v1`）。
 
 ![Vue](https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vue.js)
 ![Vite](https://img.shields.io/badge/Vite-5.2-646CFF?logo=vite)
@@ -49,8 +48,8 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/chatfire-AI/huobao-canvas.git
-cd huobao-canvas
+git clone <YOUR_REPO_URL> nexus
+cd nexus
 
 # 安装依赖
 pnpm install
@@ -76,7 +75,7 @@ npm run build
 首次使用需要配置 API：
 
 1. 点击右上角设置图标 ⚙️
-2. 填入 API Base URL 和 API Key
+2. 填入 API Key（Base URL 已锁定为 `https://nexusapi.cn/v1`）
 3. 选择需要使用的模型
 
 支持 OpenAI 兼容的 API 接口。

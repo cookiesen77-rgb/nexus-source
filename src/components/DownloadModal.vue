@@ -6,6 +6,7 @@
       <div class="flex items-center gap-4 text-sm text-[var(--text-secondary)]">
         <span>图片: {{ imageAssets.length }} 张</span>
         <span>视频: {{ videoAssets.length }} 个</span>
+        <span>音频: {{ audioAssets.length }} 条</span>
       </div>
 
       <!-- Image assets | 图片素材 -->
@@ -48,8 +49,30 @@
         </div>
       </div>
 
+      <!-- Audio assets | 音频素材 -->
+      <div v-if="audioAssets.length > 0">
+        <h4 class="text-sm font-medium mb-2">音频素材</h4>
+        <div class="space-y-2 max-h-[200px] overflow-y-auto">
+          <div
+            v-for="(asset, idx) in audioAssets"
+            :key="idx"
+            class="flex items-center gap-3 p-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-secondary)] cursor-pointer transition-colors"
+            @click="downloadAsset(asset)"
+          >
+            <div class="w-16 h-10 rounded bg-[var(--bg-primary)] flex items-center justify-center">
+              <n-icon :size="18"><MusicalNotesOutline /></n-icon>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm truncate">{{ asset.title || asset.label || '音频' }}</div>
+              <div class="text-xs text-[var(--text-secondary)]">{{ asset.duration ? asset.duration + 's' : '' }}</div>
+            </div>
+            <n-icon :size="20" class="text-[var(--text-secondary)]"><DownloadOutline /></n-icon>
+          </div>
+        </div>
+      </div>
+
       <!-- Empty state | 空状态 -->
-      <div v-if="imageAssets.length === 0 && videoAssets.length === 0" class="text-center py-8 text-[var(--text-secondary)]">
+      <div v-if="imageAssets.length === 0 && videoAssets.length === 0 && audioAssets.length === 0" class="text-center py-8 text-[var(--text-secondary)]">
         暂无可下载的素材
       </div>
     </div>
@@ -69,8 +92,9 @@
  */
 import { computed } from 'vue'
 import { NModal, NButton, NIcon } from 'naive-ui'
-import { DownloadOutline, VideocamOutline } from '@vicons/ionicons5'
+import { DownloadOutline, VideocamOutline, MusicalNotesOutline } from '@vicons/ionicons5'
 import { nodes } from '../stores/canvas'
+import { assets } from '../stores/assets'
 
 // Props | 属性
 const props = defineProps({
@@ -112,9 +136,22 @@ const videoAssets = computed(() => {
     }))
 })
 
+const audioAssets = computed(() => {
+  return assets.value
+    .filter(a => a.type === 'audio' && a.src)
+    .map(a => ({
+      src: a.src,
+      title: a.title || '音频',
+      duration: a.duration,
+      model: a.model || ''
+    }))
+})
+
 // Download single asset | 下载单个素材
 const downloadAsset = (asset) => {
-  window.open(asset.url, '_blank')
+  const link = asset.url || asset.src
+  if (!link) return
+  window.open(link, '_blank')
   window.$message?.success('已在新标签页打开')
 }
 </script>

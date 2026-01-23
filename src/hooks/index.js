@@ -12,8 +12,13 @@ export {
   useChat,
   useImageGeneration,
   useVideoGeneration,
+  useAudioGeneration,
+  useSunoLyrics,
   useApi
 } from './useApi'
 
 // Workflow Orchestrator Hook | 工作流编排 Hook
 export { useWorkflowOrchestrator } from './useWorkflowOrchestrator'
+
+// AI Polish Hook | AI 润色 Hook
+export { usePolish } from './usePolish'

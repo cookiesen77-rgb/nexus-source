@@ -1,14 +1,24 @@
 {
-  "name": "ai-canvas",
+  "name": "nexus",
+  "description": "Nexus - AI workflow canvas",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
+  "author": "Nexus",
   "type": "module",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
+    "dev:electron": "concurrently -k \"vite --mode electron\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:tauri": "tauri dev",
     "build": "vite build",
+    "build:electron": "vite build --mode electron && electron-builder",
+    "build:electron:local": "vite build --mode electron && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never --config.mac.hardenedRuntime=false",
+    "build:electron:local:dir": "vite build --mode electron && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir --publish never --config.mac.hardenedRuntime=false",
+    "build:tauri": "tauri build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.9.1",
     "@vicons/ionicons5": "^0.13.0",
     "@vue-flow/background": "^1.3.2",
     "@vue-flow/controls": "^1.1.3",
@@ -21,9 +31,43 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",
+    "@tauri-apps/cli": "^2.9.2",
     "autoprefixer": "^10.4.23",
+    "concurrently": "^8.2.2",
+    "@electron/notarize": "^2.2.1",
+    "electron": "^31.0.2",
+    "electron-builder": "^24.13.3",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.0",
-    "vite": "^5.2.0"
+    "vite": "^5.2.0",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.nexus.nexus",
+    "productName": "Nexus",
+    "asar": true,
+    "icon": "src-tauri/icons/icon",
+    "afterSign": "electron/notarize.cjs",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "target": "dmg",
+      "hardenedRuntime": true,
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }

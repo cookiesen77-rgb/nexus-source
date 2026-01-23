@@ -2,8 +2,8 @@
  * Constants | 常量配置
  */
 
-// API Base URL | API 基础 URL
-export const DEFAULT_API_BASE_URL = 'https://api.chatfire.site/v1'
+// API Base URL | API 基础 URL (固定不可修改)
+export const DEFAULT_API_BASE_URL = 'https://nexusapi.cn/v1'
 
 // API Endpoints | API 端点
 export const API_ENDPOINTS = {
@@ -11,15 +11,18 @@ export const API_ENDPOINTS = {
   MODEL_PAGE: '/model/page',
   MODEL_FULL_NAME: '/model/fullName',
   MODEL_TYPES: '/model/types',
-  
+
   // Image | 图片
   IMAGE_GENERATIONS: '/images/generations',
-  
-  // Video | 视频
-  VIDEO_GENERATIONS: '/videos',
+
+  // Video | 视频 (两种格式)
+  VIDEO_GENERATIONS: '/videos',           // OpenAI 视频格式
+  VIDEO_CREATE: '/video/create',          // 统一视频格式
+  VIDEO_QUERY: '/video/query',            // 统一视频查询
   VIDEO_TASK: '/videos',
-  
+
   // Chat | 对话
+  RESPONSES: '/responses',
   CHAT_COMPLETIONS: '/chat/completions'
 }
 

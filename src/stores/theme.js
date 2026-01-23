@@ -6,8 +6,12 @@ import { ref, watch } from 'vue'
 
 // Get initial theme from localStorage or system preference | 从本地存储或系统偏好获取初始主题
 const getInitialTheme = () => {
-  const stored = localStorage.getItem('theme')
-  if (stored) return stored === 'dark'
+  try {
+    const stored = localStorage.getItem('theme')
+    if (stored) return stored === 'dark'
+  } catch {
+    // ignore storage errors
+  }
   return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
@@ -16,7 +20,11 @@ export const isDark = ref(getInitialTheme())
 // Watch and apply theme changes | 监听并应用主题变化
 watch(isDark, (value) => {
   document.documentElement.classList.toggle('dark', value)
-  localStorage.setItem('theme', value ? 'dark' : 'light')
+  try {
+    localStorage.setItem('theme', value ? 'dark' : 'light')
+  } catch {
+    // ignore storage errors
+  }
 }, { immediate: true })
 
 // Toggle theme | 切换主题

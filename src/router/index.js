@@ -1,7 +1,7 @@
 /**
  * Router configuration | 路由配置
  */
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 
 const routes = [
   {
@@ -16,8 +16,12 @@ const routes = [
   }
 ]
 
+const isDesktop = ['electron', 'tauri'].includes(import.meta.env.MODE)
+
 const router = createRouter({
-  history: createWebHistory('/huobao-canvas'),
+  history: isDesktop
+    ? createWebHashHistory()
+    : createWebHistory(import.meta.env.BASE_URL),
   routes
 })
 

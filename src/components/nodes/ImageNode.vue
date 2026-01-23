@@ -10,7 +10,7 @@
         <div class="flex items-center justify-between">
           <span class="text-sm font-medium text-[var(--text-primary)]">{{ data.label || '图像生成结果' }}</span>
           <div class="flex items-center gap-1">
-            <button @click="handleDelete" class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
+            <button @click.stop="handleDelete" class="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors">
               <n-icon :size="14">
                 <TrashOutline />
               </n-icon>
@@ -23,8 +23,8 @@
           </div>
         </div>
         <!-- Model name | 模型名称 -->
-        <div v-if="data.model" class="mt-1 text-xs text-[var(--text-secondary)] truncate">
-          {{ data.model }}
+        <div v-if="displayModel" class="mt-1 text-xs text-[var(--text-secondary)] truncate">
+          {{ displayModel }}
         </div>
       </div>
 
@@ -55,17 +55,31 @@
           <span class="text-sm text-red-600 dark:text-red-400 text-center px-2">{{ data.error }}</span>
         </div>
 
+        <!-- Image load error | 图片加载失败 -->
+        <div v-else-if="imageLoadError"
+          class="aspect-square rounded-xl bg-red-50 dark:bg-red-900/20 flex flex-col items-center justify-center gap-2 border border-red-200 dark:border-red-800">
+          <n-icon :size="32" class="text-red-500">
+            <CloseCircleOutline />
+          </n-icon>
+          <span class="text-sm text-red-600 dark:text-red-400 text-center px-2">{{ imageLoadError }}</span>
+        </div>
+
         <!-- Image display | 图片显示 -->
         <div 
-          v-else-if="data.url" 
+          v-else-if="displayUrl" 
           class="rounded-xl overflow-hidden relative" 
           ref="imageContainerRef"
         >
           <img 
-            :src="data.url" 
+            :src="displayUrl" 
             :alt="data.label" 
-            class="w-full h-auto object-cover"
+            class="w-full h-auto object-cover nodrag"
             :class="{ 'pointer-events-none': isInpaintMode }"
+            @error="handleImageError"
+            loading="lazy"
+            decoding="async"
+            @mousedown.stop
+            @click.stop
           />
           
           <!-- Inpaint canvas with events | 涂抹画布（带事件） -->
@@ -143,8 +157,10 @@
             <ImageOutline />
           </n-icon>
           <span class="text-sm text-[var(--text-secondary)] text-center">拖放图片或点击上传</span>
-          <input type="file" accept="image/*" class="absolute inset-0 opacity-0 cursor-pointer"
-            @change="handleFileUpload" />
+          <input type="file" accept="image/*" class="absolute inset-0 opacity-0 cursor-pointer nodrag"
+            @change="handleFileUpload"
+            @mousedown.stop
+            @click.stop />
         </div>
       </div>
 
@@ -167,7 +183,7 @@
     </div>
 
     <!-- Right side - Action buttons | 右侧 - 操作按钮 -->
-    <div v-show="showActions && data.url"
+    <div v-show="showActions && displayUrl"
       class="absolute right-10 top-1/2 -translate-y-1/2 translate-x-full flex flex-col gap-2 z-[1000]">
       <!-- Inpaint button | 涂抹重绘按钮 -->
       <!-- <button @click="toggleInpaintMode"
@@ -188,6 +204,15 @@
         </n-icon>
         <span
           class="text-xs text-gray-600 max-w-0 overflow-hidden group-hover:max-w-[80px] transition-all duration-200 whitespace-nowrap">图片生图</span>
+      </button>
+      <!-- Crop button | 裁剪按钮 -->
+      <button @click="handleCrop"
+        class="action-btn group p-2 bg-white rounded-lg transition-all border border-gray-200 flex items-center gap-0 hover:gap-1.5  w-max">
+        <n-icon :size="16" class="text-gray-600">
+          <CropOutline />
+        </n-icon>
+        <span
+          class="text-xs text-gray-600 max-w-0 overflow-hidden group-hover:max-w-[60px] transition-all duration-200 whitespace-nowrap">裁剪</span>
       </button>
       <!-- Preview button | 预览按钮 -->
       <button @click="handlePreview"
@@ -217,6 +242,14 @@
           class="text-xs text-gray-600 max-w-0 overflow-hidden group-hover:max-w-[80px] transition-all duration-200 whitespace-nowrap">视频生成</span>
       </button>
     </div>
+
+    <!-- Image Cropper Modal | 图片裁剪弹窗 -->
+    <ImageCropper
+      v-model:show="showCropper"
+      :image-src="displayUrl"
+      @confirm="handleCropConfirm"
+      @cancel="showCropper = false"
+    />
   </div>
 </template>
 
@@ -225,15 +258,93 @@
  * Image node component | 图片节点组件
  * Displays and manages image content with loading state
  */
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, computed, watch, onMounted } from 'vue'
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { NIcon } from 'naive-ui'
-import { TrashOutline, ExpandOutline, ImageOutline, CloseCircleOutline, CopyOutline, VideocamOutline, DownloadOutline, EyeOutline, BrushOutline, RefreshOutline, ColorWandOutline } from '@vicons/ionicons5'
-import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes } from '../../stores/canvas'
+import { TrashOutline, ExpandOutline, ImageOutline, CloseCircleOutline, CopyOutline, VideocamOutline, DownloadOutline, EyeOutline, BrushOutline, RefreshOutline, ColorWandOutline, CropOutline } from '@vicons/ionicons5'
+import ImageCropper from '../ImageCropper.vue'
+import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes, withBatchUpdates } from '../../stores/canvas'
+import { DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_SIZE } from '../../config/models'
+import { getModelConfig } from '../../stores/models'
 
 const props = defineProps({
   id: String,
   data: Object
+})
+
+let tauriApi = null
+const isTauriEnv = ref(false)
+const resolvedAssetUrl = ref('')
+const rawUrl = computed(() => (typeof props.data?.url === 'string' ? props.data.url : ''))
+const localPath = computed(() => (typeof props.data?.localPath === 'string' ? props.data.localPath : ''))
+
+const displayUrl = computed(() => {
+  if (isTauriEnv.value && localPath.value && tauriApi?.convertFileSrc) {
+    try {
+      return tauriApi.convertFileSrc(localPath.value)
+    } catch {
+      // fall through
+    }
+  }
+  return resolvedAssetUrl.value || rawUrl.value
+})
+const displayModel = computed(() => {
+  const modelKey = typeof props.data?.model === 'string' ? props.data.model : ''
+  if (!modelKey) return ''
+  const cfg = getModelConfig(modelKey)
+  return cfg?.label || modelKey
+})
+const imageLoadError = ref('')
+
+const getApiKey = () => {
+  try { return localStorage.getItem('apiKey') || '' } catch { return '' }
+}
+
+const ensureCachedImage = async (reason = 'prefetch') => {
+  const url = rawUrl.value
+  if (!url || typeof url !== 'string') return
+  if (!isTauriEnv.value) return
+  if (!/^https?:\/\//i.test(url)) return
+  if (props.data?.localSourceUrl === url && localPath.value) return
+
+  try {
+    if (!tauriApi) tauriApi = await import('@tauri-apps/api/core')
+    if (!tauriApi?.isTauri?.()) return
+    const path = await tauriApi.invoke('cache_remote_image', { url, authToken: getApiKey() || null })
+    if (typeof path === 'string' && path) {
+      updateNode(props.id, { localPath: path, localSourceUrl: url })
+      resolvedAssetUrl.value = tauriApi.convertFileSrc(path)
+      if (reason !== 'prefetch') {
+        window.$message?.info('已使用本地缓存加载图片')
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+const handleImageError = async () => {
+  imageLoadError.value = '图片加载失败（可能链接已过期或被拦截）'
+  await ensureCachedImage('onerror')
+}
+
+watch(
+  () => rawUrl.value,
+  () => {
+    imageLoadError.value = ''
+    resolvedAssetUrl.value = ''
+    ensureCachedImage('prefetch')
+  }
+)
+
+onMounted(async () => {
+  try {
+    tauriApi = await import('@tauri-apps/api/core')
+    isTauriEnv.value = !!tauriApi?.isTauri?.()
+  } catch {
+    isTauriEnv.value = false
+  }
+  ensureCachedImage('prefetch')
 })
 
 // Vue Flow instance | Vue Flow 实例
@@ -241,6 +352,9 @@ const { updateNodeInternals } = useVueFlow()
 
 // Hover state | 悬浮状态
 const showActions = ref(true)
+
+// Cropper state | 裁剪器状态
+const showCropper = ref(false)
 
 // Inpainting state | 涂抹重绘状态
 const isInpaintMode = ref(false)
@@ -410,7 +524,7 @@ const createInpaintWorkflow = () => {
   
   // Create imageConfig node for inpainting | 创建图生图配置节点
   const configNodeId = addNode('imageConfig', { x: nodeX + 600, y: nodeY }, {
-    model: 'doubao-seedream-4-5-251128',
+    model: DEFAULT_IMAGE_MODEL,
     size: '1024x1024',
     label: '局部重绘',
     inpaintMode: true
@@ -466,10 +580,9 @@ const handleFileUpload = async (event) => {
     try {
       // Convert to base64 | 转换为 base64
       const base64 = await fileToBase64(file)
-      // Store both display URL and base64 | 同时存储显示 URL 和 base64
+      // Store as persistent DataURL (avoid duplicating the same huge string) | 使用可持久化 DataURL（避免重复存两份大字符串）
       updateNode(props.id, {
-        url: base64,  // Use base64 as display URL | 使用 base64 作为显示 URL
-        base64: base64,  // Store base64 for API calls | 存储 base64 用于 API 调用
+        url: base64,  // Use DataURL as display + API input | DataURL 既可展示也可直接作为接口输入
         fileName: file.name,
         fileType: file.type,
         label: '参考图',
@@ -515,8 +628,8 @@ const handleImageGen = () => {
 
   // Create imageConfig node | 创建文生图配置节点
   const configNodeId = addNode('imageConfig', { x: nodeX + 600, y: nodeY }, {
-    model: 'doubao-seedream-4-5-251128',
-    size: '2048x2048',
+    model: DEFAULT_IMAGE_MODEL,
+    size: DEFAULT_IMAGE_SIZE,
     label: '图生图'
   })
 
@@ -544,16 +657,16 @@ const handleImageGen = () => {
 
 // Handle preview | 处理预览
 const handlePreview = () => {
-  if (props.data.url) {
-    window.open(props.data.url, '_blank')
+  if (displayUrl.value) {
+    window.open(displayUrl.value, '_blank')
   }
 }
 
 // Handle download | 处理下载
 const handleDownload = () => {
-  if (props.data.url) {
+  if (displayUrl.value) {
     const link = document.createElement('a')
-    link.href = props.data.url
+    link.href = displayUrl.value
     link.download = props.data.fileName || `image_${Date.now()}.png`
     document.body.appendChild(link)
     link.click()
@@ -567,40 +680,66 @@ const handleVideoGen = () => {
   const currentNode = nodes.value.find(n => n.id === props.id)
   const nodeX = currentNode?.position?.x || 0
   const nodeY = currentNode?.position?.y || 0
+  const maxZIndex = Math.max(0, ...nodes.value.map(n => n.zIndex || 0))
 
-  // Create text node for prompt | 创建文本节点用于提示词
-  const textNodeId = addNode('text', { x: nodeX + 300, y: nodeY - 100 }, {
-    content: '',
-    label: '提示词'
-  })
+  let textNodeId = null
+  let configNodeId = null
 
-  // Create videoConfig node | 创建视频配置节点
-  const configNodeId = addNode('videoConfig', { x: nodeX + 600, y: nodeY }, {
-    label: '视频生成'
-  })
+  withBatchUpdates(() => {
+    // Create text node for prompt | 创建文本节点用于提示词
+    textNodeId = addNode('text', { x: nodeX + 300, y: nodeY - 100 }, {
+      content: '',
+      label: '提示词',
+      zIndex: maxZIndex + 1
+    })
 
-  // Connect image node to config node with role | 连接图片节点到配置节点并设置角色
-  addEdge({
-    source: props.id,
-    target: configNodeId,
-    sourceHandle: 'right',
-    targetHandle: 'left',
-    type: 'imageRole',
-    data: { imageRole: 'first_frame_image' } // Default to first frame | 默认首帧
-  })
+    // Create videoConfig node | 创建视频配置节点
+    configNodeId = addNode('videoConfig', { x: nodeX + 600, y: nodeY }, {
+      label: '视频生成',
+      zIndex: maxZIndex + 2
+    })
 
-  // Connect text node to config node | 连接文本节点到配置节点
-  addEdge({
-    source: textNodeId,
-    target: configNodeId,
-    sourceHandle: 'right',
-    targetHandle: 'left'
+    // Connect image node to config node with role | 连接图片节点到配置节点并设置角色
+    addEdge({
+      source: props.id,
+      target: configNodeId,
+      sourceHandle: 'right',
+      targetHandle: 'left',
+      type: 'imageRole',
+      data: { imageRole: 'first_frame_image' } // Default to first frame | 默认首帧
+    })
+
+    // Connect text node to config node | 连接文本节点到配置节点
+    addEdge({
+      source: textNodeId,
+      target: configNodeId,
+      sourceHandle: 'right',
+      targetHandle: 'left'
+    })
   })
 
   // Force Vue Flow to recalculate node dimensions | 强制 Vue Flow 重新计算节点尺寸
   setTimeout(() => {
-    updateNodeInternals([textNodeId, configNodeId])
+    if (textNodeId) updateNodeInternals(textNodeId)
+    if (configNodeId) updateNodeInternals(configNodeId)
   }, 50)
+}
+
+// Handle crop | 处理裁剪
+const handleCrop = () => {
+  if (displayUrl.value) {
+    showCropper.value = true
+  }
+}
+
+// Handle crop confirm | 处理裁剪确认
+const handleCropConfirm = (croppedBase64) => {
+  updateNode(props.id, {
+    url: croppedBase64,
+    updatedAt: Date.now()
+  })
+  showCropper.value = false
+  window.$message?.success('图片已裁剪')
 }
 </script>
 

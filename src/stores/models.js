@@ -54,14 +54,10 @@ export const getModelSizeOptions = (modelKey, quality = 'standard') => {
     return model.getSizesByQuality(quality)
   }
   
-  if (!model?.sizes) return SEEDREAM_SIZE_OPTIONS
+  if (!model?.sizes || model.sizes.length === 0) return []
   
   // Convert sizes array to dropdown options | 转换 sizes 数组为下拉选项
-  const sizeOptions = quality === '4k' ? SEEDREAM_4K_SIZE_OPTIONS : SEEDREAM_SIZE_OPTIONS
-  return model.sizes.map(size => {
-    const option = sizeOptions.find(o => o.key === size)
-    return option || { label: size, key: size }
-  })
+  return model.sizes.map(size => ({ label: size, key: size }))
 }
 
 /**
