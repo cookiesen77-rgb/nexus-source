@@ -17,9 +17,9 @@
 
       <div class="mb-2 flex justify-end">
         <a
-          href="https://nexusapi.cn/"
-          target="_blank"
-          class="text-xs text-[var(--accent-color)] hover:underline flex items-center gap-1"
+          href="javascript:void(0)"
+          @click="openExternalLink('https://nexusapi.cn/')"
+          class="text-xs text-[var(--accent-color)] hover:underline flex items-center gap-1 cursor-pointer"
         >
           🔑 获取 API Key
         </a>
@@ -52,9 +52,9 @@
         <div class="flex flex-col gap-2">
           <p>请配置 API Key 以使用 AI 功能</p>
           <a
-            href="https://nexusapi.cn/pricing"
-            target="_blank"
-            class="text-[var(--accent-color)] hover:underline text-sm flex items-center gap-1"
+            href="javascript:void(0)"
+            @click="openExternalLink('https://nexusapi.cn/pricing')"
+            class="text-[var(--accent-color)] hover:underline text-sm flex items-center gap-1 cursor-pointer"
           >
             🔗 点击查看模型价格
             <span class="text-xs">（nexusapi.cn）</span>
@@ -85,9 +85,9 @@
     <template #footer>
       <div class="flex justify-between items-center">
         <a
-          href="https://nexusapi.cn/pricing"
-          target="_blank"
-          class="text-xs text-[var(--text-secondary)] hover:text-[var(--accent-color)] transition-colors"
+          href="javascript:void(0)"
+          @click="openExternalLink('https://nexusapi.cn/pricing')"
+          class="text-xs text-[var(--text-secondary)] hover:text-[var(--accent-color)] transition-colors cursor-pointer"
         >
           查看模型价格
         </a>
@@ -106,7 +106,7 @@
  * API Settings Component | API 设置组件
  * Modal for configuring API key and base URL
  */
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, onMounted } from 'vue'
 import { NModal, NForm, NFormItem, NInput, NButton, NAlert, NDivider, NTag, NSwitch } from 'naive-ui'
 import { useApiConfig } from '../hooks'
 import { localCacheEnabled, localCacheBaseUrl, setLocalCacheEnabled, setLocalCacheBaseUrl } from '../stores/assets'
@@ -134,6 +134,35 @@ const formData = reactive({
   localCacheEnabled: localCacheEnabled.value,
   localCacheBaseUrl: localCacheBaseUrl.value
 })
+
+// Tauri opener | Tauri 打开外部链接
+let tauriOpen = null
+onMounted(async () => {
+  try {
+    const { open } = await import('@tauri-apps/plugin-opener')
+    tauriOpen = open
+  } catch {
+    // Not in Tauri environment
+  }
+})
+
+const openExternalLink = async (url) => {
+  const link = String(url || '').trim()
+  if (!link) return
+  try {
+    if (tauriOpen) {
+      await tauriOpen(link)
+      return
+    }
+  } catch {
+    // fall back below
+  }
+  try {
+    window.open(link, '_blank', 'noopener,noreferrer')
+  } catch {
+    // ignore
+  }
+}
 
 // Watch prop changes | 监听属性变化
 watch(() => props.show, (val) => {
