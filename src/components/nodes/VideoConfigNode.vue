@@ -154,7 +154,7 @@ import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { NIcon, NDropdown, NSpin } from 'naive-ui'
 import { ChevronForwardOutline, ChevronDownOutline, TrashOutline, VideocamOutline, CopyOutline } from '@vicons/ionicons5'
 import { useVideoGeneration, useApiConfig } from '../../hooks'
-import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes, getNodeById, getIncomingEdges } from '../../stores/canvas'
+import { updateNode, removeNode, duplicateNode, addNode, addEdge, nodes, getNodeById, getIncomingEdges, updateEdge } from '../../stores/canvas'
 import { addAsset } from '../../stores/assets'
 import { videoModelOptions, getModelRatioOptions, getModelDurationOptions, getModelConfig, DEFAULT_VIDEO_MODEL } from '../../stores/models'
 
@@ -164,7 +164,7 @@ const props = defineProps({
 })
 
 // Vue Flow instance | Vue Flow 实例
-const { updateNodeInternals, updateEdgeData } = useVueFlow()
+const { updateNodeInternals } = useVueFlow()
 
 // API config hook | API 配置 hook
 const { isConfigured } = useApiConfig()
@@ -318,7 +318,8 @@ const handleSizeSelect = (key) => {
 }
 
 // Get connected inputs by role | 根据角色获取连接的输入
-const getConnectedInputs = () => {
+// 注意：默认不产生副作用，避免在 computed/render 中触发 store 更新导致抖动
+const getConnectedInputs = ({ autoAssignLastFrame = false } = {}) => {
   const connectedEdges = getIncomingEdges(props.id)
 
   let prompt = ''
@@ -327,6 +328,7 @@ const getConnectedInputs = () => {
   const images = [] // input_reference images | 参考图
 
   const imageEdges = []
+  let promoteToLastEdgeId = ''
 
   for (const edge of connectedEdges) {
     const sourceNode = getNodeById(edge.source)
@@ -356,10 +358,11 @@ const getConnectedInputs = () => {
   if (!last_frame_image && firstEdges.length >= 2) {
     const edgeToPromote = firstEdges[1]
     last_frame_image = edgeToPromote.imageData
-    if (edgeToPromote?.edgeId) {
-      updateEdgeData(edgeToPromote.edgeId, { imageRole: 'last_frame_image' })
+    promoteToLastEdgeId = edgeToPromote?.edgeId || ''
+    if (autoAssignLastFrame && promoteToLastEdgeId) {
+      updateEdge(promoteToLastEdgeId, { imageRole: 'last_frame_image' })
+      window.$message?.info?.('已将第二张图片自动设置为尾帧')
     }
-    window.$message?.info?.('已将第二张图片自动设置为尾帧')
   }
 
   const extraFirst = firstEdges.slice(last_frame_image ? 1 : 2)
@@ -369,12 +372,12 @@ const getConnectedInputs = () => {
   images.push(...extraFirst.map(e => e.imageData))
   images.push(...extraLast.map(e => e.imageData))
 
-  return { prompt, first_frame_image, last_frame_image, images }
+  return { prompt, first_frame_image, last_frame_image, images, promoteToLastEdgeId }
 }
 
 // Computed connected prompt | 计算连接的提示词
 const connectedPrompt = computed(() => {
-  return getConnectedInputs().prompt
+  return getConnectedInputs({ autoAssignLastFrame: false }).prompt
 })
 
 // Created video node ID | 创建的视频节点 ID
@@ -382,7 +385,7 @@ const createdVideoNodeId = ref(null)
 
 // Handle generate action | 处理生成操作
 const handleGenerate = async () => {
-  const { prompt, first_frame_image, last_frame_image, images } = getConnectedInputs()
+  const { prompt, first_frame_image, last_frame_image, images } = getConnectedInputs({ autoAssignLastFrame: true })
 
   const hasInput = prompt || first_frame_image || last_frame_image || images.length > 0
   if (!hasInput) {

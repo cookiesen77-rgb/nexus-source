@@ -30,13 +30,10 @@
 
 <script setup>
 import { computed } from 'vue'
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, useVueFlow } from '@vue-flow/core'
+import { BaseEdge, EdgeLabelRenderer, getBezierPath } from '@vue-flow/core'
 import { NDropdown, NIcon } from 'naive-ui'
 import { ChevronDownOutline } from '@vicons/ionicons5'
-import { edges } from '../../stores/canvas'
-
-// Get VueFlow instance | 获取 VueFlow 实例
-const { updateEdgeData } = useVueFlow()
+import { edges, updateEdge } from '../../stores/canvas'
 
 const props = defineProps({
   id: String,
@@ -98,20 +95,20 @@ const handleRoleSelect = (role) => {
   // If selecting first_frame or last_frame, ensure uniqueness | 如果选择首帧或尾帧，确保唯一性
   if (role === 'first_frame_image' || role === 'last_frame_image') {
     // Find other edges connected to the same target with the same role | 查找连接到同一目标且具有相同角色的其他边
-    const sameTargetEdges = edges.value.filter(edge => 
-      edge.target === props.target && 
-      edge.id !== props.id && 
+    const sameTargetEdges = edges.value.filter(edge =>
+      edge.target === props.target &&
+      edge.id !== props.id &&
       edge.data?.imageRole === role
     )
-    
+
     // Auto-switch the other edge to the opposite role | 自动切换其他边到相反角色
     sameTargetEdges.forEach(edge => {
       const oppositeRole = role === 'first_frame_image' ? 'last_frame_image' : 'first_frame_image'
-      updateEdgeData(edge.id, { imageRole: oppositeRole })
+      updateEdge(edge.id, { imageRole: oppositeRole })
     })
   }
-  
-  // Update current edge role | 更新当前边角色
-  updateEdgeData(props.id, { imageRole: role })
+
+  // Update current edge role via store (triggers reactivity) | 通过 store 更新当前边角色（触发响应式）
+  updateEdge(props.id, { imageRole: role })
 }
 </script>
