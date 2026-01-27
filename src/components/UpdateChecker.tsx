@@ -1,0 +1,208 @@
+/**
+ * UpdateChecker - 自动更新检查组件
+ * 在 Tauri 环境中检查并安装更新
+ */
+import React, { useEffect, useState, useCallback } from 'react'
+import { Download, RefreshCw, X, CheckCircle, AlertCircle } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+
+// 检测是否在 Tauri 环境中
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+interface UpdateInfo {
+  version: string
+  date?: string
+  body?: string
+}
+
+type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error' | 'up-to-date'
+
+export default function UpdateChecker() {
+  const [status, setStatus] = useState<UpdateStatus>('idle')
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [progress, setProgress] = useState(0)
+  const [error, setError] = useState<string | null>(null)
+  const [showBanner, setShowBanner] = useState(false)
+
+  const checkForUpdates = useCallback(async () => {
+    if (!isTauri) return
+    
+    setStatus('checking')
+    setError(null)
+    
+    try {
+      const { check } = await import('@tauri-apps/plugin-updater')
+      const update = await check()
+      
+      if (update) {
+        setUpdateInfo({
+          version: update.version,
+          date: update.date,
+          body: update.body
+        })
+        setStatus('available')
+        setShowBanner(true)
+      } else {
+        setStatus('up-to-date')
+        setTimeout(() => setStatus('idle'), 3000)
+      }
+    } catch (err: any) {
+      console.error('[UpdateChecker] 检查更新失败:', err)
+      setError(err?.message || '检查更新失败')
+      setStatus('error')
+    }
+  }, [])
+
+  const downloadAndInstall = useCallback(async () => {
+    if (!isTauri) return
+    
+    setStatus('downloading')
+    setProgress(0)
+    
+    try {
+      const { check } = await import('@tauri-apps/plugin-updater')
+      const update = await check()
+      
+      if (!update) {
+        setStatus('up-to-date')
+        return
+      }
+
+      let downloaded = 0
+      let contentLength = 0
+      
+      await update.downloadAndInstall((event) => {
+        switch (event.event) {
+          case 'Started':
+            contentLength = event.data.contentLength || 0
+            console.log('[UpdateChecker] 开始下载, 大小:', contentLength)
+            break
+          case 'Progress':
+            downloaded += event.data.chunkLength
+            const pct = contentLength > 0 ? Math.round((downloaded / contentLength) * 100) : 0
+            setProgress(pct)
+            break
+          case 'Finished':
+            console.log('[UpdateChecker] 下载完成')
+            break
+        }
+      })
+      
+      setStatus('ready')
+      
+      // 提示用户重启
+      const { relaunch } = await import('@tauri-apps/plugin-process')
+      const confirmed = window.confirm('更新已下载完成，是否立即重启应用？')
+      if (confirmed) {
+        await relaunch()
+      }
+    } catch (err: any) {
+      console.error('[UpdateChecker] 下载更新失败:', err)
+      setError(err?.message || '下载更新失败')
+      setStatus('error')
+    }
+  }, [])
+
+  // 启动时自动检查更新
+  useEffect(() => {
+    if (!isTauri) return
+    
+    // 延迟 3 秒检查，避免启动时阻塞
+    const timer = setTimeout(() => {
+      void checkForUpdates()
+    }, 3000)
+    
+    return () => clearTimeout(timer)
+  }, [checkForUpdates])
+
+  // 非 Tauri 环境不渲染
+  if (!isTauri) return null
+
+  // 不显示横幅时隐藏
+  if (!showBanner && status !== 'checking') return null
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 max-w-sm">
+      {/* 检查中 */}
+      {status === 'checking' && (
+        <div className="flex items-center gap-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] px-4 py-3 shadow-lg">
+          <RefreshCw className="h-4 w-4 animate-spin text-[var(--accent-color)]" />
+          <span className="text-sm text-[var(--text-primary)]">正在检查更新...</span>
+        </div>
+      )}
+
+      {/* 有更新可用 */}
+      {status === 'available' && updateInfo && (
+        <div className="rounded-lg border border-[var(--accent-color)] bg-[var(--bg-secondary)] p-4 shadow-lg">
+          <div className="mb-3 flex items-start justify-between">
+            <div className="flex items-center gap-2">
+              <Download className="h-5 w-5 text-[var(--accent-color)]" />
+              <span className="font-medium text-[var(--text-primary)]">发现新版本</span>
+            </div>
+            <button
+              onClick={() => setShowBanner(false)}
+              className="rounded p-1 hover:bg-[var(--bg-tertiary)]"
+            >
+              <X className="h-4 w-4 text-[var(--text-secondary)]" />
+            </button>
+          </div>
+          <div className="mb-3 text-sm text-[var(--text-secondary)]">
+            版本 {updateInfo.version} 现已可用
+          </div>
+          {updateInfo.body && (
+            <div className="mb-3 max-h-24 overflow-y-auto rounded bg-[var(--bg-primary)] p-2 text-xs text-[var(--text-secondary)]">
+              {updateInfo.body}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button size="sm" onClick={downloadAndInstall}>
+              立即更新
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setShowBanner(false)}>
+              稍后
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* 下载中 */}
+      {status === 'downloading' && (
+        <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-4 shadow-lg">
+          <div className="mb-2 flex items-center gap-2">
+            <RefreshCw className="h-4 w-4 animate-spin text-[var(--accent-color)]" />
+            <span className="text-sm font-medium text-[var(--text-primary)]">正在下载更新...</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-primary)]">
+            <div
+              className="h-full bg-[var(--accent-color)] transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <div className="mt-1 text-right text-xs text-[var(--text-secondary)]">{progress}%</div>
+        </div>
+      )}
+
+      {/* 已是最新 */}
+      {status === 'up-to-date' && (
+        <div className="flex items-center gap-2 rounded-lg border border-green-500/30 bg-[var(--bg-secondary)] px-4 py-3 shadow-lg">
+          <CheckCircle className="h-4 w-4 text-green-500" />
+          <span className="text-sm text-[var(--text-primary)]">已是最新版本</span>
+        </div>
+      )}
+
+      {/* 错误 */}
+      {status === 'error' && (
+        <div className="rounded-lg border border-red-500/30 bg-[var(--bg-secondary)] p-4 shadow-lg">
+          <div className="mb-2 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-red-500" />
+            <span className="text-sm font-medium text-[var(--text-primary)]">更新失败</span>
+          </div>
+          <div className="mb-3 text-xs text-[var(--text-secondary)]">{error}</div>
+          <Button size="sm" variant="ghost" onClick={() => setStatus('idle')}>
+            关闭
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}

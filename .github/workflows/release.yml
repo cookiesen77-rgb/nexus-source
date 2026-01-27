@@ -47,6 +47,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: 'Nexus v__VERSION__'
@@ -54,6 +56,11 @@ jobs:
             ## Nexus v__VERSION__
             
             AI 工作流画布应用
+            
+            ### 更新内容
+            - 自动检测更新并下载安装
+            - 修复批量下载和历史面板功能
+            - 修复 Tauri 环境中的图片/视频生成问题
             
             ### 下载
             - **macOS Intel**: `Nexus_x64.dmg`

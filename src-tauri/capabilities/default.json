@@ -8,11 +8,16 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "updater:default",
+    "process:allow-restart",
+    "process:allow-exit",
     {
       "identifier": "http:default",
       "allow": [
         { "url": "https://nexusapi.cn/**" },
-        { "url": "https://*.nexusapi.cn/**" }
+        { "url": "https://*.nexusapi.cn/**" },
+        { "url": "https://github.com/**" },
+        { "url": "https://api.github.com/**" }
       ]
     }
   ]

@@ -3,6 +3,7 @@ import { BrowserRouter, HashRouter, Navigate, Route, Routes } from 'react-router
 import Home from './routes/Home'
 import Canvas from './routes/Canvas'
 import Assistant from './routes/Assistant'
+import UpdateChecker from './components/UpdateChecker'
 
 const base = import.meta.env.BASE_URL || '/'
 const isDesktop = base.startsWith('./')
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/assistant" element={<Assistant />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      <UpdateChecker />
     </Router>
   )
 }
