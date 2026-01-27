@@ -69,7 +69,7 @@ export const IMAGE_MODELS = [
             { label: '4K', key: '4K' }
         ],
         defaultParams: {
-            size: '1:1',
+            size: '3:4',
             quality: '2K'
         }
     },
@@ -115,21 +115,6 @@ export const IMAGE_MODELS = [
         defaultParams: {
             size: '1024x1024',
             quality: 'standard'
-        }
-    },
-    {
-        label: 'Doubao Seedream 4.5 (251128)',
-        key: 'doubao-seedream-4-5-251128',
-        endpoint: '/images/generations',
-        authMode: 'bearer',
-        format: 'doubao-seedream',
-        tips: '豆包 Seedream 4.5：size 支持 1K/2K/4K（本项目默认 2K，单图输出）',
-        sizes: ['1K', '2K', '4K'],
-        defaultParams: {
-            size: '2K',
-            sequential_image_generation: 'disabled',
-            response_format: 'url',
-            watermark: false
         }
     },
     {
@@ -214,6 +199,43 @@ export const VIDEO_MODELS = [
         ratios: ['16:9', '9:16'],
         durs: [{ label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
         defaultParams: { ratio: '16:9', duration: 8, watermark: false }
+    },
+    {
+        label: 'Veo 3.1 Fast 4K（OpenAI 视频格式）',
+        key: 'veo_3_1-fast-4K',
+        endpoint: '/videos',
+        statusEndpoint: (id) => `/videos/${id}`,
+        authMode: 'bearer',
+        format: 'openai-video',
+        ratios: ['16:9', '9:16'],
+        durs: [{ label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 8, watermark: false }
+    },
+    {
+        label: 'Veo 3.1 Fast Components（统一视频格式）',
+        key: 'veo3.1-fast-components',
+        endpoint: '/video/create',
+        statusEndpoint: '/video/query',
+        authMode: 'bearer',
+        format: 'veo-unified',
+        // components 模型支持最多 3 张图片作为视频元素
+        maxImages: 3,
+        ratios: ['16:9', '9:16'],
+        durs: [{ label: '5 秒', key: 5 }, { label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
+    },
+    {
+        label: 'Veo 3.1 Fast Components 4K（统一视频格式）',
+        key: 'veo_3_1-fast-components-4K',
+        endpoint: '/video/create',
+        statusEndpoint: '/video/query',
+        authMode: 'bearer',
+        format: 'veo-unified',
+        // components 模型支持最多 3 张图片作为视频元素
+        maxImages: 3,
+        ratios: ['16:9', '9:16'],
+        durs: [{ label: '5 秒', key: 5 }, { label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
         label: 'Veo3.1 4K（统一视频格式）',

@@ -1,10 +1,9 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `src/` holds the Vue 3 application code (views, components, stores, hooks, utils, router, api, config).
-- `src/components/nodes/` and `src/components/edges/` contain Vue Flow node/edge implementations.
-- `src/hooks/` contains orchestration and API composition logic (e.g. `useWorkflowOrchestrator`, `useApi`, `usePolish`).
-- `src/stores/` uses Vue `ref/reactive` stores (not Pinia).
+- `src/` now uses React + TypeScript as the primary entrypoint (`src/main.tsx`, `src/App.tsx`, `src/routes/*`).
+- `src/components/canvas/` holds the WebGL canvas renderer and HTML overlay editor.
+- Legacy Vue 3 code is still present under `src/views/`, `src/components/nodes/`, `src/hooks/`, `src/stores/` for incremental migration.
 - `src/assets/` contains static assets and prompt libraries; `public/` contains public build assets.
 - `electron/` and `src-tauri/` contain desktop shell code for Electron and Tauri builds.
 - `doc/` contains screenshots used in documentation.
@@ -18,8 +17,8 @@
 - `npm run dev:tauri` / `npm run build:tauri`: run or package the Tauri app (Tauri 模式 `base: ./` + hash routing).
 
 ## Coding Style & Naming Conventions
-- JavaScript only (no TypeScript); keep files as `.js` or `.vue`.
-- Use 2-space indentation and omit semicolons to match existing style.
+- Use TypeScript for new code (`.ts`/`.tsx`); prefer React function components + hooks.
+- Use 2-space indentation and omit semicolons to match existing style where practical.
 - Prefer clear, descriptive names for nodes, stores, and hooks (e.g., `useWorkflowOrchestrator`).
 - There is no configured linter/formatter; keep diffs minimal and consistent.
 

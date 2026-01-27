@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            name: macOS-Intel
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            name: macOS-ARM
+          - platform: windows-latest
+            args: ''
+            name: Windows
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-action@stable
+
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Nexus v__VERSION__'
+          releaseBody: |
+            ## Nexus v__VERSION__
+            
+            AI 工作流画布应用
+            
+            ### 下载
+            - **macOS Intel**: `Nexus_x64.dmg`
+            - **macOS Apple Silicon**: `Nexus_aarch64.dmg`
+            - **Windows**: `Nexus_x64-setup.exe`
+            
+            ### 获取 API Key
+            访问 [nexusapi.cn](https://nexusapi.cn/) 获取 API Key
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

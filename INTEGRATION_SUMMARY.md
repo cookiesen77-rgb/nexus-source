@@ -12,7 +12,7 @@
 
 - **AI 助手（Responses）**：`gpt-5-mini`（`POST /v1/responses`）
 - **生图（Images）**
-  - OpenAI Images：`gpt-image-1.5-all`、`jimeng-4.5`、`flux-pro-1.1-ultra`
+  - OpenAI Images：`gpt-image-1.5-all`、`flux-pro-1.1-ultra`
   - Seedream：`doubao-seedream-4-5-251128`
   - Gemini 生图（UI 展示名：`nano-banana-pro`）：`gemini-3-pro-image-preview`
   - Chat 生图：`qwen-image-max`、`grok-4-image`
@@ -20,7 +20,7 @@
   - Tencent-VOD 生图：`aigc-image-gem`、`aigc-image-qwen`
 - **视频（Videos）**
   - OpenAI 视频格式：`veo_3_1-fast`（`POST /v1/videos` + `GET /v1/videos/{id}`）
-  - 统一视频格式：`veo3.1-4k`、`veo3.1-pro-4k`、`sora-2-all`、`jimeng-video-3.0`（`POST /v1/video/create` + `GET /v1/video/query?id=...`）
+  - 统一视频格式：`veo3.1-4k`、`veo3.1-pro-4k`、`sora-2-all`（`POST /v1/video/create` + `GET /v1/video/query?id=...`）
   - Kling 视频：`kling-video`（文生/图生两个端点，固定 `kling-v2-6 · pro · 10s · sound=off`）
   - Tencent-VOD 视频：`aigc-video-vidu`、`aigc-video-hailuo`（当前仅支持直接返回 `video_url`）
 

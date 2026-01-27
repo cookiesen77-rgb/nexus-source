@@ -185,7 +185,9 @@ export const streamChatCompletions = async function* (data, signal) {
       errorJson?.message ||
       errorText ||
       `Stream request failed (${response.status})`
-    throw new Error(message)
+    const err = new Error(message)
+    err.status = response.status
+    throw err
   }
 
   const reader = response.body.getReader()

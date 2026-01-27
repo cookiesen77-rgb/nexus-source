@@ -213,8 +213,77 @@ struct ChatMessage {
   content: String,
 }
 
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphNode {
+  id: String,
+  #[serde(rename = "type")]
+  node_type: String,
+  #[serde(default)]
+  data: Value,
+}
+
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphEdge {
+  source: String,
+  target: String,
+  #[serde(default)]
+  data: Option<Value>,
+}
+
+#[derive(serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpstreamTextBlock {
+  id: String,
+  label: String,
+  text: String,
+  target: String,
+}
+
+#[derive(serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpstreamImageBlock {
+  id: String,
+  label: String,
+  role: String,
+  url: String,
+  target: String,
+}
+
+#[derive(serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct UpstreamInputs {
+  text: Vec<UpstreamTextBlock>,
+  images: Vec<UpstreamImageBlock>,
+}
+
 fn normalize_text(text: &str) -> String {
   text.replace("\r\n", "\n").trim().to_string()
+}
+
+fn safe_slice(text: &str, max_chars: usize) -> String {
+  let t = normalize_text(text);
+  if t.is_empty() {
+    return t;
+  }
+  if t.chars().count() <= max_chars {
+    return t;
+  }
+  let mut out = String::new();
+  for (i, ch) in t.chars().enumerate() {
+    if i >= max_chars {
+      break;
+    }
+    out.push(ch);
+  }
+  out.push('…');
+  out
+}
+
+fn value_string(value: Option<&Value>, key: &str) -> String {
+  let v = value.and_then(|v| v.get(key)).and_then(|v| v.as_str()).unwrap_or("");
+  normalize_text(v)
 }
 
 fn is_cjk(ch: char) -> bool {
@@ -270,6 +339,95 @@ fn score_match(query: &str, doc: &str) -> f32 {
   }
   let denom = ((qset.len() as f32) * (dset.len() as f32)).sqrt().max(1.0);
   hit / denom
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn graph_collect_upstream_inputs(focus_node_id: String, nodes: Vec<GraphNode>, edges: Vec<GraphEdge>) -> UpstreamInputs {
+  let focus_id = focus_node_id.trim().to_string();
+  if focus_id.is_empty() {
+    return UpstreamInputs::default();
+  }
+
+  let mut node_by_id: HashMap<String, GraphNode> = HashMap::new();
+  for n in nodes.into_iter() {
+    if !n.id.trim().is_empty() {
+      node_by_id.insert(n.id.clone(), n);
+    }
+  }
+  if !node_by_id.contains_key(&focus_id) {
+    return UpstreamInputs::default();
+  }
+
+  let mut incoming: HashMap<String, Vec<GraphEdge>> = HashMap::new();
+  let mut outgoing: HashMap<String, Vec<GraphEdge>> = HashMap::new();
+  for e in edges.into_iter() {
+    if e.source.trim().is_empty() || e.target.trim().is_empty() {
+      continue;
+    }
+    incoming.entry(e.target.clone()).or_default().push(e.clone());
+    outgoing.entry(e.source.clone()).or_default().push(e);
+  }
+
+  let mut config_targets: Vec<String> = vec![];
+  if let Some(out) = outgoing.get(&focus_id) {
+    for e in out.iter() {
+      if let Some(t) = node_by_id.get(&e.target) {
+        if t.node_type == "imageConfig" || t.node_type == "videoConfig" {
+          config_targets.push(t.id.clone());
+        }
+      }
+    }
+  }
+
+  let mut out_text: Vec<UpstreamTextBlock> = vec![];
+  let mut out_images: Vec<UpstreamImageBlock> = vec![];
+  let mut seen_text: std::collections::HashSet<String> = std::collections::HashSet::new();
+  let mut seen_image: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+  for cfg_id in config_targets.iter() {
+    let in_edges = incoming.get(cfg_id).cloned().unwrap_or_default();
+    for e in in_edges.iter() {
+      if let Some(src) = node_by_id.get(&e.source) {
+        if src.node_type == "text" {
+          if src.id == focus_id {
+            continue;
+          }
+          if seen_text.contains(&src.id) {
+            continue;
+          }
+          let content = value_string(Some(&src.data), "content");
+          if content.is_empty() {
+            continue;
+          }
+          let label = value_string(Some(&src.data), "label");
+          out_text.push(UpstreamTextBlock {
+            id: src.id.clone(),
+            label: if label.is_empty() { "文本节点".to_string() } else { label },
+            text: safe_slice(&content, 520),
+            target: cfg_id.clone(),
+          });
+          seen_text.insert(src.id.clone());
+        } else if src.node_type == "image" {
+          if seen_image.contains(&src.id) {
+            continue;
+          }
+          let label = value_string(Some(&src.data), "label");
+          let url = value_string(Some(&src.data), "url");
+          let role = value_string(e.data.as_ref(), "imageRole");
+          out_images.push(UpstreamImageBlock {
+            id: src.id.clone(),
+            label: if label.is_empty() { "参考图".to_string() } else { label },
+            role: if role.is_empty() { "input_reference".to_string() } else { role },
+            url: if url.starts_with("data:") { "".to_string() } else { safe_slice(&url, 240) },
+            target: cfg_id.clone(),
+          });
+          seen_image.insert(src.id.clone());
+        }
+      }
+    }
+  }
+
+  UpstreamInputs { text: out_text, images: out_images }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -680,6 +838,7 @@ fn log_frontend(level: String, message: String, context: Option<String>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .plugin(tauri_plugin_opener::init())
     .setup(|app| {
       let level = if cfg!(debug_assertions) {
         log::LevelFilter::Debug
@@ -703,6 +862,7 @@ pub fn run() {
       enqueue_save_project_canvas,
       compress_json_lz4_base64,
       decompress_json_lz4_base64,
+      graph_collect_upstream_inputs,
       search_memory,
       build_chat_messages,
       load_project_canvas,

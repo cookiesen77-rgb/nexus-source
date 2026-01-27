@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nexus 是一款基于 Vue 3 的可视化节点画布，用于搭建 AI 工作流。用户可以拖拽节点在无限画布上构建文生图、图生视频、音频生成、多场景分镜等自动化流程。
+Nexus 是一款基于 React + TypeScript 的可视化节点画布，用于搭建 AI 工作流。用户可以在无限画布上通过节点编排构建文生图、图生视频等自动化流程，采用自研 WebGL 渲染引擎实现高性能交互。
 
-**Tech Stack**: Vue 3 + Vite + Vue Flow + Naive UI + Tailwind CSS
+**Tech Stack**: React 18 + TypeScript + Vite + Zustand + Tailwind CSS + Tauri
 
 ## Development Commands
 
@@ -16,185 +16,228 @@ npm run dev             # Start dev server at localhost:5173/nexus
 npm run build           # Production build
 npm run preview         # Preview production build
 
-# Desktop builds (see ELECTRON_SETUP.md and TAURI_SETUP.md for details)
-npm run dev:electron    # Start Electron app (requires concurrently & wait-on)
-npm run build:electron  # Package Electron app → release/
+# Desktop builds (Tauri-based)
 npm run dev:tauri       # Start Tauri app (requires Rust toolchain)
 npm run build:tauri     # Package Tauri app
 ```
 
 **Deployment modes** (configured in vite.config.js):
-- Web: `base: '/nexus'` with history routing
-- Desktop (Electron/Tauri): `base: './'` with hash routing
+- Web: `base: '/nexus'` with BrowserRouter
+- Desktop (Tauri): `base: './'` with HashRouter
 
 ## Architecture
 
+### Migration Status
+
+**This project has been migrated from Vue 3 to React + TypeScript.** Legacy Vue files remain in the codebase but are no longer used:
+- `.vue` components in `/components/` - Legacy, inactive
+- `/stores/*.js` - Old Vue reactive stores, replaced by Zustand
+- `/router/` - Old Vue Router config, replaced by React Router
+- `/hooks/*.js` - Some Vue composition hooks, partially migrated
+
+**Active codebase** uses:
+- `/routes/*.tsx` - React route components
+- `/graph/store.ts` - Zustand graph state
+- `/store/*.ts` - Zustand stores (projects, settings)
+- `/components/canvas/*.tsx` - React canvas components
+- `/lib/` - TypeScript utilities and workflow logic
+
 ### State Management Pattern
 
-This project uses **Vue 3 refs/reactive directly** instead of Pinia:
-
-- Store files in `/stores/*.js` export reactive refs (not Pinia stores)
-- Watch patterns trigger auto-save and derived state updates
-- Canvas state auto-saves to localStorage with 500ms debouncing
-- Undo/redo implemented via state snapshots (max 50 history entries)
+This project uses **Zustand** for state management:
 
 **Key stores**:
-- `src/stores/canvas.js` - Nodes, edges, viewport, undo/redo, auto-save
-- `src/stores/projects.js` - Project CRUD with localStorage persistence
-- `src/stores/api.js` - API configuration (key, base URL)
-- `src/stores/models.js` - Built-in model configurations and helpers
-- `src/stores/assets.js` - Asset history tracking (IndexedDB storage)
-- `src/stores/theme.js` - Theme management
+- `src/graph/store.ts` - Nodes, edges, viewport, undo/redo with auto-save
+- `src/store/projects.ts` - Project CRUD with localStorage + Tauri persistence
+- `src/store/settings.ts` - App settings (theme, API config)
 
-### Workflow Orchestration System
+**State patterns**:
+- Graph state auto-saves to localStorage with debouncing
+- Undo/redo via immutable state snapshots (max 50 history entries)
+- LZ4 compression for old history entries to reduce memory
+- Tauri commands used for desktop file I/O when available
 
-The core feature is **automatic workflow execution** via `src/hooks/useWorkflowOrchestrator.js`:
+### Custom WebGL Graph Engine
 
-1. User enters a prompt in "auto-execute" mode
-2. LLM analyzes intent and determines workflow type
-3. System creates node tree dynamically with connections
-4. Nodes execute serially, waiting for dependencies to complete
+The canvas uses a **custom WebGL-based rendering system** (not third-party libraries):
+
+**Core components**:
+- `WebGLGraphCanvas.tsx` - WebGL renderer for edges and grid
+- `NodeCardsLayer.tsx` - DOM-based node rendering overlay
+- `EdgeOverlayLayer.tsx` - Interactive edge hit detection
+- `graph/store.ts` - Graph state with node/edge management
+- `graph/types.ts` - Core types (GraphNode, GraphEdge, Viewport)
+- `graph/nodeSizing.ts` - Dynamic node dimension calculation
+
+**Node types**:
+- `text` - Text/prompt input
+- `imageConfig` - Image generation configuration
+- `image` - Image display/upload
+- `videoConfig` - Video generation configuration
+- `video` - Video playback
+- `audio` - Audio playback (Suno)
+
+**Edge types**:
+- `default` - Standard connection
+- `imageRole` - Reference image for character consistency
+- `promptOrder` - Ordered prompt composition
+- `imageOrder` - Sequential image composition
+
+### Workflow System
+
+AI-driven workflow automation via `lib/workflow/`:
+
+**Execution flow**:
+1. User provides text prompt in Canvas
+2. Assistant analyzes intent and suggests workflow
+3. Nodes/edges created automatically in graph
+4. Nodes execute sequentially via polling pattern
 5. Results displayed in output nodes
 
-**Workflow types** (defined in `src/config/workflows.js`):
-- `text_to_image` - Simple prompt → image
-- `text_to_image_to_video` - Prompt → image → video pipeline
-- `storyboard` - Multi-scene generation with character consistency
-- `multi_angle_storyboard` - 4 camera angles × 4 scales (16 images total)
+**Key workflow files**:
+- `lib/workflow/image.ts` - Image generation orchestration
+- `lib/workflow/video.ts` - Video generation orchestration
+- `lib/workflow/request.ts` - HTTP client with retry logic
+- `lib/polish.ts` - AI-powered prompt enhancement
+- `lib/contextEngine.ts` - Graph context analysis for AI
 
-**Execution pattern**: Uses `waitForConfigComplete()` and `waitForOutputReady()` helpers to poll node status and handle async completion.
-
-### Node/Edge System
-
-Built on Vue Flow with 6 custom node types:
-
-| Type | Component | Purpose |
-|------|-----------|---------|
-| `text` | TextNode.vue | User input for prompts |
-| `imageConfig` | ImageConfigNode.vue | Image generation settings |
-| `image` | ImageNode.vue | Display generated/uploaded images |
-| `videoConfig` | VideoConfigNode.vue | Video generation settings |
-| `video` | VideoNode.vue | Display generated videos |
-| `audio` | AudioNode.vue | Display generated audio (Suno) |
-
-**Custom edge**: `src/components/edges/ImageRoleEdge.vue` allows passing reference images between nodes for character consistency.
-
-**Node structure**:
-```javascript
-{
-  id: string,
-  type: 'text' | 'imageConfig' | 'image' | 'videoConfig' | 'video' | 'audio',
-  position: { x, y },
-  data: { /* type-specific fields */ },
-  // ...Vue Flow properties
-}
-```
-
-**Extensibility**: To add new node types:
-1. Create component in `/components/nodes/`
-2. Add type to canvas store defaults
-3. Register in Canvas.vue `nodeTypes` object
-4. Add corresponding API service if needed
+**Workflow strategies**:
+- Serial execution: Nodes wait for dependencies via polling
+- Retry with exponential backoff for transient failures
+- Context-aware prompt optimization using BFS graph traversal
+- Reference image linking for character consistency
 
 ### API Layer Architecture
 
-Three-layer pattern for API calls:
+Three-tier API integration:
 
-1. **Service layer** (`/api/*.js`) - Direct API endpoint wrappers
-   - `src/api/image.js` - Image generation
-   - `src/api/video.js` - Video generation with polling
-   - `src/api/chat.js` - LLM completions with streaming
-   - `src/api/audio.js` - Audio generation (Suno)
+1. **HTTP client** (`lib/workflow/request.ts`)
+   - Fetch API wrapper with auth injection
+   - Automatic retry with exponential backoff
+   - Tauri invoke fallback for CORS workarounds
 
-2. **Composition layer** (`src/hooks/useApi.js`) - Higher-level logic (error handling, retries, state updates)
+2. **Service adapters** (`lib/nexusApi.ts`)
+   - Model-agnostic interface for chat, image, video
+   - Multi-provider support (OpenAI, Gemini, Kling, etc.)
+   - Status polling for async tasks
 
-3. **HTTP client** (`src/utils/request.js`) - Axios instance with auth interceptors
+3. **Workflow orchestration** (`lib/workflow/*.ts`)
+   - Higher-level workflow logic
+   - Node state management integration
+   - Error handling and user notifications
 
 **API configuration**:
 - Base URL proxied in `vite.config.js`: `/v1/*` → `https://nexusapi.cn`
-- Supports any OpenAI-compatible endpoint
-- API key stored in localStorage, injected via Authorization header
-- Models defined in `src/config/models.js`
-
-### Advanced Features
-
-**Director Console** (`DirectorConsole.vue`):
-- Storyboard planning interface with character management
-- Multi-scene generation with reference image linking
-- Camera angle and scale grid generation
-- Integrated with workflow orchestrator for automatic node creation
-
-**Sonic Studio** (`SonicStudio.vue`):
-- Audio generation interface using Suno API
-- Supports music generation and lyrics generation modes
-- Polling mechanism for task completion
-- Audio output integrated with canvas nodes
-
-**Prompt Polish** (`src/hooks/usePolish.js`):
-- Context-aware prompt optimization using canvas graph structure
-- Retrieval-based enrichment from prompt libraries
-- BFS-based node relationship scoring for relevance
-- Supports image, video, and script polishing modes
-- Uses camera move library (`src/assets/prompt-libraries/chos_camera_moves.json`)
-
-**Smart Components**:
-- `HistoryPanel.vue` - Asset history with IndexedDB storage
-- `ImageCropper.vue` - Built-in image cropping tool
-- `SketchEditor.vue` - Sketch-based input
-- `SmartSequenceDock.vue` - Sequence management UI
-- `PromptLibraryModal.vue` - Prompt template library
+- Supports OpenAI-compatible endpoints
+- API key stored in localStorage
+- Models defined in `src/config/models.d.ts`
 
 ### Project Persistence
 
-Projects metadata stored in **localStorage** under key `"ai-canvas-projects-meta"`, and large canvas data stored in **IndexedDB**:
+**Dual storage strategy**:
 
-```javascript
-{
-  id: string,
-  name: string,
-  thumbnail: string,
-  createdAt: timestamp,
-  updatedAt: timestamp
-}
+1. **Project metadata** → localStorage under `"ai-canvas-projects-meta"`
+   ```typescript
+   {
+     id: string,
+     name: string,
+     thumbnail?: string,
+     createdAt: number,
+     updatedAt: number
+   }
+   ```
+
+2. **Canvas data** → localStorage (`nexus-canvas-v1:${projectId}`) or Tauri commands
+   - Nodes, edges, viewport state
+   - Auto-save on every change (debounced 500ms)
+   - History compressed with LZ4 for older entries
+
+3. **Tauri desktop** → Native file system via `save_project_canvas`/`load_project_canvas` commands
+
+No backend required - all data persists client-side.
+
+### Routing System
+
+**React Router v6** with conditional router type:
+
+```typescript
+const Router = isDesktop ? HashRouter : BrowserRouter
 ```
 
-**Storage strategy**:
-- Metadata → localStorage (fast access for project list)
-- Canvas data (nodes/edges/viewport) → IndexedDB (handles large data)
-- Asset history → IndexedDB (`nexus-ai-assets` database)
-- Auto-save on every change (debounced 500ms)
-- No backend required
+**Routes** (see `App.tsx`):
+- `/` - Home (project gallery)
+- `/canvas/:id?` - Graph canvas editor
+- `/assistant` - AI assistant interface
+
+**Navigation patterns**:
+- Project creation passes `initialPrompt` via location state
+- Canvas auto-creates nodes on mount from state
 
 ## Key Patterns
 
-- **Reference linking**: ImageRoleEdge connects reference images to generation nodes for consistency
-- **Serial execution**: Workflow orchestrator uses `await waitForConfigComplete()` to ensure dependencies finish before next step
-- **Streaming responses**: Chat API uses fetch + SSE instead of Axios for streaming prompt optimization
-- **Context-aware polish**: `usePolish` hook analyzes canvas graph topology to improve prompt quality
-- **Hybrid storage**: localStorage for fast metadata, IndexedDB for large assets
-- **Polling pattern**: Video and audio APIs use polling with exponential backoff for async task completion
-- **No TypeScript**: Plain JavaScript with clear naming conventions
-- **Mobile-aware**: Canvas component includes mobile detection for touch support
+- **Custom WebGL rendering**: Edges/grid rendered in WebGL, nodes as DOM overlay for interactivity
+- **Zustand subscriptions**: Graph store triggers localStorage saves on mutations
+- **Undo/redo snapshots**: Immutable state cloning with LZ4 compression for old entries
+- **Polling pattern**: Video/audio APIs use exponential backoff polling for async completion
+- **Context-aware AI**: Graph topology analyzed via BFS for prompt enrichment
+- **Tauri integration**: Conditional imports check `isTauri()` for desktop features
+- **No TypeScript in legacy**: Vue files use plain JS, React migration uses full TS
+- **Error boundaries**: Global error handlers log to Tauri backend via `log_frontend` command
 
 ## Configuration
 
-First-time setup requires API configuration via settings modal (⚙️ icon):
-1. Enter API Base URL (default: uses vite.config.js proxy)
-2. Enter API Key
-3. Select models from dropdowns (populated from /config/models.js)
+First-time setup requires API configuration:
+1. Click Settings icon in canvas
+2. Enter API Key (base URL uses vite.config.js proxy)
+3. Models auto-populate from `config/models.d.ts`
 
 API credentials persist in localStorage across sessions.
 
 ## Desktop Packaging
 
-**Electron** (see `ELECTRON_SETUP.md`):
-- Main process: `electron/main.js`
-- Output: `release/` directory
-- macOS code signing requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
-
-**Tauri** (see `TAURI_SETUP.md`):
-- Rust core: `src-tauri/`
+**Tauri** (Rust-based, see `src-tauri/`):
+- Main process: `src-tauri/src/main.rs`
+- Custom commands: `save_project_canvas`, `load_project_canvas`, `delete_project_canvas`, `cache_image`, `log_frontend`
+- Output: `src-tauri/target/release/`
 - Requires Rust toolchain + platform SDKs
-- Custom command: `cache_image` for bypassing CORS
+- Hash routing and relative paths (`base: './'`) in desktop mode
 
-Both use hash routing and relative paths (`base: './'`) configured via Vite mode detection.
+Legacy Electron references in `package.json` may not be actively maintained.
+
+## Component Structure
+
+```
+src/
+├── routes/              # Main pages (Home.tsx, Canvas.tsx, Assistant.tsx)
+├── graph/               # Graph engine
+│   ├── store.ts         # Zustand graph state (nodes, edges, undo/redo)
+│   ├── types.ts         # Core type definitions
+│   └── nodeSizing.ts    # Dynamic node sizing
+├── store/               # Zustand stores
+│   ├── projects.ts      # Project management
+│   └── settings.ts      # App settings
+├── components/
+│   ├── canvas/          # Canvas UI (WebGL, overlays, sidebar, inspector)
+│   ├── ui/              # Reusable UI components (button, input, select)
+│   ├── *.vue            # Legacy Vue components (inactive)
+│   ├── nodes/           # Legacy Vue node components (inactive)
+│   └── edges/           # Legacy Vue edge components (inactive)
+├── lib/                 # Business logic
+│   ├── workflow/        # AI workflow orchestration
+│   ├── polish.ts        # Prompt enhancement
+│   ├── contextEngine.ts # Graph context analysis
+│   ├── nexusApi.ts      # API adapters
+│   └── tauri.ts         # Tauri helpers
+├── config/              # Model configurations
+├── utils/               # Utility functions
+└── stores/              # Legacy Vue stores (inactive, use /store/ instead)
+```
+
+## Development Tips
+
+- **Prefer TypeScript**: New code should use `.ts`/`.tsx` with full type safety
+- **Avoid legacy Vue**: Do not modify `.vue` files or `/stores/*.js` - use React components and Zustand stores
+- **Graph mutations**: Always use Zustand actions from `graph/store.ts`, never mutate state directly
+- **Canvas performance**: WebGL layer handles thousands of edges, DOM nodes lazy-render on viewport
+- **Tauri conditionals**: Check `isTauri()` before importing Tauri APIs to avoid web build errors
+- **Model additions**: Update `config/models.d.ts` AND `api/NEXUSAPI_MODEL_ROUTING.md` for new models

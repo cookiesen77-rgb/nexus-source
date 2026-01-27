@@ -1,12 +1,11 @@
-/**
- * Main entry point | 主入口
- */
-import { createApp } from 'vue'
-import App from './App.vue'
-import router from './router'
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App'
 import './style.css'
+import { initGlobalMessage } from '@/lib/message'
 
-const app = createApp(App)
+// 初始化全局消息系统（兼容 Vue 版本的 window.$message）
+initGlobalMessage()
 
 const MAX_LOG_CHARS = 4000
 const MAX_ARG_CHARS = 1200
@@ -14,7 +13,7 @@ const MAX_CONTEXT_CHARS = 1600
 const MAX_STRING_CHARS = 500
 const DATA_URL_RE = /data:image\/[^;]+;base64,[a-z0-9+/=]+/gi
 
-const sanitizeText = (text, maxLen = MAX_LOG_CHARS) => {
+const sanitizeText = (text: unknown, maxLen = MAX_LOG_CHARS) => {
   let output = typeof text === 'string' ? text : String(text || '')
   if (output.includes('data:image') || output.includes('base64,')) {
     output = output.replace(DATA_URL_RE, '[data-url omitted]')
@@ -26,25 +25,26 @@ const sanitizeText = (text, maxLen = MAX_LOG_CHARS) => {
   return output
 }
 
-const safeStringify = (value, maxLen = MAX_ARG_CHARS) => {
+const safeStringify = (value: unknown, maxLen = MAX_ARG_CHARS) => {
   if (typeof value !== 'object' || value === null) {
     return sanitizeText(String(value), maxLen)
   }
 
-  const seen = new WeakSet()
-  const depthMap = new WeakMap()
+  const seen = new WeakSet<object>()
+  const depthMap = new WeakMap<object, number>()
   const maxDepth = 2
 
-  const replacer = function (key, val) {
+  const replacer = function (this: unknown, _key: string, val: unknown) {
     if (typeof val === 'string') {
       return val.length > MAX_STRING_CHARS ? `${val.slice(0, MAX_STRING_CHARS)}...` : val
     }
     if (val && typeof val === 'object') {
-      if (seen.has(val)) return '[Circular]'
-      seen.add(val)
-      const parentDepth = depthMap.get(this) || 0
+      const obj = val as object
+      if (seen.has(obj)) return '[Circular]'
+      seen.add(obj)
+      const parentDepth = depthMap.get(this as any) || 0
       const nextDepth = parentDepth + 1
-      depthMap.set(val, nextDepth)
+      depthMap.set(obj, nextDepth)
       if (nextDepth > maxDepth) return '[Object]'
     }
     return val
@@ -57,24 +57,23 @@ const safeStringify = (value, maxLen = MAX_ARG_CHARS) => {
   }
 }
 
-const reportFrontendLog = async (level, message, context) => {
+const reportFrontendLog = async (level: string, message: string, context?: unknown) => {
   try {
     const { isTauri, invoke } = await import('@tauri-apps/api/core')
     if (!isTauri()) return
     const safeMessage = sanitizeText(message, MAX_LOG_CHARS)
     const safeContext = context ? safeStringify(context, MAX_CONTEXT_CHARS) : null
-    const payload = {
+    await invoke('log_frontend', {
       level,
       message: safeMessage,
       context: safeContext
-    }
-    await invoke('log_frontend', payload)
+    })
   } catch {
     // ignore logging failures
   }
 }
 
-const formatLogArgs = (args) => {
+const formatLogArgs = (args: unknown[]) => {
   const parts = args
     .map((arg) => {
       if (typeof arg === 'string') return sanitizeText(arg, MAX_ARG_CHARS)
@@ -88,55 +87,50 @@ const formatLogArgs = (args) => {
 }
 
 const originalConsoleError = console.error
-console.error = (...args) => {
+console.error = (...args: unknown[]) => {
   originalConsoleError(...args)
   const message = formatLogArgs(args)
   if (message) reportFrontendLog('error', message)
 }
 
 const originalConsoleWarn = console.warn
-console.warn = (...args) => {
+console.warn = (...args: unknown[]) => {
   originalConsoleWarn(...args)
   const message = formatLogArgs(args)
   if (message) reportFrontendLog('warn', message)
 }
 
-// Global error handlers | 全局错误兜底（避免页面“白屏/崩溃”无提示）
 let hasNotifiedGlobalError = false
-const notifyGlobalError = (message) => {
+const notifyGlobalError = (message: string) => {
   if (hasNotifiedGlobalError) return
   hasNotifiedGlobalError = true
   try {
-    window.$message?.error(message)
+    // 最保底的提示：避免依赖 UI 库
+    window.alert(message)
   } catch {
     // ignore
   }
 }
 
-app.config.errorHandler = (err, instance, info) => {
-  console.error('Vue error:', err, info)
-  reportFrontendLog('error', err?.message || 'Vue error', { info, stack: err?.stack })
-  notifyGlobalError('页面发生异常（建议刷新页面后重试）')
-}
-
 window.addEventListener('unhandledrejection', (event) => {
-  console.error('Unhandled promise rejection:', event.reason)
-  reportFrontendLog('error', event.reason?.message || String(event.reason || 'Unhandled rejection'), {
-    stack: event.reason?.stack
-  })
+  console.error('Unhandled promise rejection:', (event as any)?.reason)
+  const reason = (event as any)?.reason
+  reportFrontendLog('error', reason?.message || String(reason || 'Unhandled rejection'), { stack: reason?.stack })
   notifyGlobalError('请求发生异常（建议稍后重试或刷新页面）')
 })
 
 window.addEventListener('error', (event) => {
-  // Some errors are noisy; keep only console here to avoid spam
-  console.error('Global error:', event.error || event.message)
-  reportFrontendLog('error', event.message || 'Global error', {
-    filename: event.filename,
-    lineno: event.lineno,
-    colno: event.colno,
-    stack: event.error?.stack
+  console.error('Global error:', (event as any)?.error || (event as any)?.message)
+  reportFrontendLog('error', (event as any)?.message || 'Global error', {
+    filename: (event as any)?.filename,
+    lineno: (event as any)?.lineno,
+    colno: (event as any)?.colno,
+    stack: (event as any)?.error?.stack
   })
 })
 
-app.use(router)
-app.mount('#app')
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)

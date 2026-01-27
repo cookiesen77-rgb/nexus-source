@@ -36,7 +36,6 @@ npm run dev
 
 - `gemini-3-pro-image-preview`（Gemini v1beta：`/v1beta/models/...:generateContent?key=...`；UI 展示名：`nano-banana-pro`）
 - `gpt-image-1.5-all`（OpenAI Images：`POST /v1/images/generations`）
-- `jimeng-4.5`（OpenAI Images：`POST /v1/images/generations`）
 - `flux-pro-1.1-ultra`（OpenAI Images：`POST /v1/images/generations`）
 - `doubao-seedream-4-5-251128`（OpenAI Images：`POST /v1/images/generations`，`size` 支持 `1K/2K/4K`）
 - `qwen-image-max`（OpenAI Chat：`POST /v1/chat/completions`）
@@ -51,7 +50,6 @@ npm run dev
 - `veo3.1-4k`（统一视频格式：`POST /v1/video/create`，轮询 `GET /v1/video/query?id=...`）
 - `veo3.1-pro-4k`（统一视频格式：同上）
 - `sora-2-all`（统一视频格式：同上）
-- `jimeng-video-3.0`（统一视频格式：同上）
 - `kling-video`（Kling：文生 `/kling/v1/videos/text2video`；图生 `/kling/v1/videos/image2video`；固定 `kling-v2-6 · pro · 10s · sound=off`）
 - `aigc-video-vidu` / `aigc-video-hailuo`（Tencent-VOD：`POST /tencent-vod/v1/aigc-video`；当前仅支持直接返回 `video_url`）
 
