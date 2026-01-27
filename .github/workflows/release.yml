@@ -12,10 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
+          - platform: macos-13
             args: --target x86_64-apple-darwin
             name: macOS-Intel
-          - platform: macos-latest
+          - platform: macos-14
             args: --target aarch64-apple-darwin
             name: macOS-ARM
           - platform: windows-latest
@@ -34,11 +34,13 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-action@stable
 
-      - name: Install dependencies (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          rustup target add x86_64-apple-darwin
-          rustup target add aarch64-apple-darwin
+      - name: Install target (macOS Intel)
+        if: matrix.name == 'macOS-Intel'
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Install target (macOS ARM)
+        if: matrix.name == 'macOS-ARM'
+        run: rustup target add aarch64-apple-darwin
 
       - name: Install frontend dependencies
         run: npm ci
@@ -65,7 +67,7 @@ jobs:
             ### 下载
             - **macOS Intel**: `Nexus_x64.dmg`
             - **macOS Apple Silicon**: `Nexus_aarch64.dmg`
-            - **Windows**: `Nexus_x64-setup.exe`
+            - **Windows**: `Nexus_x64-setup.exe` / `Nexus_x64-setup.msi`
             
             ### 获取 API Key
             访问 [nexusapi.cn](https://nexusapi.cn/) 获取 API Key
