@@ -1,6 +1,13 @@
 import { DEFAULT_API_BASE_URL } from '@/utils/constants'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
 export type AuthMode = 'bearer' | 'query' | undefined
+
+// 检测是否在 Tauri 环境中
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -79,14 +86,17 @@ const isAbsolute = (url: string) => /^https?:\/\//i.test(url)
 // 检测是否在开发环境（Vite dev server）
 const isDev = typeof import.meta !== 'undefined' && import.meta.env?.DEV === true
 
+// 在开发环境的浏览器中使用 Vite 代理（非 Tauri），其他情况使用直接请求
+const useViteProxy = isDev && !isTauri
+
 export const resolveEndpointUrl = (endpoint: string) => {
   const ep = String(endpoint || '').trim()
   if (!ep) return DEFAULT_API_BASE_URL
   
   // 如果已经是绝对 URL
   if (isAbsolute(ep)) {
-    // 在开发环境下，将 nexusapi.cn 的请求转换为相对路径，走 Vite 代理绕过 CORS
-    if (isDev && ep.includes('nexusapi.cn')) {
+    // 在开发环境（非 Tauri）下，将 nexusapi.cn 的请求转换为相对路径，走 Vite 代理绕过 CORS
+    if (useViteProxy && ep.includes('nexusapi.cn')) {
       try {
         const u = new URL(ep)
         // 返回相对路径，让 Vite 代理处理
@@ -99,12 +109,12 @@ export const resolveEndpointUrl = (endpoint: string) => {
   }
   
   // 相对路径处理
-  if (isDev) {
-    // 开发环境：返回相对路径，走 Vite 代理
+  if (useViteProxy) {
+    // 开发环境（非 Tauri）：返回相对路径，走 Vite 代理
     return `/v1${ep.startsWith('/') ? ep : `/${ep}`}`
   }
   
-  // 生产环境：拼接完整 URL
+  // 生产环境或 Tauri 环境：拼接完整 URL
   const base = DEFAULT_API_BASE_URL.replace(/\/$/, '')
   return `${base}${ep.startsWith('/') ? ep : `/${ep}`}`
 }
@@ -133,7 +143,7 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
     const t = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null
 
     try {
-      const res = await fetch(url, {
+      const res = await safeFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -220,7 +230,7 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
     const t = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null
 
     try {
-      const res = await fetch(url, {
+      const res = await safeFetch(url, {
         method: 'POST',
         headers: {
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
@@ -298,7 +308,7 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
     const t = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null
 
     try {
-      const res = await fetch(url, {
+      const res = await safeFetch(url, {
         method: 'GET',
         headers: {
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
