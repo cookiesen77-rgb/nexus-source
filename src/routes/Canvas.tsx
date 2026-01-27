@@ -18,6 +18,8 @@ import { DEFAULT_IMAGE_MODEL } from '@/config/models'
 import { useProjectsStore } from '@/store/projects'
 import CanvasAssistantDrawer from '@/components/canvas/CanvasAssistantDrawer'
 import NodeRemarkModal from '@/components/canvas/NodeRemarkModal'
+import DownloadModal from '@/components/canvas/DownloadModal'
+import HistoryPanel from '@/components/canvas/HistoryPanel'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { useSettingsStore } from '@/store/settings'
 import { saveMedia } from '@/lib/mediaStorage'
@@ -46,6 +48,8 @@ export default function Canvas() {
   const [ctxOpen, setCtxOpen] = useState(false)
   const [ctxPayload, setCtxPayload] = useState<CanvasContextPayload | null>(null)
   const [remarkNodeId, setRemarkNodeId] = useState<string | null>(null)
+  const [downloadModalOpen, setDownloadModalOpen] = useState(false)
+  const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
 
   // 新事件系统状态
   const [connectPreview, setConnectPreview] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } | null>(null)
@@ -450,14 +454,14 @@ export default function Canvas() {
           </button>
           <button
             className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border-color)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
-            onClick={() => window.alert('批量下载面板：稍后补齐（先对齐 Pencil UI）')}
+            onClick={() => setDownloadModalOpen(true)}
             title="批量下载"
           >
             <Download className="h-[18px] w-[18px]" />
           </button>
           <button
             className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border-color)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
-            onClick={() => window.alert('历史素材面板：稍后补齐（先对齐 Pencil UI）')}
+            onClick={() => setHistoryPanelOpen((v) => !v)}
             title="历史素材"
           >
             <History className="h-[18px] w-[18px]" />
@@ -653,6 +657,39 @@ export default function Canvas() {
       </div>
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      
+      <DownloadModal 
+        open={downloadModalOpen} 
+        onClose={() => setDownloadModalOpen(false)} 
+        nodes={useGraphStore.getState().nodes}
+      />
+      
+      {historyPanelOpen && (
+        <div className="fixed right-0 top-0 z-40 h-full">
+          <HistoryPanel 
+            onClose={() => setHistoryPanelOpen(false)}
+            onAddToCanvas={(asset) => {
+              const vp = useGraphStore.getState().viewport
+              const wrap = canvasWrapRef.current
+              const rect = wrap?.getBoundingClientRect()
+              const z = vp.zoom || 1
+              const center = rect
+                ? { x: (rect.width * 0.5 - vp.x) / z, y: (rect.height * 0.5 - vp.y) / z }
+                : { x: (-vp.x + 600) / z, y: (-vp.y + 360) / z }
+              const kind = asset.type === 'video' ? 'video' : asset.type === 'audio' ? 'audio' : 'image'
+              const id = addNode(kind, { x: center.x - 120, y: center.y - 80 }, {
+                label: asset.title || (kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '图片'),
+                url: asset.src,
+                sourceUrl: asset.src,
+                model: asset.model,
+                duration: asset.duration,
+                createdAt: Date.now()
+              })
+              setSelected(id)
+            }}
+          />
+        </div>
+      )}
     </div>
   )
 }

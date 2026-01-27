@@ -4,6 +4,13 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+// 检测是否在 Tauri 环境中
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
@@ -42,32 +49,34 @@ export default function DownloadModal({ open, onClose, nodes }: Props) {
   const [selectAll, setSelectAll] = useState(true)
 
   // Extract downloadable items from nodes
+  // 支持 url 和 src 两种字段名（不同来源的节点可能使用不同字段）
   const downloadableItems = useMemo(() => {
     const items: DownloadItem[] = []
 
     nodes.forEach((node) => {
-      if (node.type === 'image' && node.data?.src) {
+      const url = node.data?.url || node.data?.src
+      if (node.type === 'image' && url) {
         items.push({
           id: node.id,
           type: 'image',
-          src: node.data.src,
-          title: node.data.title || `Image_${node.id}`,
+          src: url,
+          title: node.data?.title || node.data?.label || `Image_${node.id}`,
           selected: true
         })
-      } else if (node.type === 'video' && node.data?.src) {
+      } else if (node.type === 'video' && url) {
         items.push({
           id: node.id,
           type: 'video',
-          src: node.data.src,
-          title: node.data.title || `Video_${node.id}`,
+          src: url,
+          title: node.data?.title || node.data?.label || `Video_${node.id}`,
           selected: true
         })
-      } else if (node.type === 'audio' && node.data?.src) {
+      } else if (node.type === 'audio' && url) {
         items.push({
           id: node.id,
           type: 'audio',
-          src: node.data.src,
-          title: node.data.title || `Audio_${node.id}`,
+          src: url,
+          title: node.data?.title || node.data?.label || `Audio_${node.id}`,
           selected: true
         })
       }
@@ -124,7 +133,19 @@ export default function DownloadModal({ open, onClose, nodes }: Props) {
 
   const downloadFile = async (url: string, filename: string) => {
     try {
-      const response = await fetch(url)
+      // 如果是 data URL 或 blob URL，直接使用 anchor 下载
+      if (url.startsWith('data:') || url.startsWith('blob:')) {
+        const link = document.createElement('a')
+        link.href = url
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        return true
+      }
+      
+      // 如果是远程 URL，使用 safeFetch 下载
+      const response = await safeFetch(url)
       const blob = await response.blob()
       const blobUrl = URL.createObjectURL(blob)
 

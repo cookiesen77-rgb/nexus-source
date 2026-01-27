@@ -8,6 +8,7 @@ import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Copy, Expand, Video, Image, Eye, Download, X } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
+import { openExternal } from '@/lib/openExternal'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
 import { useInView } from '@/hooks/useInView'
 
@@ -203,6 +204,19 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
   const handlePreview = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     if (!displayUrl) return
+    
+    // 对于 data URL，在新标签页中打开
+    if (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:')) {
+      window.open(displayUrl, '_blank')
+      return
+    }
+    
+    // 对于 HTTP URL，使用 openExternal（支持 Tauri）
+    if (displayUrl.startsWith('http')) {
+      void openExternal(displayUrl)
+      return
+    }
+    
     window.open(displayUrl, '_blank')
   }, [displayUrl])
 

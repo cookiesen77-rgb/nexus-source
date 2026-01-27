@@ -9,6 +9,7 @@ import React, { memo, useState, useCallback, useEffect } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Download, Expand, Loader2, Copy, ImageIcon, Crop, Eye, Video } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
+import { openExternal } from '@/lib/openExternal'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { useInView } from '@/hooks/useInView'
@@ -197,9 +198,22 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   // 预览功能
   const handlePreview = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    if (nodeData?.url) {
+    if (!nodeData?.url) return
+    
+    // 对于 data URL，在新标签页中打开
+    if (nodeData.url.startsWith('data:')) {
       window.open(nodeData.url, '_blank')
+      return
     }
+    
+    // 对于 HTTP URL，使用 openExternal（支持 Tauri）
+    if (nodeData.url.startsWith('http')) {
+      void openExternal(nodeData.url)
+      return
+    }
+    
+    // 其他情况，尝试直接打开
+    window.open(nodeData.url, '_blank')
   }, [nodeData?.url])
 
   // 视频生成 - 创建 videoConfig 节点并连接
