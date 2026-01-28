@@ -229,7 +229,7 @@ export default function PromptLibraryModal({ open, onClose, onInsert }: Props) {
                         <div className="mt-1 line-clamp-2 text-xs text-[var(--text-secondary)]">{item.desc}</div>
                       )}
                     </div>
-                    <Button size="sm" onClick={() => handleInsert(buildCameraSnippet(item))}>
+                    <Button size="sm" className="shrink-0" onClick={() => handleInsert(buildCameraSnippet(item))}>
                       插入
                     </Button>
                   </div>
@@ -283,7 +283,7 @@ export default function PromptLibraryModal({ open, onClose, onInsert }: Props) {
                         来源：awesome-nano-banana-pro-prompts（GitHub README）
                       </div>
                     </div>
-                    <Button size="sm" onClick={() => handleInsert(item.prompt)}>
+                    <Button size="sm" className="shrink-0" onClick={() => handleInsert(item.prompt)}>
                       插入
                     </Button>
                   </div>
@@ -332,7 +332,7 @@ export default function PromptLibraryModal({ open, onClose, onInsert }: Props) {
                         来源：baoyu-comic 工作流模板
                       </div>
                     </div>
-                    <Button size="sm" onClick={() => handleInsert(item.prompt)}>
+                    <Button size="sm" className="shrink-0" onClick={() => handleInsert(item.prompt)}>
                       插入
                     </Button>
                   </div>
