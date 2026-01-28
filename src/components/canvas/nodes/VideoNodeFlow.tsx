@@ -5,12 +5,14 @@
  * 性能优化：使用 IntersectionObserver 实现懒加载
  */
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Copy, Expand, Video, Image, Eye, Download, X } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
-import { downloadFile, previewFile } from '@/lib/download'
+import { downloadFile } from '@/lib/download'
 import { useInView } from '@/hooks/useInView'
+import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
 
 interface VideoNodeData {
   label?: string
@@ -35,6 +37,7 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
   const nodeData = data as VideoNodeData
   const [showActions, setShowActions] = useState(false)
   const [videoError, setVideoError] = useState('')
+  const [previewModalOpen, setPreviewModalOpen] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
   const persistAttemptedRef = useRef<string>('')
   
@@ -201,19 +204,14 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
     }
   }, [id, displayUrl])
 
-  const handlePreview = useCallback(async (e: React.MouseEvent) => {
+  // 预览功能 - 在应用内模态框中显示
+  const handlePreview = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     if (!displayUrl) {
       window.$message?.warning?.('暂无视频可预览')
       return
     }
-    
-    try {
-      await previewFile(displayUrl, 'video')
-    } catch (err: any) {
-      console.error('[VideoNode] 预览失败:', err)
-      window.$message?.error?.(`预览失败: ${err?.message || '未知错误'}`)
-    }
+    setPreviewModalOpen(true)
   }, [displayUrl])
 
   const handleDownload = useCallback(async (e: React.MouseEvent) => {
@@ -443,6 +441,17 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
             </span>
           </button>
         </div>
+      )}
+
+      {/* 预览弹窗 */}
+      {previewModalOpen && displayUrl && createPortal(
+        <MediaPreviewModal
+          open={previewModalOpen}
+          url={displayUrl}
+          type="video"
+          onClose={() => setPreviewModalOpen(false)}
+        />,
+        document.body
       )}
     </div>
   )

@@ -11,10 +11,11 @@ import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Download, Expand, Loader2, Copy, ImageIcon, Crop, Eye, Video } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
-import { downloadFile, previewFile } from '@/lib/download'
+import { downloadFile } from '@/lib/download'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { useInView } from '@/hooks/useInView'
 import ImageCropModal from '@/components/canvas/ImageCropModal'
+import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
 
 interface ImageNodeData {
   label?: string
@@ -29,6 +30,7 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   const nodeData = data as ImageNodeData
   const [showActions, setShowActions] = useState(false)
   const [cropModalOpen, setCropModalOpen] = useState(false)
+  const [previewModalOpen, setPreviewModalOpen] = useState(false)
   const persistAttemptedRef = React.useRef<string>('')
   
   // 懒加载：只有节点进入可视区域时才加载图片
@@ -227,20 +229,14 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     }
   }, [id])
 
-  // 预览功能
-  const handlePreview = useCallback(async (e: React.MouseEvent) => {
+  // 预览功能 - 在应用内模态框中显示
+  const handlePreview = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     if (!nodeData?.url) {
       window.$message?.warning?.('暂无图片可预览')
       return
     }
-    
-    try {
-      await previewFile(nodeData.url, 'image')
-    } catch (err: any) {
-      console.error('[ImageNode] 预览失败:', err)
-      window.$message?.error?.(`预览失败: ${err?.message || '未知错误'}`)
-    }
+    setPreviewModalOpen(true)
   }, [nodeData?.url])
 
   // 视频生成 - 创建 videoConfig 节点并连接
@@ -417,6 +413,17 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
           imageUrl={nodeData.url}
           onClose={() => setCropModalOpen(false)}
           onCrop={handleCropComplete}
+        />,
+        document.body
+      )}
+
+      {/* 预览弹窗 */}
+      {previewModalOpen && nodeData?.url && createPortal(
+        <MediaPreviewModal
+          open={previewModalOpen}
+          url={nodeData.url}
+          type="image"
+          onClose={() => setPreviewModalOpen(false)}
         />,
         document.body
       )}
