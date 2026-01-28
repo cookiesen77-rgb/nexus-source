@@ -237,12 +237,23 @@ export default function ImageCropModal({ open, imageUrl, onClose, onCrop }: Prop
     const scaleX = imageSize.width / displaySize.width
     const scaleY = imageSize.height / displaySize.height
     
+    // 使用 Math.round 取整，避免浮点数导致的边缘问题（尤其在 Windows 上）
     const realCrop = {
-      x: cropArea.x * scaleX,
-      y: cropArea.y * scaleY,
-      width: cropArea.width * scaleX,
-      height: cropArea.height * scaleY,
+      x: Math.round(cropArea.x * scaleX),
+      y: Math.round(cropArea.y * scaleY),
+      width: Math.round(cropArea.width * scaleX),
+      height: Math.round(cropArea.height * scaleY),
     }
+    
+    // 确保尺寸至少为 1
+    realCrop.width = Math.max(1, realCrop.width)
+    realCrop.height = Math.max(1, realCrop.height)
+    
+    // 确保不超出图片边界
+    realCrop.x = Math.min(realCrop.x, imageSize.width - realCrop.width)
+    realCrop.y = Math.min(realCrop.y, imageSize.height - realCrop.height)
+    realCrop.x = Math.max(0, realCrop.x)
+    realCrop.y = Math.max(0, realCrop.y)
     
     const canvas = document.createElement('canvas')
     canvas.width = realCrop.width
@@ -250,6 +261,9 @@ export default function ImageCropModal({ open, imageUrl, onClose, onCrop }: Prop
     
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    
+    // 禁用图像平滑，保持像素精确
+    ctx.imageSmoothingEnabled = false
     
     const img = new Image()
     img.crossOrigin = 'anonymous'

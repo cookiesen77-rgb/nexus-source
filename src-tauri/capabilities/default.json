@@ -11,6 +11,10 @@
     "updater:default",
     "process:allow-restart",
     "process:allow-exit",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-write-text-file",
+    "fs:write-all",
     {
       "identifier": "http:default",
       "allow": [
