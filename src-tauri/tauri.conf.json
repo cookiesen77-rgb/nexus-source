@@ -40,15 +40,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "createUpdaterArtifacts": true
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJCMjc2ODUxMzM5RkM5NzUKUldSMXlaOHpVV2dudTEwaytWWlpoR0xLRVd3eHBFTGdqWGVIOXBSekNNVE5reGFtWVQvQ1hYcmgK",
-      "endpoints": [
-        "https://github.com/cookiesen77-rgb/nexus-source/releases/latest/download/latest.json"
-      ]
-    }
+    ]
   }
 }

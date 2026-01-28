@@ -9,6 +9,9 @@ import { Button } from '@/components/ui/button'
 // 检测是否在 Tauri 环境中
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
+// 暂时禁用自动更新功能（签名问题待解决）
+const UPDATER_ENABLED = false
+
 interface UpdateInfo {
   version: string
   date?: string
@@ -115,8 +118,8 @@ export default function UpdateChecker() {
     return () => clearTimeout(timer)
   }, [checkForUpdates])
 
-  // 非 Tauri 环境不渲染
-  if (!isTauri) return null
+  // 非 Tauri 环境或更新功能未启用时不渲染
+  if (!isTauri || !UPDATER_ENABLED) return null
 
   // 不显示横幅时隐藏
   if (!showBanner && status !== 'checking') return null
