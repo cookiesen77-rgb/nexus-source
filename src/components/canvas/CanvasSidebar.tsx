@@ -82,40 +82,35 @@ export default function CanvasSidebar({
       </button>
 
       <IconButton
-        title="工作流模板（开发中）"
-        disabled={!onOpenWorkflow}
+        title="工作流模板"
         onClick={() => onOpenWorkflow?.()}
       >
         <LayoutGrid className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="导演台（开发中）"
-        disabled={!onOpenDirector}
+        title="导演台"
         onClick={() => onOpenDirector?.()}
       >
         <Video className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="草图编辑器（开发中）"
-        disabled={!onOpenSketch}
+        title="草图编辑器"
         onClick={() => onOpenSketch?.()}
       >
         <Brush className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="音频工作室（开发中）"
-        disabled={!onOpenAudio}
+        title="音频工作室"
         onClick={() => onOpenAudio?.()}
       >
         <Music className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="提示词库（开发中）"
-        disabled={!onOpenPromptLibrary}
+        title="提示词库"
         onClick={() => onOpenPromptLibrary?.()}
       >
         <BookOpen className="h-5 w-5" />
