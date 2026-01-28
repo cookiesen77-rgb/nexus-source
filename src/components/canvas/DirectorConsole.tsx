@@ -243,40 +243,36 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
-        className="flex h-[min(82vh,860px)] w-[min(1120px,96vw)] flex-col overflow-hidden rounded-3xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-2xl"
+        className="flex h-[min(82vh,860px)] w-[min(1120px,96vw)] flex-col overflow-hidden rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[var(--border-color)] bg-[var(--bg-tertiary)] p-4">
+        <div className="flex items-center justify-between border-b border-[var(--border-color)] px-5 py-4">
           <div className="flex items-center gap-3">
-            <div className="rounded-xl border border-[rgb(var(--accent-rgb)/0.2)] bg-[rgb(var(--accent-rgb)/0.15)] p-2">
-              <Sparkles className="h-4 w-4 text-[var(--accent-color)]" />
-            </div>
-            <div className="flex flex-col">
-              <span className="text-sm font-bold text-[var(--text-primary)]">导演台</span>
-              <span className="text-[11px] text-[var(--text-secondary)]">分镜规划 + 自动生成节点</span>
-            </div>
+            <Sparkles className="h-5 w-5 text-[var(--accent-color)]" />
+            <h2 className="text-lg font-semibold text-[var(--text-primary)]">导演台</h2>
+            <span className="text-xs text-[var(--text-secondary)]">分镜规划 + 自动生成节点</span>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowHistory(!showHistory)}
               className={cn(
-                'rounded-full p-2 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] hover:text-[var(--text-primary)]',
+                'rounded-full p-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] hover:text-[var(--text-primary)]',
                 showHistory && 'text-[var(--accent-color)]'
               )}
               title="历史记录"
             >
-              <Clock className="h-[18px] w-[18px]" />
+              <Clock className="h-5 w-5" />
             </button>
             <button
               onClick={onClose}
-              className="rounded-full p-2 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] hover:text-[var(--text-primary)]"
+              className="rounded-full p-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] hover:text-[var(--text-primary)]"
             >
-              <X className="h-[18px] w-[18px]" />
+              <X className="h-5 w-5" />
             </button>
           </div>
         </div>

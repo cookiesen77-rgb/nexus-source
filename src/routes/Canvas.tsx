@@ -677,7 +677,6 @@ export default function Canvas() {
       <DownloadModal 
         open={downloadModalOpen} 
         onClose={() => setDownloadModalOpen(false)} 
-        nodes={useGraphStore.getState().nodes}
       />
       
       <PromptLibraryModal

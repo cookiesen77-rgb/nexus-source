@@ -24,11 +24,12 @@ import {
   FolderDown
 } from 'lucide-react'
 import type { GraphNode } from '@/graph/types'
+import { useGraphStore } from '@/graph/store'
 
 interface Props {
   open: boolean
   onClose: () => void
-  nodes: GraphNode[]
+  nodes?: GraphNode[]  // 可选，如果不传则从 store 获取
 }
 
 type AssetType = 'image' | 'video' | 'audio'
@@ -41,7 +42,11 @@ interface DownloadItem {
   selected: boolean
 }
 
-export default function DownloadModal({ open, onClose, nodes }: Props) {
+export default function DownloadModal({ open, onClose, nodes: propNodes }: Props) {
+  // 从 store 获取响应式 nodes，如果传入了 propNodes 则使用传入的
+  const storeNodes = useGraphStore((state) => state.nodes)
+  const nodes = propNodes ?? storeNodes
+  
   const [selectedTypes, setSelectedTypes] = useState<Set<AssetType>>(new Set(['image', 'video', 'audio']))
   const [isDownloading, setIsDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)

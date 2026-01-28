@@ -13,6 +13,7 @@ import { openExternal } from '@/lib/openExternal'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { useInView } from '@/hooks/useInView'
+import ImageCropModal from '@/components/canvas/ImageCropModal'
 
 interface ImageNodeData {
   label?: string
@@ -26,6 +27,7 @@ interface ImageNodeData {
 export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }: NodeProps) {
   const nodeData = data as ImageNodeData
   const [showActions, setShowActions] = useState(false)
+  const [cropModalOpen, setCropModalOpen] = useState(false)
   const persistAttemptedRef = React.useRef<string>('')
   
   // 懒加载：只有节点进入可视区域时才加载图片
@@ -229,12 +231,29 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     }
   }, [id])
 
-  // 裁剪功能（占位）
+  // 裁剪功能
   const handleCrop = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    // TODO: 实现裁剪功能
-    console.log('裁剪功能开发中')
-  }, [])
+    if (!nodeData?.url) {
+      window.$message?.warning?.('暂无图片可裁剪')
+      return
+    }
+    setCropModalOpen(true)
+  }, [nodeData?.url])
+
+  // 裁剪完成回调
+  const handleCropComplete = useCallback((croppedDataUrl: string) => {
+    // 创建新的图片节点，保留原图
+    const store = useGraphStore.getState()
+    const node = store.nodes.find((n) => n.id === id)
+    if (node) {
+      store.addNode('image', { x: node.x + 50, y: node.y + 50 }, {
+        label: '裁剪图',
+        url: croppedDataUrl
+      })
+      window.$message?.success?.('裁剪完成，已创建新节点')
+    }
+  }, [id])
 
   // 预览功能
   const handlePreview = useCallback((e: React.MouseEvent) => {
@@ -422,6 +441,16 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
             </span>
           </button>
         </div>
+      )}
+
+      {/* 裁剪弹窗 */}
+      {cropModalOpen && nodeData?.url && (
+        <ImageCropModal
+          open={cropModalOpen}
+          imageUrl={nodeData.url}
+          onClose={() => setCropModalOpen(false)}
+          onCrop={handleCropComplete}
+        />
       )}
     </div>
   )
