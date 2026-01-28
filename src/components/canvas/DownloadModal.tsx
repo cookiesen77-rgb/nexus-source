@@ -4,13 +4,7 @@
  */
 
 import React, { useState, useMemo, useCallback } from 'react'
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
-
-// 检测是否在 Tauri 环境中
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
-
-// 根据环境选择 fetch 实现
-const safeFetch = isTauri ? tauriFetch : globalThis.fetch
+import { downloadFile } from '@/lib/download'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
@@ -136,52 +130,9 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
     setSelectAll(!selectAll)
   }
 
-  const downloadFile = async (url: string, filename: string) => {
+  const doDownload = async (url: string, filename: string) => {
     try {
-      // 如果是 data URL 或 blob URL，直接使用 anchor 下载
-      if (url.startsWith('data:') || url.startsWith('blob:')) {
-        const link = document.createElement('a')
-        link.href = url
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        return true
-      }
-      
-      // 如果是远程 URL
-      if (isTauri) {
-        // Tauri 环境：使用 tauriFetch 获取 arrayBuffer，然后转换为 Blob
-        const response = await tauriFetch(url)
-        const arrayBuffer = await response.arrayBuffer()
-        const blob = new Blob([arrayBuffer])
-        const blobUrl = URL.createObjectURL(blob)
-        
-        const link = document.createElement('a')
-        link.href = blobUrl
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        
-        URL.revokeObjectURL(blobUrl)
-        return true
-      } else {
-        // Web 环境：使用标准 fetch
-        const response = await globalThis.fetch(url)
-        const blob = await response.blob()
-        const blobUrl = URL.createObjectURL(blob)
-
-        const link = document.createElement('a')
-        link.href = blobUrl
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-
-        URL.revokeObjectURL(blobUrl)
-        return true
-      }
+      return await downloadFile({ url, filename })
     } catch (error) {
       console.error('Download failed:', url, error)
       return false
@@ -200,7 +151,7 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
       const extension = item.type === 'image' ? 'png' : item.type === 'video' ? 'mp4' : 'mp3'
       const filename = `${item.title}.${extension}`
 
-      await downloadFile(item.src, filename)
+      await doDownload(item.src, filename)
       completed++
       setDownloadProgress(Math.round((completed / itemsToDownload.length) * 100))
     }

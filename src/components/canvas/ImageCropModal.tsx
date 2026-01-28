@@ -3,7 +3,7 @@
  * 支持自由裁剪和预设比例裁剪
  */
 
-import React, { useState, useRef, useCallback, useEffect } from 'react'
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { X, RotateCcw, Check } from 'lucide-react'
@@ -20,6 +20,15 @@ interface CropArea {
   y: number
   width: number
   height: number
+}
+
+interface DragState {
+  isDragging: boolean
+  type: 'move' | 'resize' | null
+  handle: string | null
+  startX: number
+  startY: number
+  startCrop: CropArea
 }
 
 const ASPECT_RATIOS = [
@@ -39,10 +48,17 @@ export default function ImageCropModal({ open, imageUrl, onClose, onCrop }: Prop
   const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 })
   const [cropArea, setCropArea] = useState<CropArea>({ x: 0, y: 0, width: 0, height: 0 })
   const [aspectRatio, setAspectRatio] = useState<number | null>(null)
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragType, setDragType] = useState<'move' | 'resize' | null>(null)
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-  const [resizeHandle, setResizeHandle] = useState<string | null>(null)
+  
+  // 使用 ref 存储拖动状态，避免频繁的状态更新
+  const dragRef = useRef<DragState>({
+    isDragging: false,
+    type: null,
+    handle: null,
+    startX: 0,
+    startY: 0,
+    startCrop: { x: 0, y: 0, width: 0, height: 0 }
+  })
+  const rafRef = useRef<number | null>(null)
 
   // 加载图片并初始化裁剪区域
   useEffect(() => {
@@ -131,82 +147,94 @@ export default function ImageCropModal({ open, imageUrl, onClose, onCrop }: Prop
     })
   }, [displaySize])
 
-  // 鼠标事件处理
+  // 鼠标事件处理 - 使用 ref 和 RAF 优化性能
   const handleMouseDown = useCallback((e: React.MouseEvent, type: 'move' | 'resize', handle?: string) => {
     e.preventDefault()
     e.stopPropagation()
-    setIsDragging(true)
-    setDragType(type)
-    setDragStart({ x: e.clientX, y: e.clientY })
-    if (handle) setResizeHandle(handle)
-  }, [])
+    
+    dragRef.current = {
+      isDragging: true,
+      type,
+      handle: handle || null,
+      startX: e.clientX,
+      startY: e.clientY,
+      startCrop: { ...cropArea }
+    }
+  }, [cropArea])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isDragging) return
+    if (!dragRef.current.isDragging) return
     
-    const dx = e.clientX - dragStart.x
-    const dy = e.clientY - dragStart.y
+    // 使用 RAF 节流
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+    }
     
-    setCropArea((prev) => {
-      let newArea = { ...prev }
+    const clientX = e.clientX
+    const clientY = e.clientY
+    
+    rafRef.current = requestAnimationFrame(() => {
+      const { type, handle, startX, startY, startCrop } = dragRef.current
+      const dx = clientX - startX
+      const dy = clientY - startY
       
-      if (dragType === 'move') {
-        newArea.x = Math.max(0, Math.min(prev.x + dx, displaySize.width - prev.width))
-        newArea.y = Math.max(0, Math.min(prev.y + dy, displaySize.height - prev.height))
-      } else if (dragType === 'resize' && resizeHandle) {
-        // 处理各个角的缩放
-        switch (resizeHandle) {
-          case 'se': // 右下角
-            newArea.width = Math.max(50, Math.min(prev.width + dx, displaySize.width - prev.x))
+      let newArea = { ...startCrop }
+      
+      if (type === 'move') {
+        newArea.x = Math.max(0, Math.min(startCrop.x + dx, displaySize.width - startCrop.width))
+        newArea.y = Math.max(0, Math.min(startCrop.y + dy, displaySize.height - startCrop.height))
+      } else if (type === 'resize' && handle) {
+        switch (handle) {
+          case 'se':
+            newArea.width = Math.max(50, Math.min(startCrop.width + dx, displaySize.width - startCrop.x))
             newArea.height = aspectRatio 
               ? newArea.width / aspectRatio 
-              : Math.max(50, Math.min(prev.height + dy, displaySize.height - prev.y))
+              : Math.max(50, Math.min(startCrop.height + dy, displaySize.height - startCrop.y))
             break
-          case 'sw': // 左下角
-            const newWidthSW = Math.max(50, prev.width - dx)
-            newArea.x = prev.x + prev.width - newWidthSW
+          case 'sw':
+            const newWidthSW = Math.max(50, startCrop.width - dx)
+            newArea.x = startCrop.x + startCrop.width - newWidthSW
             newArea.width = newWidthSW
             newArea.height = aspectRatio 
               ? newArea.width / aspectRatio 
-              : Math.max(50, Math.min(prev.height + dy, displaySize.height - prev.y))
+              : Math.max(50, Math.min(startCrop.height + dy, displaySize.height - startCrop.y))
             break
-          case 'ne': // 右上角
-            newArea.width = Math.max(50, Math.min(prev.width + dx, displaySize.width - prev.x))
+          case 'ne':
+            newArea.width = Math.max(50, Math.min(startCrop.width + dx, displaySize.width - startCrop.x))
             const newHeightNE = aspectRatio 
               ? newArea.width / aspectRatio 
-              : Math.max(50, prev.height - dy)
-            newArea.y = prev.y + prev.height - newHeightNE
+              : Math.max(50, startCrop.height - dy)
+            newArea.y = startCrop.y + startCrop.height - newHeightNE
             newArea.height = newHeightNE
             break
-          case 'nw': // 左上角
-            const newWidthNW = Math.max(50, prev.width - dx)
+          case 'nw':
+            const newWidthNW = Math.max(50, startCrop.width - dx)
             const newHeightNW = aspectRatio 
               ? newWidthNW / aspectRatio 
-              : Math.max(50, prev.height - dy)
-            newArea.x = prev.x + prev.width - newWidthNW
-            newArea.y = prev.y + prev.height - newHeightNW
+              : Math.max(50, startCrop.height - dy)
+            newArea.x = startCrop.x + startCrop.width - newWidthNW
+            newArea.y = startCrop.y + startCrop.height - newHeightNW
             newArea.width = newWidthNW
             newArea.height = newHeightNW
             break
         }
         
-        // 边界检查
         newArea.x = Math.max(0, newArea.x)
         newArea.y = Math.max(0, newArea.y)
         newArea.width = Math.min(newArea.width, displaySize.width - newArea.x)
         newArea.height = Math.min(newArea.height, displaySize.height - newArea.y)
       }
       
-      return newArea
+      setCropArea(newArea)
     })
-    
-    setDragStart({ x: e.clientX, y: e.clientY })
-  }, [isDragging, dragType, dragStart, displaySize, aspectRatio, resizeHandle])
+  }, [displaySize, aspectRatio])
 
   const handleMouseUp = useCallback(() => {
-    setIsDragging(false)
-    setDragType(null)
-    setResizeHandle(null)
+    dragRef.current.isDragging = false
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
   }, [])
 
   // 重置裁剪区域

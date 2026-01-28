@@ -8,8 +8,8 @@ import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Copy, Expand, Video, Image, Eye, Download, X } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
-import { openExternal } from '@/lib/openExternal'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
+import { downloadFile, previewFile } from '@/lib/download'
 import { useInView } from '@/hooks/useInView'
 
 interface VideoNodeData {
@@ -209,29 +209,7 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
     }
     
     try {
-      // 对于 data URL 或 blob URL，创建新窗口显示
-      if (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:')) {
-        const win = window.open('', '_blank')
-        if (win) {
-          win.document.write(`<html><head><title>视频预览</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a1a;}</style></head><body><video src="${displayUrl}" controls autoplay style="max-width:100%;max-height:100vh;"/></body></html>`)
-          win.document.close()
-        }
-        return
-      }
-      
-      // 对于 HTTP URL
-      if (displayUrl.startsWith('http')) {
-        const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
-        if (isTauri) {
-          const { openUrl } = await import('@tauri-apps/plugin-opener')
-          await openUrl(displayUrl)
-        } else {
-          window.open(displayUrl, '_blank', 'noopener,noreferrer')
-        }
-        return
-      }
-      
-      window.open(displayUrl, '_blank')
+      await previewFile(displayUrl, 'video')
     } catch (err: any) {
       console.error('[VideoNode] 预览失败:', err)
       window.$message?.error?.(`预览失败: ${err?.message || '未知错误'}`)
@@ -245,60 +223,14 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
       return
     }
     
-    const filename = `video_${Date.now()}.mp4`
-    
     try {
-      // data URL 或 blob URL 直接下载
-      if (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:')) {
-        const link = document.createElement('a')
-        link.href = displayUrl
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        window.$message?.success?.('下载已开始')
-        return
-      }
-      
-      // HTTP URL - 检测 Tauri 环境
-      const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
-      
-      if (isTauri) {
-        // Tauri 环境：使用 tauri HTTP 插件
-        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
-        const response = await tauriFetch(displayUrl)
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-        const arrayBuffer = await response.arrayBuffer()
-        const blob = new Blob([arrayBuffer], { type: 'video/mp4' })
-        const blobUrl = URL.createObjectURL(blob)
-        
-        const link = document.createElement('a')
-        link.href = blobUrl
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        URL.revokeObjectURL(blobUrl)
-        window.$message?.success?.('下载已开始')
-      } else {
-        // Web 环境：通过 fetch 获取 blob
-        const response = await fetch(displayUrl)
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-        const blob = await response.blob()
-        const blobUrl = URL.createObjectURL(blob)
-        
-        const link = document.createElement('a')
-        link.href = blobUrl
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        URL.revokeObjectURL(blobUrl)
-        window.$message?.success?.('下载已开始')
+      const success = await downloadFile({
+        url: displayUrl,
+        filename: `video_${Date.now()}.mp4`,
+        mimeType: 'video/mp4'
+      })
+      if (success) {
+        window.$message?.success?.('下载成功')
       }
     } catch (err: any) {
       console.error('[VideoNode] 下载失败:', err)

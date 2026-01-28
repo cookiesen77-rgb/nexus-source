@@ -10,14 +10,11 @@ import { createPortal } from 'react-dom'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Download, Expand, Loader2, Copy, ImageIcon, Crop, Eye, Video } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
-import { openExternal } from '@/lib/openExternal'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
+import { downloadFile, previewFile } from '@/lib/download'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { useInView } from '@/hooks/useInView'
 import ImageCropModal from '@/components/canvas/ImageCropModal'
-
-// 检测 Tauri 环境
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
 interface ImageNodeData {
   label?: string
@@ -170,59 +167,14 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
       return
     }
     
-    const url = nodeData.url
-    const filename = `image_${id}_${Date.now()}.png`
-    
     try {
-      // data URL 或 blob URL 直接下载
-      if (url.startsWith('data:') || url.startsWith('blob:')) {
-        const a = document.createElement('a')
-        a.href = url
-        a.download = filename
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        window.$message?.success?.('下载已开始')
-        return
-      }
-      
-      // HTTP URL
-      if (isTauri) {
-        // Tauri 环境：使用 tauri HTTP 插件
-        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
-        const response = await tauriFetch(url)
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-        const arrayBuffer = await response.arrayBuffer()
-        const blob = new Blob([arrayBuffer], { type: 'image/png' })
-        const blobUrl = URL.createObjectURL(blob)
-        
-        const a = document.createElement('a')
-        a.href = blobUrl
-        a.download = filename
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(blobUrl)
-        window.$message?.success?.('下载已开始')
-      } else {
-        // Web 环境：通过 fetch 获取 blob
-        const response = await fetch(url)
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`)
-        }
-        const blob = await response.blob()
-        const blobUrl = URL.createObjectURL(blob)
-        
-        const a = document.createElement('a')
-        a.href = blobUrl
-        a.download = filename
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(blobUrl)
-        window.$message?.success?.('下载已开始')
+      const success = await downloadFile({
+        url: nodeData.url,
+        filename: `image_${id}_${Date.now()}.png`,
+        mimeType: 'image/png'
+      })
+      if (success) {
+        window.$message?.success?.('下载成功')
       }
     } catch (err: any) {
       console.error('[ImageNode] 下载失败:', err)
@@ -284,31 +236,7 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     }
     
     try {
-      // 对于 data URL，创建新窗口显示
-      if (nodeData.url.startsWith('data:') || nodeData.url.startsWith('blob:')) {
-        const win = window.open('', '_blank')
-        if (win) {
-          win.document.write(`<html><head><title>图片预览</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a1a;}</style></head><body><img src="${nodeData.url}" style="max-width:100%;max-height:100vh;object-fit:contain;"/></body></html>`)
-          win.document.close()
-        }
-        return
-      }
-      
-      // 对于 HTTP URL
-      if (nodeData.url.startsWith('http')) {
-        if (isTauri) {
-          // Tauri 环境：使用 opener 打开系统浏览器
-          const { openUrl } = await import('@tauri-apps/plugin-opener')
-          await openUrl(nodeData.url)
-        } else {
-          // Web 环境：新窗口打开
-          window.open(nodeData.url, '_blank', 'noopener,noreferrer')
-        }
-        return
-      }
-      
-      // 其他情况
-      window.open(nodeData.url, '_blank')
+      await previewFile(nodeData.url, 'image')
     } catch (err: any) {
       console.error('[ImageNode] 预览失败:', err)
       window.$message?.error?.(`预览失败: ${err?.message || '未知错误'}`)
