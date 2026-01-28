@@ -21,7 +21,7 @@ import ImageEditToolbar from '@/components/canvas/ImageEditToolbar'
 interface ImageNodeData {
   label?: string
   url?: string
-  sourceUrl?: string  // 原始 URL（用于从 localStorage 恢复后重新加载）
+  sourceUrl?: string  // 原始 HTTPS URL（用于下载和恢复）
   mediaId?: string    // IndexedDB 媒体 ID（用于恢复大型数据）
   loading?: boolean
   error?: string
@@ -172,9 +172,20 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
       return
     }
     
+    // 优先使用 sourceUrl（原始 HTTPS URL），避免 asset:// URL 在 Windows 上的问题
+    const downloadUrl = (nodeData?.sourceUrl && nodeData.sourceUrl.startsWith('http')) 
+      ? nodeData.sourceUrl 
+      : nodeData.url
+    
+    console.log('[ImageNode] 下载图片, URL类型:', 
+      downloadUrl.startsWith('data:') ? 'data:' : 
+      downloadUrl.startsWith('asset:') ? 'asset:' : 
+      downloadUrl.startsWith('http') ? 'http' : 'unknown'
+    )
+    
     try {
       const success = await downloadFile({
-        url: nodeData.url,
+        url: downloadUrl,
         filename: `image_${id}_${Date.now()}.png`,
         mimeType: 'image/png'
       })
@@ -233,6 +244,11 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   }, [id])
 
   // 预览功能 - 在应用内模态框中显示
+  // 优先使用 sourceUrl（原始 HTTPS URL），避免 Windows 上的渲染问题
+  const previewUrl = (nodeData?.sourceUrl && nodeData.sourceUrl.startsWith('http')) 
+    ? nodeData.sourceUrl 
+    : nodeData?.url
+  
   const handlePreview = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     if (!nodeData?.url) {
@@ -426,11 +442,11 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
         document.body
       )}
 
-      {/* 预览弹窗 */}
-      {previewModalOpen && nodeData?.url && createPortal(
+      {/* 预览弹窗 - 优先使用 sourceUrl 避免 Windows 黑边问题 */}
+      {previewModalOpen && previewUrl && createPortal(
         <MediaPreviewModal
           open={previewModalOpen}
-          url={nodeData.url}
+          url={previewUrl}
           type="image"
           onClose={() => setPreviewModalOpen(false)}
         />,
