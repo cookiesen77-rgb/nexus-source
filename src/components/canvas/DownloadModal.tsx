@@ -144,20 +144,39 @@ export default function DownloadModal({ open, onClose, nodes }: Props) {
         return true
       }
       
-      // 如果是远程 URL，使用 safeFetch 下载
-      const response = await safeFetch(url)
-      const blob = await response.blob()
-      const blobUrl = URL.createObjectURL(blob)
+      // 如果是远程 URL
+      if (isTauri) {
+        // Tauri 环境：使用 tauriFetch 获取 arrayBuffer，然后转换为 Blob
+        const response = await tauriFetch(url)
+        const arrayBuffer = await response.arrayBuffer()
+        const blob = new Blob([arrayBuffer])
+        const blobUrl = URL.createObjectURL(blob)
+        
+        const link = document.createElement('a')
+        link.href = blobUrl
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        
+        URL.revokeObjectURL(blobUrl)
+        return true
+      } else {
+        // Web 环境：使用标准 fetch
+        const response = await globalThis.fetch(url)
+        const blob = await response.blob()
+        const blobUrl = URL.createObjectURL(blob)
 
-      const link = document.createElement('a')
-      link.href = blobUrl
-      link.download = filename
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
+        const link = document.createElement('a')
+        link.href = blobUrl
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
 
-      URL.revokeObjectURL(blobUrl)
-      return true
+        URL.revokeObjectURL(blobUrl)
+        return true
+      }
     } catch (error) {
       console.error('Download failed:', url, error)
       return false

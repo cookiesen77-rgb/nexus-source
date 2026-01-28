@@ -220,13 +220,54 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
     window.open(displayUrl, '_blank')
   }, [displayUrl])
 
-  const handleDownload = useCallback((e: React.MouseEvent) => {
+  const handleDownload = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
     if (!displayUrl) return
-    const link = document.createElement('a')
-    link.href = displayUrl
-    link.download = `video_${Date.now()}.mp4`
-    link.click()
+    
+    const filename = `video_${Date.now()}.mp4`
+    
+    try {
+      // data URL 或 blob URL 直接下载
+      if (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:')) {
+        const link = document.createElement('a')
+        link.href = displayUrl
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        return
+      }
+      
+      // HTTP URL - 检测 Tauri 环境
+      const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+      
+      if (isTauri) {
+        // Tauri 环境：使用 tauri HTTP 插件
+        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
+        const response = await tauriFetch(displayUrl)
+        const arrayBuffer = await response.arrayBuffer()
+        const blob = new Blob([arrayBuffer], { type: 'video/mp4' })
+        const blobUrl = URL.createObjectURL(blob)
+        
+        const link = document.createElement('a')
+        link.href = blobUrl
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        URL.revokeObjectURL(blobUrl)
+      } else {
+        // Web 环境：直接使用 anchor
+        const link = document.createElement('a')
+        link.href = displayUrl
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+      }
+    } catch (err) {
+      console.error('[VideoNode] 下载失败:', err)
+    }
   }, [displayUrl])
 
   const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {

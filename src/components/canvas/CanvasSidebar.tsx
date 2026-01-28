@@ -82,51 +82,41 @@ export default function CanvasSidebar({
       </button>
 
       <IconButton
-        title="工作流模板"
-        onClick={() => {
-          if (onOpenWorkflow) onOpenWorkflow()
-          else window.alert('工作流模板：稍后补齐')
-        }}
+        title="工作流模板（开发中）"
+        disabled={!onOpenWorkflow}
+        onClick={() => onOpenWorkflow?.()}
       >
         <LayoutGrid className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="导演台"
-        onClick={() => {
-          if (onOpenDirector) onOpenDirector()
-          else window.alert('导演台：稍后补齐')
-        }}
+        title="导演台（开发中）"
+        disabled={!onOpenDirector}
+        onClick={() => onOpenDirector?.()}
       >
         <Video className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="草图编辑器"
-        onClick={() => {
-          if (onOpenSketch) onOpenSketch()
-          else window.alert('草图编辑器：稍后补齐')
-        }}
+        title="草图编辑器（开发中）"
+        disabled={!onOpenSketch}
+        onClick={() => onOpenSketch?.()}
       >
         <Brush className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="音频工作室"
-        onClick={() => {
-          if (onOpenAudio) onOpenAudio()
-          else window.alert('音频工作室：稍后补齐')
-        }}
+        title="音频工作室（开发中）"
+        disabled={!onOpenAudio}
+        onClick={() => onOpenAudio?.()}
       >
         <Music className="h-5 w-5" />
       </IconButton>
 
       <IconButton
-        title="提示词库"
-        onClick={() => {
-          if (onOpenPromptLibrary) onOpenPromptLibrary()
-          else window.alert('提示词库：稍后补齐')
-        }}
+        title="提示词库（开发中）"
+        disabled={!onOpenPromptLibrary}
+        onClick={() => onOpenPromptLibrary?.()}
       >
         <BookOpen className="h-5 w-5" />
       </IconButton>

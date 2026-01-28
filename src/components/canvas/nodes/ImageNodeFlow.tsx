@@ -157,13 +157,54 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     }
   }, [id])
 
-  const handleDownload = useCallback((e: React.MouseEvent) => {
+  const handleDownload = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (nodeData?.url) {
-      const a = document.createElement('a')
-      a.href = nodeData.url
-      a.download = `image_${id}.png`
-      a.click()
+    if (!nodeData?.url) return
+    
+    const url = nodeData.url
+    const filename = `image_${id}.png`
+    
+    try {
+      // data URL 或 blob URL 直接下载
+      if (url.startsWith('data:') || url.startsWith('blob:')) {
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        return
+      }
+      
+      // HTTP URL - 检测 Tauri 环境
+      const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+      
+      if (isTauri) {
+        // Tauri 环境：使用 tauri HTTP 插件
+        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
+        const response = await tauriFetch(url)
+        const arrayBuffer = await response.arrayBuffer()
+        const blob = new Blob([arrayBuffer])
+        const blobUrl = URL.createObjectURL(blob)
+        
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(blobUrl)
+      } else {
+        // Web 环境：直接使用 anchor
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+      }
+    } catch (err) {
+      console.error('[ImageNode] 下载失败:', err)
     }
   }, [id, nodeData?.url])
 
