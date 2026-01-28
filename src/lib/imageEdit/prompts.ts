@@ -98,7 +98,7 @@ export async function polishEditPrompt(
 
   try {
     const result = await chatCompletions({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-mini',
       messages: [
         { role: 'system', content: '你是专业的 AI 绘图提示词工程师。只输出提示词，不要解释。' },
         { role: 'user', content: prompt }
@@ -141,7 +141,7 @@ export async function describeImage(imageDataUrl: string): Promise<string> {
   try {
     // 使用视觉模型描述图片
     const result = await chatCompletions({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-mini',
       messages: [
         {
           role: 'user',

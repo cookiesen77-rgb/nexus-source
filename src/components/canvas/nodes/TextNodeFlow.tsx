@@ -9,9 +9,18 @@
  */
 import React, { memo, useState, useCallback, useRef } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
-import { Copy, Trash2, ImageIcon, Video, Expand } from 'lucide-react'
+import { Copy, Trash2, ImageIcon, Video, Expand, Loader2 } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
+import { chatCompletions } from '@/lib/nexusApi'
+import { 
+  inferPolishModeFromText, 
+  inferPolishModeFromGraph,
+  selectBestPromptTemplate,
+  collectUpstreamInputsForFocus,
+  buildPolishUserText,
+  buildPolishSystemPrompt
+} from '@/lib/polish'
 
 interface TextNodeData {
   content?: string
@@ -24,6 +33,7 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
   const contentRef = useRef(nodeData?.content || '')
   const [displayContent, setDisplayContent] = useState(nodeData?.content || '')
   const [showActions, setShowActions] = useState(false)
+  const [polishing, setPolishing] = useState(false)
 
   // 更新内容到 store（只在 blur 时）
   const handleBlur = useCallback(() => {
@@ -92,6 +102,72 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
     }
   }, [id])
 
+  // AI 润色
+  const handlePolish = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const text = contentRef.current.trim()
+    if (!text) {
+      window.$message?.warning?.('请先输入文本内容')
+      return
+    }
+    
+    setPolishing(true)
+    try {
+      const store = useGraphStore.getState()
+      const { nodes, edges } = store
+      
+      // 1. 推断润色模式
+      const modeFromGraph = inferPolishModeFromGraph(id, nodes, edges)
+      const mode = modeFromGraph || inferPolishModeFromText(text)
+      
+      // 2. 收集上游输入
+      const upstreamInputs = collectUpstreamInputsForFocus({ focusNodeId: id, nodes, edges })
+      
+      // 3. 选择最佳提示词模板
+      const promptTemplate = await selectBestPromptTemplate({
+        mode,
+        userText: text,
+        contextText: ''
+      })
+      
+      // 4. 构建润色请求
+      const userMessage = buildPolishUserText({
+        mode,
+        userText: text,
+        promptTemplate,
+        upstreamInputs
+      })
+      const systemPrompt = buildPolishSystemPrompt(mode)
+      
+      // 5. 调用 AI API
+      const result = await chatCompletions({
+        model: 'gpt-5-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 0.7,
+        max_tokens: 2000
+      })
+      
+      const polished = result?.choices?.[0]?.message?.content?.trim()
+      if (polished) {
+        contentRef.current = polished
+        setDisplayContent(polished)
+        // 同步到 store
+        store.updateNode(id, { data: { content: polished } })
+        window.$message?.success?.('润色完成')
+      } else {
+        window.$message?.error?.('润色失败：未获取到结果')
+      }
+    } catch (err: any) {
+      console.error('[TextNode] AI 润色失败:', err)
+      window.$message?.error?.(`润色失败: ${err?.message || '未知错误'}`)
+    } finally {
+      setPolishing(false)
+    }
+  }, [id])
+
   return (
     // 外层 wrapper 提供悬浮按钮空间（参考 Vue 版本）
     <div 
@@ -143,11 +219,21 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
             placeholder="请输入文本内容..."
           />
           <button
-            disabled={!displayContent.trim()}
+            onClick={handlePolish}
+            disabled={!displayContent.trim() || polishing}
             className="mt-2 px-3 py-1.5 text-xs rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent-color)] hover:text-white border border-[var(--border-color)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
           >
-            <span>✨</span>
-            AI 润色
+            {polishing ? (
+              <>
+                <Loader2 size={12} className="animate-spin" />
+                润色中...
+              </>
+            ) : (
+              <>
+                <span>✨</span>
+                AI 润色
+              </>
+            )}
           </button>
         </div>
 
