@@ -20,6 +20,7 @@ import CanvasAssistantDrawer from '@/components/canvas/CanvasAssistantDrawer'
 import NodeRemarkModal from '@/components/canvas/NodeRemarkModal'
 import DownloadModal from '@/components/canvas/DownloadModal'
 import HistoryPanel from '@/components/canvas/HistoryPanel'
+import PromptLibraryModal from '@/components/canvas/PromptLibraryModal'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { useSettingsStore } from '@/store/settings'
 import { saveMedia } from '@/lib/mediaStorage'
@@ -50,6 +51,7 @@ export default function Canvas() {
   const [remarkNodeId, setRemarkNodeId] = useState<string | null>(null)
   const [downloadModalOpen, setDownloadModalOpen] = useState(false)
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
+  const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
 
   // 新事件系统状态
   const [connectPreview, setConnectPreview] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } | null>(null)
@@ -617,6 +619,7 @@ export default function Canvas() {
               onRedo={redo}
               canUndo={canUndo}
               canRedo={canRedo}
+              onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
             />
 
             {/* CanvasHud 在 React Flow / DOM 画布模式下禁用，因为它订阅 viewport 会导致性能问题 */}
@@ -662,6 +665,19 @@ export default function Canvas() {
         open={downloadModalOpen} 
         onClose={() => setDownloadModalOpen(false)} 
         nodes={useGraphStore.getState().nodes}
+      />
+      
+      <PromptLibraryModal
+        open={promptLibraryOpen}
+        onClose={() => setPromptLibraryOpen(false)}
+        onInsert={(text) => {
+          // 插入提示词到剪贴板，用户可以粘贴到任何地方
+          navigator.clipboard.writeText(text).then(() => {
+            window.$message?.success?.('已复制到剪贴板')
+          }).catch(() => {
+            window.$message?.error?.('复制失败')
+          })
+        }}
       />
       
       {historyPanelOpen && (
