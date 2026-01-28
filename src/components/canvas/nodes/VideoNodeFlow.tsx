@@ -221,9 +221,21 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
       return
     }
     
+    // 优先使用 sourceUrl（原始 HTTPS URL），其次使用 displayUrl
+    const downloadUrl = (nodeData?.sourceUrl && nodeData.sourceUrl.startsWith('http')) 
+      ? nodeData.sourceUrl 
+      : displayUrl
+    
+    console.log('[VideoNode] 下载视频, URL类型:', 
+      downloadUrl.startsWith('data:') ? 'data:' : 
+      downloadUrl.startsWith('asset:') ? 'asset:' : 
+      downloadUrl.startsWith('http') ? 'http' : 'unknown',
+      'URL长度:', downloadUrl.length
+    )
+    
     try {
       const success = await downloadFile({
-        url: displayUrl,
+        url: downloadUrl,
         filename: `video_${Date.now()}.mp4`,
         mimeType: 'video/mp4'
       })
@@ -232,9 +244,11 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
       }
     } catch (err: any) {
       console.error('[VideoNode] 下载失败:', err)
-      window.$message?.error?.(`下载失败: ${err?.message || '未知错误'}`)
+      // 显示更详细的错误信息
+      const errMsg = err?.message || String(err) || '未知错误'
+      window.$message?.error?.(`下载失败: ${errMsg}`)
     }
-  }, [displayUrl])
+  }, [displayUrl, nodeData?.sourceUrl])
 
   const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]

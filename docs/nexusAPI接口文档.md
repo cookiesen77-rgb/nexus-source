@@ -507,7 +507,7 @@ sora 是 OpenAI 的视频生成模型，支持多种格式：
 
 ## 参考链接
 
-- [云雾 API 官方文档](https://help.allapi.store/)
+- [nexus API 官方文档](https://help.allapi.store/)
 - [飞书 Q&A 常见问题](https://ai.feishu.cn/wiki/V0qRwGuPCi8coKku0gNchuTHnYb)
 - [在线调试工具](https://help.allapi.store/doc-8011215)
 

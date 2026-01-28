@@ -15,13 +15,12 @@
     "fs:default",
     "fs:allow-write-text-file",
     "fs:write-all",
+    "fs:read-all",
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "https://nexusapi.cn/**" },
-        { "url": "https://*.nexusapi.cn/**" },
-        { "url": "https://github.com/**" },
-        { "url": "https://api.github.com/**" }
+        { "url": "https://**" },
+        { "url": "http://**" }
       ]
     }
   ]

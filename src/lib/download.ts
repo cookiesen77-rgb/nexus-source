@@ -14,23 +14,73 @@ interface DownloadOptions {
 }
 
 /**
+ * Base64 字符串转 Uint8Array（高效处理大型数据）
+ */
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binaryString = atob(base64)
+  const len = binaryString.length
+  const bytes = new Uint8Array(len)
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i)
+  }
+  return bytes
+}
+
+/**
+ * 从 asset:// URL 中提取本地文件路径
+ * asset://localhost/path/to/file -> /path/to/file
+ */
+function extractLocalPath(assetUrl: string): string | null {
+  if (!assetUrl.startsWith('asset://')) return null
+  try {
+    const url = new URL(assetUrl)
+    // asset://localhost/Users/... -> /Users/...
+    return decodeURIComponent(url.pathname)
+  } catch {
+    return null
+  }
+}
+
+/**
  * 获取文件数据
  */
 async function fetchFileData(url: string): Promise<Uint8Array> {
+  console.log('[download] fetchFileData, url type:', 
+    url.startsWith('data:') ? 'data:' : 
+    url.startsWith('blob:') ? 'blob:' : 
+    url.startsWith('asset:') ? 'asset:' :
+    url.startsWith('http') ? 'http' : 'unknown',
+    'length:', url.length
+  )
+  
   if (url.startsWith('data:')) {
-    // data URL 转 Uint8Array
-    const response = await fetch(url)
-    const arrayBuffer = await response.arrayBuffer()
-    return new Uint8Array(arrayBuffer)
+    // data URL 转 Uint8Array（直接解析 base64，避免 fetch 对大文件的性能问题）
+    const commaIndex = url.indexOf(',')
+    if (commaIndex === -1) {
+      throw new Error('Invalid data URL format')
+    }
+    const base64Data = url.substring(commaIndex + 1)
+    console.log('[download] 解析 data URL, base64 length:', base64Data.length)
+    return base64ToUint8Array(base64Data)
   } else if (url.startsWith('blob:')) {
     // blob URL
     const response = await fetch(url)
     const arrayBuffer = await response.arrayBuffer()
     return new Uint8Array(arrayBuffer)
+  } else if (url.startsWith('asset://') && isTauri) {
+    // Tauri asset:// URL - 读取本地文件
+    const localPath = extractLocalPath(url)
+    if (!localPath) {
+      throw new Error('Invalid asset URL')
+    }
+    console.log('[download] 读取本地文件:', localPath)
+    const { readFile } = await import('@tauri-apps/plugin-fs')
+    return await readFile(localPath)
   } else {
     // HTTP URL
     if (isTauri) {
       const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
+      console.log('[download] Tauri fetch:', url.slice(0, 100))
       const response = await tauriFetch(url)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
@@ -57,6 +107,24 @@ function getExtension(filename: string): string {
 }
 
 /**
+ * 获取文件类型名称（用于保存对话框）
+ */
+function getFileTypeName(ext: string): string {
+  const types: Record<string, string> = {
+    mp4: 'MP4 视频',
+    webm: 'WebM 视频',
+    mov: 'MOV 视频',
+    avi: 'AVI 视频',
+    png: 'PNG 图片',
+    jpg: 'JPEG 图片',
+    jpeg: 'JPEG 图片',
+    gif: 'GIF 图片',
+    webp: 'WebP 图片',
+  }
+  return types[ext] || ext.toUpperCase()
+}
+
+/**
  * 下载文件
  * Tauri: 弹出保存对话框选择路径
  * Web: 使用 anchor 下载到默认位置
@@ -79,7 +147,7 @@ export async function downloadFile(options: DownloadOptions): Promise<boolean> {
       const filePath = await save({
         defaultPath: filename,
         filters: [{
-          name: ext.toUpperCase(),
+          name: getFileTypeName(ext),
           extensions: [ext]
         }]
       })
@@ -113,8 +181,10 @@ export async function downloadFile(options: DownloadOptions): Promise<boolean> {
 
       return true
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error('[download] 下载失败:', err)
-    throw err
+    // 提供更详细的错误信息
+    const errMsg = err?.message || String(err) || '未知错误'
+    throw new Error(`下载失败: ${errMsg}`)
   }
 }
