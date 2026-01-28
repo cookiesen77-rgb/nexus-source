@@ -21,6 +21,11 @@ import NodeRemarkModal from '@/components/canvas/NodeRemarkModal'
 import DownloadModal from '@/components/canvas/DownloadModal'
 import HistoryPanel from '@/components/canvas/HistoryPanel'
 import PromptLibraryModal from '@/components/canvas/PromptLibraryModal'
+import WorkflowTemplatesModal from '@/components/canvas/WorkflowTemplatesModal'
+import DirectorConsole from '@/components/canvas/DirectorConsole'
+import SketchEditor from '@/components/canvas/SketchEditor'
+import SonicStudio from '@/components/canvas/SonicStudio'
+import { getWorkflowById } from '@/config/workflows'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { useSettingsStore } from '@/store/settings'
 import { saveMedia } from '@/lib/mediaStorage'
@@ -52,6 +57,10 @@ export default function Canvas() {
   const [downloadModalOpen, setDownloadModalOpen] = useState(false)
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
+  const [workflowTemplatesOpen, setWorkflowTemplatesOpen] = useState(false)
+  const [directorOpen, setDirectorOpen] = useState(false)
+  const [sketchOpen, setSketchOpen] = useState(false)
+  const [audioOpen, setAudioOpen] = useState(false)
 
   // 新事件系统状态
   const [connectPreview, setConnectPreview] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } | null>(null)
@@ -619,6 +628,10 @@ export default function Canvas() {
               onRedo={redo}
               canUndo={canUndo}
               canRedo={canRedo}
+              onOpenWorkflow={() => setWorkflowTemplatesOpen(true)}
+              onOpenDirector={() => setDirectorOpen(true)}
+              onOpenSketch={() => setSketchOpen(true)}
+              onOpenAudio={() => setAudioOpen(true)}
               onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
             />
 
@@ -677,6 +690,151 @@ export default function Canvas() {
           }).catch(() => {
             window.$message?.error?.('复制失败')
           })
+        }}
+      />
+      
+      <WorkflowTemplatesModal
+        open={workflowTemplatesOpen}
+        onClose={() => setWorkflowTemplatesOpen(false)}
+        onSelectTemplate={(templateId) => {
+          const template = getWorkflowById(templateId)
+          if (template && template.createNodes) {
+            const vp = useGraphStore.getState().viewport
+            const el = canvasWrapRef.current
+            let startPosition = { x: 100, y: 100 }
+            if (el) {
+              const rect = el.getBoundingClientRect()
+              const z = vp.zoom || 1
+              startPosition = {
+                x: (rect.width * 0.3 - vp.x) / z,
+                y: (rect.height * 0.3 - vp.y) / z
+              }
+            }
+            const { nodes: newNodes, edges: newEdges } = template.createNodes(startPosition)
+            const store = useGraphStore.getState()
+            newNodes.forEach((n: any) => {
+              store.addNode(n.type, n.position, n.data)
+            })
+            // 延迟添加边，确保节点已创建
+            setTimeout(() => {
+              newEdges.forEach((e: any) => {
+                store.addEdge(e.source, e.target, { sourceHandle: e.sourceHandle, targetHandle: e.targetHandle })
+              })
+            }, 100)
+            window.$message?.success?.(`已添加「${template.name}」工作流模板`)
+          }
+        }}
+      />
+      
+      <DirectorConsole
+        open={directorOpen}
+        onClose={() => setDirectorOpen(false)}
+        onCreateNodes={(payload) => {
+          const store = useGraphStore.getState()
+          const vp = store.viewport
+          const el = canvasWrapRef.current
+          let startX = 100, startY = 100
+          if (el) {
+            const rect = el.getBoundingClientRect()
+            const z = vp.zoom || 1
+            startX = (rect.width * 0.2 - vp.x) / z
+            startY = (rect.height * 0.2 - vp.y) / z
+          }
+          
+          // 创建分镜节点
+          const spacing = 400
+          payload.shots.forEach((shot, index) => {
+            const textId = store.addNode('text', { x: startX, y: startY + index * 200 }, {
+              label: `分镜 ${index + 1}`,
+              content: shot
+            })
+            const configId = store.addNode('imageConfig', { x: startX + spacing, y: startY + index * 200 }, {
+              label: `分镜 ${index + 1}`,
+              model: payload.imageModel,
+              size: payload.aspectRatio
+            })
+            store.addEdge(textId, configId, { sourceHandle: 'right', targetHandle: 'left' })
+          })
+          
+          window.$message?.success?.(`已创建 ${payload.shots.length} 个分镜节点`)
+          setDirectorOpen(false)
+        }}
+      />
+      
+      <SketchEditor
+        open={sketchOpen}
+        onClose={() => setSketchOpen(false)}
+        onGenerate={(data) => {
+          const store = useGraphStore.getState()
+          const vp = store.viewport
+          const el = canvasWrapRef.current
+          let x = 100, y = 100
+          if (el) {
+            const rect = el.getBoundingClientRect()
+            const z = vp.zoom || 1
+            x = (rect.width * 0.5 - vp.x) / z
+            y = (rect.height * 0.5 - vp.y) / z
+          }
+          
+          if (data.mode === 'image') {
+            // 创建图片配置节点，使用草图作为参考
+            const imageId = store.addNode('image', { x, y }, {
+              label: '草图',
+              url: data.sketch
+            })
+            const configId = store.addNode('imageConfig', { x: x + 400, y }, {
+              label: '草图生图',
+              model: DEFAULT_IMAGE_MODEL
+            })
+            store.addEdge(imageId, configId, { sourceHandle: 'right', targetHandle: 'left' })
+            
+            if (data.prompt) {
+              const textId = store.addNode('text', { x: x + 400, y: y - 150 }, {
+                label: '提示词',
+                content: data.prompt
+              })
+              store.addEdge(textId, configId, { sourceHandle: 'right', targetHandle: 'left' })
+            }
+          } else {
+            // 视频模式
+            const imageId = store.addNode('image', { x, y }, {
+              label: '草图',
+              url: data.sketch
+            })
+            const configId = store.addNode('videoConfig', { x: x + 400, y }, {
+              label: '草图生视频'
+            })
+            store.addEdge(imageId, configId, { sourceHandle: 'right', targetHandle: 'left' })
+          }
+          
+          window.$message?.success?.('草图已添加到画布')
+          setSketchOpen(false)
+        }}
+      />
+      
+      <SonicStudio
+        open={audioOpen}
+        onClose={() => setAudioOpen(false)}
+        onAddToCanvas={(data) => {
+          const store = useGraphStore.getState()
+          const vp = store.viewport
+          const el = canvasWrapRef.current
+          let x = 100, y = 100
+          if (el) {
+            const rect = el.getBoundingClientRect()
+            const z = vp.zoom || 1
+            x = (rect.width * 0.5 - vp.x) / z
+            y = (rect.height * 0.5 - vp.y) / z
+          }
+          
+          // 创建音频节点（如果有 audio 类型节点，否则用 text 节点存储链接）
+          store.addNode('text', { x, y }, {
+            label: data.title || '音频',
+            content: `音频链接: ${data.src}\n模型: ${data.model || 'unknown'}`
+          })
+          
+          window.$message?.success?.('音频已添加到画布')
+          setAudioOpen(false)
         }}
       />
       
