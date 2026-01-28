@@ -201,28 +201,49 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
     }
   }, [id, displayUrl])
 
-  const handlePreview = useCallback((e: React.MouseEvent) => {
+  const handlePreview = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!displayUrl) return
+    if (!displayUrl) {
+      window.$message?.warning?.('暂无视频可预览')
+      return
+    }
     
-    // 对于 data URL，在新标签页中打开
-    if (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:')) {
+    try {
+      // 对于 data URL 或 blob URL，创建新窗口显示
+      if (displayUrl.startsWith('data:') || displayUrl.startsWith('blob:')) {
+        const win = window.open('', '_blank')
+        if (win) {
+          win.document.write(`<html><head><title>视频预览</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#1a1a1a;}</style></head><body><video src="${displayUrl}" controls autoplay style="max-width:100%;max-height:100vh;"/></body></html>`)
+          win.document.close()
+        }
+        return
+      }
+      
+      // 对于 HTTP URL
+      if (displayUrl.startsWith('http')) {
+        const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+        if (isTauri) {
+          const { openUrl } = await import('@tauri-apps/plugin-opener')
+          await openUrl(displayUrl)
+        } else {
+          window.open(displayUrl, '_blank', 'noopener,noreferrer')
+        }
+        return
+      }
+      
       window.open(displayUrl, '_blank')
-      return
+    } catch (err: any) {
+      console.error('[VideoNode] 预览失败:', err)
+      window.$message?.error?.(`预览失败: ${err?.message || '未知错误'}`)
     }
-    
-    // 对于 HTTP URL，使用 openExternal（支持 Tauri）
-    if (displayUrl.startsWith('http')) {
-      void openExternal(displayUrl)
-      return
-    }
-    
-    window.open(displayUrl, '_blank')
   }, [displayUrl])
 
   const handleDownload = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!displayUrl) return
+    if (!displayUrl) {
+      window.$message?.warning?.('暂无视频可下载')
+      return
+    }
     
     const filename = `video_${Date.now()}.mp4`
     
@@ -235,6 +256,7 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
+        window.$message?.success?.('下载已开始')
         return
       }
       
@@ -245,6 +267,9 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
         // Tauri 环境：使用 tauri HTTP 插件
         const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
         const response = await tauriFetch(displayUrl)
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
         const arrayBuffer = await response.arrayBuffer()
         const blob = new Blob([arrayBuffer], { type: 'video/mp4' })
         const blobUrl = URL.createObjectURL(blob)
@@ -256,17 +281,28 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
         link.click()
         document.body.removeChild(link)
         URL.revokeObjectURL(blobUrl)
+        window.$message?.success?.('下载已开始')
       } else {
-        // Web 环境：直接使用 anchor
+        // Web 环境：通过 fetch 获取 blob
+        const response = await fetch(displayUrl)
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+        const blob = await response.blob()
+        const blobUrl = URL.createObjectURL(blob)
+        
         const link = document.createElement('a')
-        link.href = displayUrl
+        link.href = blobUrl
         link.download = filename
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
+        URL.revokeObjectURL(blobUrl)
+        window.$message?.success?.('下载已开始')
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('[VideoNode] 下载失败:', err)
+      window.$message?.error?.(`下载失败: ${err?.message || '未知错误'}`)
     }
   }, [displayUrl])
 
