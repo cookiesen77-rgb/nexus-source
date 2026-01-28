@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useRef } from 'react'
+import React, { useEffect, useMemo, useRef, useCallback } from 'react'
 import type { NodeType } from '@/graph/types'
 import { useGraphStore } from '@/graph/store'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { Image, Music, Save, Settings2, SlidersHorizontal, Type, Video } from 'lucide-react'
+import { saveMedia } from '@/lib/mediaStorage'
 
 const NODE_OPTIONS: { type: NodeType; name: string; Icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>; color: string }[] = [
   { type: 'text', name: '文本节点', Icon: Type, color: '#3b82f6' },
@@ -57,7 +58,91 @@ export default function NodePalettePanel({
     }
   }, [onClose])
 
+  // 文件选择器引用
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingTypeRef = useRef<NodeType | null>(null)
+
+  // 处理文件选择
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    const type = pendingTypeRef.current
+    if (!type) return
+
+    const file = files[0]
+    const reader = new FileReader()
+    
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string
+      if (!dataUrl) return
+
+      const { w, h } = getNodeSize(type)
+      const pos = { x: spawnAt.x - w * 0.5, y: spawnAt.y - h * 0.5 }
+      const label = file.name || defaultLabelFor(type)
+
+      useGraphStore.getState().withBatchUpdates(() => {
+        const store = useGraphStore.getState()
+        const id = store.addNode(type, pos, {
+          label,
+          url: dataUrl,
+          sourceUrl: '',
+          fileName: file.name,
+          fileType: file.type,
+          createdAt: Date.now()
+        })
+        useGraphStore.getState().setSelected(id)
+
+        // 异步保存到 IndexedDB
+        const projectId = store.projectId || 'default'
+        saveMedia({
+          nodeId: id,
+          projectId,
+          type,
+          data: dataUrl,
+        }).then((mediaId) => {
+          if (mediaId) {
+            useGraphStore.getState().patchNodeDataSilent(id, { mediaId })
+          }
+        }).catch(() => {
+          // ignore
+        })
+      })
+
+      onSpawned()
+      onClose()
+    }
+
+    reader.readAsDataURL(file)
+
+    // 清理 input 以便再次选择同一文件
+    e.target.value = ''
+    pendingTypeRef.current = null
+  }, [spawnAt, onSpawned, onClose])
+
+  // 触发文件选择器
+  const triggerFileUpload = useCallback((type: NodeType) => {
+    pendingTypeRef.current = type
+    
+    // 根据类型设置 accept
+    let accept = ''
+    if (type === 'image') accept = 'image/*'
+    else if (type === 'video') accept = 'video/*'
+    else if (type === 'audio') accept = 'audio/*'
+
+    if (fileInputRef.current) {
+      fileInputRef.current.accept = accept
+      fileInputRef.current.click()
+    }
+  }, [])
+
   const spawn = (type: NodeType) => {
+    // 图片/视频/音频节点触发文件选择器
+    if (type === 'image' || type === 'video' || type === 'audio') {
+      triggerFileUpload(type)
+      return
+    }
+
     const { w, h } = getNodeSize(type)
     const pos = { x: spawnAt.x - w * 0.5, y: spawnAt.y - h * 0.5 }
     const label = defaultLabelFor(type)
@@ -91,6 +176,13 @@ export default function NodePalettePanel({
       ref={panelRef}
       className="w-[220px] rounded-[14px] border border-[var(--border-color)] bg-[var(--bg-secondary)] p-2"
     >
+      {/* 隐藏的文件选择器 */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFileSelect}
+      />
       <div className="flex flex-col gap-1">
         {options.map((opt) => (
           <button

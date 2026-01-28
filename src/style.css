@@ -92,6 +92,31 @@ body {
 }
 
 /* ================================
+   Select / Option 深色模式适配
+   ================================ */
+select {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+select option {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+/* 深色模式下的 select 样式 */
+.dark select {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  color-scheme: dark;
+}
+
+.dark select option {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* ================================
    性能优化 - 禁用画布相关的所有过渡
    ================================ */
 
