@@ -15,28 +15,20 @@ jobs:
           - platform: macos-13
             args: --target x86_64-apple-darwin
             name: macOS-Intel
+            ext: dmg
           - platform: macos-14
             args: --target aarch64-apple-darwin
             name: macOS-ARM
+            ext: dmg
           - platform: windows-latest
             args: ''
             name: Windows
+            ext: exe
 
     runs-on: ${{ matrix.platform }}
     
     steps:
       - uses: actions/checkout@v4
-
-      - name: Debug - Check secrets
-        run: |
-          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY is set (length: ${#TAURI_SIGNING_PRIVATE_KEY})"
-          else
-            echo "TAURI_SIGNING_PRIVATE_KEY is NOT set"
-          fi
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        shell: bash
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -58,16 +50,71 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        run: npm run tauri build -- ${{ matrix.args }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Upload artifacts (macOS Intel)
+        if: matrix.name == 'macOS-Intel'
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: 'Nexus v__VERSION__'
-          releaseBody: |
-            ## Nexus v__VERSION__
+          name: macos-intel
+          path: |
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.tar.gz.sig
+
+      - name: Upload artifacts (macOS ARM)
+        if: matrix.name == 'macOS-ARM'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm
+          path: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.tar.gz.sig
+
+      - name: Upload artifacts (Windows)
+        if: matrix.name == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.sig
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
+
+  release:
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Nexus v${{ steps.version.outputs.version }}
+          body: |
+            ## Nexus v${{ steps.version.outputs.version }}
             
             AI 工作流画布应用
             
@@ -83,6 +130,44 @@ jobs:
             
             ### 获取 API Key
             访问 [nexusapi.cn](https://nexusapi.cn/) 获取 API Key
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+            artifacts/**/*.msi
+            artifacts/**/*.tar.gz
+            artifacts/**/*.sig
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate latest.json
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cat > latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "Nexus v${VERSION} - 自动更新支持",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-x86_64": {
+                "signature": "$(cat artifacts/macos-intel/*.tar.gz.sig 2>/dev/null || echo '')",
+                "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/Nexus_${VERSION}_x64.app.tar.gz"
+              },
+              "darwin-aarch64": {
+                "signature": "$(cat artifacts/macos-arm/*.tar.gz.sig 2>/dev/null || echo '')",
+                "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/Nexus_${VERSION}_aarch64.app.tar.gz"
+              },
+              "windows-x86_64": {
+                "signature": "$(cat artifacts/windows/*.exe.sig 2>/dev/null || echo '')",
+                "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/Nexus_${VERSION}_x64-setup.exe"
+              }
+            }
+          }
+          EOF
+          cat latest.json
+
+      - name: Upload latest.json
+        uses: softprops/action-gh-release@v1
+        with:
+          files: latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
