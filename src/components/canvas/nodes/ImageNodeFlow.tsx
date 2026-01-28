@@ -16,6 +16,7 @@ import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } 
 import { useInView } from '@/hooks/useInView'
 import ImageCropModal from '@/components/canvas/ImageCropModal'
 import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
+import ImageEditToolbar from '@/components/canvas/ImageEditToolbar'
 
 interface ImageNodeData {
   label?: string
@@ -29,6 +30,8 @@ interface ImageNodeData {
 export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }: NodeProps) {
   const nodeData = data as ImageNodeData
   const [showActions, setShowActions] = useState(false)
+  const [editToolbarBusy, setEditToolbarBusy] = useState(false)
+  const [editToolbarHover, setEditToolbarHover] = useState(false)
   const [cropModalOpen, setCropModalOpen] = useState(false)
   const [previewModalOpen, setPreviewModalOpen] = useState(false)
   const persistAttemptedRef = React.useRef<string>('')
@@ -268,7 +271,7 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
       ref={inViewRef}
       className="relative pr-[50px] pt-[20px]"
       onMouseEnter={() => setShowActions(true)}
-      onMouseLeave={() => setShowActions(false)}
+      onMouseLeave={() => !editToolbarBusy && !editToolbarHover && setShowActions(false)}
     >
       {/* 节点主体 */}
       <div
@@ -335,9 +338,21 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
         <Handle type="source" position={Position.Right} id="right" />
       </div>
 
-      {/* 悬浮操作按钮 - 复制（右上角偏左，与 Vue 版本一致） */}
-      {showActions && (
-        <div className="absolute -top-5 right-12 z-[1000]">
+      {/* 图片编辑工具栏（在节点上方，仅在有图片时显示） */}
+      {nodeData?.url && (
+        <ImageEditToolbar
+          nodeId={id}
+          imageUrl={nodeData.url}
+          visible={showActions || editToolbarBusy || editToolbarHover}
+          onBusyChange={setEditToolbarBusy}
+          onHoverChange={setEditToolbarHover}
+        />
+      )}
+
+      {/* 右侧操作按钮（只在有图片时显示） */}
+      {showActions && nodeData?.url && (
+        <div className="absolute right-10 top-1/2 -translate-y-1/2 translate-x-full flex flex-col gap-2 z-[1000]">
+          {/* 复制 */}
           <button
             onClick={handleDuplicate}
             className="group p-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 flex items-center gap-0 hover:gap-1.5 transition-all shadow-sm w-max"
@@ -347,12 +362,6 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
               复制
             </span>
           </button>
-        </div>
-      )}
-
-      {/* 右侧操作按钮（只在有图片时显示） */}
-      {showActions && nodeData?.url && (
-        <div className="absolute right-10 top-1/2 -translate-y-1/2 translate-x-full flex flex-col gap-2 z-[1000]">
           {/* 图片生图 */}
           <button
             onClick={handleImageGen}
