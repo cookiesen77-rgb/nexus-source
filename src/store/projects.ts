@@ -4,6 +4,7 @@ import { deleteMediaByProjectId } from '@/lib/mediaStorage'
 export type ProjectMeta = {
   id: string
   name: string
+  description?: string
   thumbnail?: string
   createdAt: number
   updatedAt: number
@@ -24,6 +25,7 @@ const readProjects = (): ProjectMeta[] => {
       .map((p: any) => ({
         id: String(p?.id || ''),
         name: String(p?.name || '未命名项目'),
+        description: typeof p?.description === 'string' ? p.description : undefined,
         thumbnail: typeof p?.thumbnail === 'string' ? p.thumbnail : undefined,
         createdAt: Number(p?.createdAt || 0),
         updatedAt: Number(p?.updatedAt || p?.createdAt || 0)
@@ -85,6 +87,7 @@ export type ProjectsState = {
   hydrate: () => void
   create: (name?: string) => string
   rename: (id: string, name: string) => void
+  updateDescription: (id: string, description: string) => void
   duplicate: (id: string) => Promise<string | null>
   remove: (id: string) => Promise<void>
   touch: (id: string) => void
@@ -109,6 +112,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     const nextName = String(name || '').trim()
     if (!nextName) return
     const projects = get().projects.map((p) => (p.id === id ? { ...p, name: nextName, updatedAt: Date.now() } : p))
+    writeProjects(projects)
+    set({ projects })
+  },
+
+  updateDescription: (id, description) => {
+    const projects = get().projects.map((p) => (p.id === id ? { ...p, description: description.trim() || undefined, updatedAt: Date.now() } : p))
     writeProjects(projects)
     set({ projects })
   },
