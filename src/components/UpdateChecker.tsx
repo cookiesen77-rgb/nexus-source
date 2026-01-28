@@ -9,8 +9,8 @@ import { Button } from '@/components/ui/button'
 // 检测是否在 Tauri 环境中
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
-// 暂时禁用自动更新功能（签名问题待解决）
-const UPDATER_ENABLED = false
+// 启用自动更新功能
+const UPDATER_ENABLED = true
 
 interface UpdateInfo {
   version: string

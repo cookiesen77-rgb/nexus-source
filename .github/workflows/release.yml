@@ -93,6 +93,30 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
+      - name: Generate latest.json for auto-updater
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "Nexus v${VERSION}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-x86_64": {
+                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_x64.dmg"
+              },
+              "darwin-aarch64": {
+                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_aarch64.dmg"
+              },
+              "windows-x86_64": {
+                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_x64-setup.exe"
+              }
+            }
+          }
+          EOF
+          cat latest.json
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -113,5 +137,6 @@ jobs:
             artifacts/**/*.dmg
             artifacts/**/*.exe
             artifacts/**/*.msi
+            latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
