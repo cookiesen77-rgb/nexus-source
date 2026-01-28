@@ -475,6 +475,82 @@ Inconsistent lighting, missing props between angles, different times of day, var
     outputType: 'grid'
   },
 
+  // ========== 场景四角度 ==========
+  {
+    id: 'scene_4angle',
+    name: '场景四角度',
+    description: '同一场景的4个经典机位展示（2x2网格）',
+    aspectRatio: '1:1',
+    resolution: '2K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Scene 4-Angle Coverage:
+1. Generate EXACTLY 4 different camera angles of the SAME scene in a 2x2 grid
+2. Maintain PERFECT environmental consistency across all 4 angles
+3. Use the 4 most essential cinematic camera positions
+4. Each angle should reveal different aspects of the scene
+5. Perfect for quick location visualization or game environment reference`,
+    promptTemplate: `A professional 2x2 grid showing the same scene from 4 essential cinematic camera angles.
+
+【SCENE】
+{{USER_PROMPT}}
+
+【ENVIRONMENT CONSISTENCY】
+{{SCENE_DESC}}
+
+【4-ANGLE CAMERA COVERAGE - 2x2 GRID】
+
+Top-Left: WIDE ESTABLISHING SHOT
+- Full scene visible, establishing context and scale
+- Eye-level or slightly elevated
+- Shows the complete environment layout
+- Sets the mood and atmosphere
+
+Top-Right: LOW ANGLE SHOT
+- Camera positioned low, looking upward
+- Creates sense of grandeur and drama
+- Emphasizes height and architectural elements
+- Adds cinematic tension
+
+Bottom-Left: HIGH ANGLE / BIRD'S EYE
+- Camera positioned high, looking down
+- Shows spatial relationships and layout
+- Reveals floor patterns, furniture arrangement
+- Provides tactical/overview perspective
+
+Bottom-Right: DETAIL / POV SHOT
+- Close-up of a key environmental element
+- Or first-person perspective entering the space
+- Shows texture, material quality, atmosphere
+- Reveals important scene details
+
+【STRICT CONSISTENCY REQUIREMENTS】
+- Identical lighting direction and intensity in all 4 panels
+- Same time of day (shadows must match)
+- All props in exact same positions
+- Matching color temperature and grading
+- Consistent atmospheric effects (fog, dust, etc.)
+- Same weather conditions throughout
+
+【STYLE】
+Cinematic film production quality, professional photography, dramatic yet consistent lighting, atmospheric depth, location scouting reference standard.
+
+【TECHNICAL】
+- Clean 2x2 grid layout with thin white borders
+- Each panel perfectly composed
+- 4K ultra-detailed
+- Consistent color grading across all panels
+- Professional environment art quality
+- No perspective distortion
+
+【NEGATIVE】
+Inconsistent lighting, props moved between shots, different time of day, varying atmosphere, blurry, amateur quality, text, watermark, more than 4 panels, uneven grid.`,
+    userPromptPlaceholder: '描述场景：例如"赛博朋克霓虹街道，雨夜，全息广告牌，蒸汽从下水道升起..."',
+    supportsReferenceImage: true,
+    referenceImageGuide: '上传场景参考图，AI 将生成4个角度展示',
+    outputType: 'grid'
+  },
+
   // ========== 动作序列 ==========
   {
     id: 'action_sequence',
