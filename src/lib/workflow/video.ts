@@ -612,13 +612,38 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       }
     } else if (modelCfg.format === 'tencent-video') {
       // Tencent AIGC Video 格式 (Vidu / Hailuo / Kling)
+      // API 文档格式：{ model, input: { prompt, img_url, ... }, parameters: { resolution, duration, ... } }
       const version = modelCfg.defaultParams?.version
       const size = d.size || modelCfg.defaultParams?.size || '720p'
-      payload = { model: modelCfg.key, prompt }
-      if (version) payload.version = version
-      if (ratio) payload.aspect_ratio = ratio
-      if (duration) payload.duration = Number(duration)
-      if (size) payload.resolution = size
+      const dur = Number(duration) || Number(modelCfg.defaultParams?.duration) || 4
+      
+      // 构建 model 名称：使用 version 作为实际的模型名
+      const modelName = version || modelCfg.key
+      
+      payload = {
+        model: modelName,
+        input: {
+          prompt: prompt || '',
+        },
+        parameters: {
+          resolution: size,
+          duration: dur,
+          prompt_extend: true,
+          watermark: false,
+        }
+      }
+      
+      // 添加首帧图片（如果有）
+      if (firstFrame) {
+        payload.input.img_url = firstFrame
+      } else if (refImages.length > 0) {
+        payload.input.img_url = refImages[0]
+      }
+      
+      // 添加宽高比（如果支持）
+      if (ratio) {
+        payload.input.aspect_ratio = ratio
+      }
     } else if (modelCfg.format === 'sora-video') {
       // Sora 2 / OpenAI Videos API 格式 (/videos/generations)
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)

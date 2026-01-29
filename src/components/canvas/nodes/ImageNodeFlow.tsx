@@ -240,16 +240,25 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     }
   }, [id, nodeData?.url])
 
-  // 图片生图 - 创建 imageConfig 节点并连接
+  // 图片生图 - 创建文本节点 + imageConfig 节点并连接
   const handleImageGen = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     const store = useGraphStore.getState()
     const node = store.nodes.find((n) => n.id === id)
     if (node) {
       const baseModelCfg: any = (IMAGE_MODELS as any[]).find((m: any) => m.key === DEFAULT_IMAGE_MODEL) || (IMAGE_MODELS as any[])[0]
-      const newNodeId = store.addNode(
+      
+      // 创建文本节点（提示词输入）
+      const textNodeId = store.addNode(
+        'text',
+        { x: node.x + 350, y: node.y - 120 },
+        { label: '提示词', content: '' }
+      )
+      
+      // 创建 imageConfig 节点
+      const configNodeId = store.addNode(
         'imageConfig',
-        { x: node.x + 400, y: node.y },
+        { x: node.x + 350, y: node.y + 80 },
         { 
           label: '图生图',
           model: DEFAULT_IMAGE_MODEL,
@@ -257,7 +266,14 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
           quality: baseModelCfg?.defaultParams?.quality,
         }
       )
-      store.addEdge(id, newNodeId, { sourceHandle: 'right', targetHandle: 'left' })
+      
+      // 连接：文本节点 → imageConfig（提示词）
+      store.addEdge(textNodeId, configNodeId, { sourceHandle: 'right', targetHandle: 'left' })
+      // 连接：图片节点 → imageConfig（参考图）
+      store.addEdge(id, configNodeId, { sourceHandle: 'right', targetHandle: 'left' })
+      
+      // 选中文本节点，方便用户直接输入
+      store.setSelected(textNodeId)
     }
   }, [id])
 
@@ -300,25 +316,41 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     setPreviewModalOpen(true)
   }, [nodeData?.url])
 
-  // 视频生成 - 创建 videoConfig 节点并连接
+  // 视频生成 - 创建文本节点 + videoConfig 节点并连接
   const handleVideoGen = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     const store = useGraphStore.getState()
     const node = store.nodes.find((n) => n.id === id)
     if (node) {
       const baseModelCfg: any = (VIDEO_MODELS as any[]).find((m: any) => m.key === DEFAULT_VIDEO_MODEL) || (VIDEO_MODELS as any[])[0]
-      const newNodeId = store.addNode(
+      
+      // 创建文本节点（提示词输入）
+      const textNodeId = store.addNode(
+        'text',
+        { x: node.x + 350, y: node.y - 120 },
+        { label: '提示词', content: '' }
+      )
+      
+      // 创建 videoConfig 节点
+      const configNodeId = store.addNode(
         'videoConfig',
-        { x: node.x + 400, y: node.y },
+        { x: node.x + 350, y: node.y + 80 },
         { 
-          label: '视频生成',
+          label: '图生视频',
           model: DEFAULT_VIDEO_MODEL,
           ratio: baseModelCfg?.defaultParams?.ratio,
           dur: baseModelCfg?.defaultParams?.duration,
           size: baseModelCfg?.defaultParams?.size,
         }
       )
-      store.addEdge(id, newNodeId, { sourceHandle: 'right', targetHandle: 'left' })
+      
+      // 连接：文本节点 → videoConfig（提示词）
+      store.addEdge(textNodeId, configNodeId, { sourceHandle: 'right', targetHandle: 'left' })
+      // 连接：图片节点 → videoConfig（首帧图片）
+      store.addEdge(id, configNodeId, { sourceHandle: 'right', targetHandle: 'left' })
+      
+      // 选中文本节点，方便用户直接输入
+      store.setSelected(textNodeId)
     }
   }, [id])
 
