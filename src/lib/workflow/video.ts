@@ -612,38 +612,58 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       }
     } else if (modelCfg.format === 'tencent-video') {
       // Tencent AIGC Video 格式 (Vidu / Hailuo / Kling)
-      // API 文档格式：{ model, input: { prompt, img_url, ... }, parameters: { resolution, duration, ... } }
-      const version = modelCfg.defaultParams?.version
+      // 官方文档：https://help.allapi.store/api-412862124
+      const version = modelCfg.defaultParams?.version || ''
       const size = d.size || modelCfg.defaultParams?.size || '720p'
       const dur = Number(duration) || Number(modelCfg.defaultParams?.duration) || 4
       
-      // 构建 model 名称：使用 version 作为实际的模型名
-      const modelName = version || modelCfg.key
+      // 解析 model_name 和 model_version
+      // key 格式如：vidu-q2-turbo, hailuo-2.3-fast, kling-2.5
+      let modelName = 'Vidu'
+      let modelVersion = version
+      
+      const keyLower = modelCfg.key.toLowerCase()
+      if (keyLower.startsWith('vidu')) {
+        modelName = 'Vidu'
+        // version 已从 defaultParams 获取
+      } else if (keyLower.startsWith('hailuo')) {
+        modelName = 'Hailuo'
+      } else if (keyLower.startsWith('kling')) {
+        modelName = 'Kling'
+      }
       
       payload = {
-        model: modelName,
-        input: {
-          prompt: prompt || '',
-        },
-        parameters: {
-          resolution: size,
-          duration: dur,
-          prompt_extend: true,
-          watermark: false,
+        model_name: modelName,
+        model_version: modelVersion,
+        prompt: prompt || '',
+        enhance_prompt: 'Enabled',
+        output_config: {
+          storage_mode: 'Temporary',
+          resolution: size.toUpperCase(),  // 720P, 1080P
+          duration: String(dur),
         }
       }
       
-      // 添加首帧图片（如果有）
-      if (firstFrame) {
-        payload.input.img_url = firstFrame
-      } else if (refImages.length > 0) {
-        payload.input.img_url = refImages[0]
+      // 添加宽高比
+      if (ratio) {
+        payload.output_config.aspect_ratio = ratio
       }
       
-      // 添加宽高比（如果支持）
-      if (ratio) {
-        payload.input.aspect_ratio = ratio
+      // 添加首帧图片（如果有）
+      if (firstFrame || refImages.length > 0) {
+        const imageUrl = firstFrame || refImages[0]
+        payload.file_infos = [{
+          type: 'Url',
+          url: imageUrl
+        }]
       }
+      
+      // 添加尾帧图片（如果有）
+      if (lastFrame) {
+        payload.last_frame_url = lastFrame
+      }
+      
+      console.log('[tencent-video] 请求参数:', JSON.stringify(payload, null, 2))
     } else if (modelCfg.format === 'sora-video') {
       // Sora 2 / OpenAI Videos API 格式 (/videos/generations)
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
