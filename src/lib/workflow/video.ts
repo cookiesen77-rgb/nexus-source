@@ -462,7 +462,16 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
 
   // 优先使用 overrides 参数
   const ratio = String(overrides?.ratio || d.ratio || modelCfg.defaultParams?.ratio || modelCfg.defaultParams?.aspect_ratio || '')
-  const duration = Number(overrides?.duration || d.duration || d.dur || modelCfg.defaultParams?.duration || 0)
+  
+  // 详细的 duration 来源追踪
+  const durationSources = {
+    'overrides.duration': overrides?.duration,
+    'd.duration': d.duration,
+    'd.dur': d.dur,
+    'defaultParams.duration': modelCfg.defaultParams?.duration
+  }
+  const duration = Number(overrides?.duration ?? d.duration ?? d.dur ?? modelCfg.defaultParams?.duration ?? 0)
+  console.log('[generateVideo] Duration 来源追踪:', durationSources, '最终 duration:', duration)
   const imagesAll = [firstFrame, lastFrame, ...refImages].filter(Boolean)
   const images = Array.from(new Set(imagesAll)).slice(0, Number(modelCfg.maxImages || 2))
 
@@ -497,8 +506,10 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       payload = { model: modelCfg.key, prompt }
       if (images.length > 0) payload.images = images
       if (ratio === '16:9' || ratio === '9:16') payload.aspect_ratio = ratio
-      // 添加 duration 参数
-      if (Number.isFinite(duration) && duration > 0) payload.duration = duration
+      // 强制添加 duration 参数（不论是否有效，都传递，让 API 决定）
+      const finalDuration = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 8)
+      payload.duration = finalDuration
+      console.log('[generateVideo] veo-unified duration:', { userSelected: duration, final: finalDuration })
       const ep = modelCfg.defaultParams?.enhancePrompt
       if (typeof ep === 'boolean') payload.enhance_prompt = ep
       const up = modelCfg.defaultParams?.enableUpsample
@@ -590,7 +601,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       if (version) payload.version = version
       if (ratio) payload.aspect_ratio = ratio
       if (duration) payload.duration = Number(duration)
-    } else if (modelCfg.format === 'openai-video') {
+    } else if (modelCfg.format === 'sora-video') {
       // Sora 2 / OpenAI Videos API 格式 (/videos/generations)
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
       const size = d.size || modelCfg.defaultParams?.size || '720p'
@@ -642,15 +653,24 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       throw new Error(`暂未支持该视频模型格式：${String(modelCfg.format || '')}`)
     }
 
+    // 打印详细的请求信息，包括 FormData 内容
+    let payloadDebug: any = payload
+    if (requestType === 'formdata' && payload instanceof FormData) {
+      payloadDebug = {}
+      payload.forEach((value, key) => {
+        payloadDebug[key] = value instanceof Blob ? `[Blob: ${value.size} bytes]` : value
+      })
+    }
     console.log('[generateVideo] 发送 API 请求:', {
       endpoint: endpointOverride,
       requestType,
       authMode: modelCfg.authMode,
       format: modelCfg.format,
       modelKey: modelCfg.key,
-      payload: requestType === 'formdata' ? '[FormData]' : payload
+      userSelectedDuration: duration,
+      payload: payloadDebug
     })
-    console.log('[generateVideo] 完整 payload:', JSON.stringify(payload, null, 2))
+    console.log('[generateVideo] 完整 payload:', JSON.stringify(payloadDebug, null, 2))
     
     // 带重试的 API 调用（处理网络抖动）
     const maxRetries = 3
@@ -694,11 +714,11 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
     // 尝试从不同格式提取视频 URL
     let extractedVideoUrl = ''
     
-    // OpenAI Videos API 格式
-    if (modelCfg.format === 'openai-video') {
+    // Sora 2 Videos API 格式
+    if (modelCfg.format === 'sora-video') {
       // 标准响应格式: { id, status, video_url } 或 { data: [{ url }] }
       extractedVideoUrl = task?.video_url || task?.url || task?.data?.[0]?.url || task?.data?.video_url || ''
-      console.log('[generateVideo] OpenAI Video 解析:', { extractedVideoUrl, taskKeys: Object.keys(task || {}) })
+      console.log('[generateVideo] Sora Video 解析:', { extractedVideoUrl, taskKeys: Object.keys(task || {}) })
     }
     
     // Chat Completions 视频格式

@@ -316,7 +316,7 @@ export const VIDEO_MODELS = [
         key: 'sora-2',
         endpoint: '/videos/generations',
         authMode: 'bearer',
-        format: 'openai-video',
+        format: 'sora-video',
         ratios: ['16:9', '9:16', '1:1'],
         durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }, { label: '15 秒', key: 15 }, { label: '20 秒', key: 20 }],
         sizes: [{ label: '480p', key: '480p' }, { label: '720p', key: '720p' }, { label: '1080p', key: '1080p' }],
