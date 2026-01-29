@@ -25,7 +25,17 @@ import {
 interface TextNodeData {
   content?: string
   label?: string
+  width?: number
+  height?: number
 }
+
+// 默认尺寸
+const DEFAULT_WIDTH = 280
+const DEFAULT_HEIGHT = 150
+const MIN_WIDTH = 200
+const MIN_HEIGHT = 100
+const MAX_WIDTH = 600
+const MAX_HEIGHT = 500
 
 export const TextNodeComponent = memo(function TextNode({ id, data, selected }: NodeProps) {
   const nodeData = data as TextNodeData
@@ -34,6 +44,12 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
   const [displayContent, setDisplayContent] = useState(nodeData?.content || '')
   const [showActions, setShowActions] = useState(false)
   const [polishing, setPolishing] = useState(false)
+  
+  // 节点尺寸状态
+  const [nodeWidth, setNodeWidth] = useState(nodeData?.width || DEFAULT_WIDTH)
+  const [nodeHeight, setNodeHeight] = useState(nodeData?.height || DEFAULT_HEIGHT)
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0 })
 
   // 更新内容到 store（只在 blur 时）
   const handleBlur = useCallback(() => {
@@ -42,6 +58,44 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
       useGraphStore.getState().updateNode(id, { data: { content: contentRef.current } })
     }, 0)
   }, [id])
+
+  // 调整大小开始
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    setIsResizing(true)
+    resizeStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      width: nodeWidth,
+      height: nodeHeight
+    }
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - resizeStartRef.current.x
+      const deltaY = moveEvent.clientY - resizeStartRef.current.y
+      
+      const newWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, resizeStartRef.current.width + deltaX))
+      const newHeight = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, resizeStartRef.current.height + deltaY))
+      
+      setNodeWidth(newWidth)
+      setNodeHeight(newHeight)
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      
+      // 保存尺寸到 store
+      useGraphStore.getState().updateNode(id, { 
+        data: { width: nodeWidth, height: nodeHeight } 
+      })
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [id, nodeWidth, nodeHeight])
 
   // 删除节点
   const handleDelete = useCallback((e: React.MouseEvent) => {
@@ -177,9 +231,10 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
     >
       {/* 节点主体 */}
       <div
-        className={`text-node bg-[var(--bg-secondary)] rounded-xl border min-w-[280px] max-w-[350px] relative transition-all duration-200 ${
+        className={`text-node bg-[var(--bg-secondary)] rounded-xl border relative transition-all duration-200 ${
           selected ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-[var(--border-color)]'
-        }`}
+        } ${isResizing ? 'select-none' : ''}`}
+        style={{ width: nodeWidth, minHeight: nodeHeight }}
       >
         {/* 头部 */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-color)]">
@@ -204,7 +259,7 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
         </div>
 
         {/* 内容 */}
-        <div className="p-3">
+        <div className="p-3 flex flex-col" style={{ height: nodeHeight - 50 }}>
           <textarea
             value={displayContent}
             onChange={(e) => {
@@ -215,8 +270,9 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
             onBlur={handleBlur}
             onMouseDown={(e) => e.stopPropagation()}
             onWheel={(e) => e.stopPropagation()}
-            className="nodrag nowheel w-full bg-transparent resize-none outline-none text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] min-h-[80px]"
+            className="nodrag nowheel w-full bg-transparent resize-none outline-none text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] flex-1"
             placeholder="请输入文本内容..."
+            style={{ minHeight: Math.max(60, nodeHeight - 100) }}
           />
           <button
             onClick={handlePolish}
@@ -235,6 +291,21 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
               </>
             )}
           </button>
+        </div>
+
+        {/* 右下角调整大小手柄 */}
+        <div
+          onMouseDown={handleResizeStart}
+          className="nodrag absolute bottom-0 right-0 w-4 h-4 cursor-se-resize group"
+          title="拖动调整大小"
+        >
+          <svg 
+            className="absolute bottom-1 right-1 w-2.5 h-2.5 text-[var(--text-secondary)] opacity-50 group-hover:opacity-100 transition-opacity"
+            viewBox="0 0 10 10" 
+            fill="currentColor"
+          >
+            <path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+          </svg>
         </div>
 
         {/* 连接点 */}
