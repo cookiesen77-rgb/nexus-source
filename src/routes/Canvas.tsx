@@ -31,7 +31,7 @@ import { getWorkflowById } from '@/config/workflows'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { useSettingsStore } from '@/store/settings'
 import { saveMedia } from '@/lib/mediaStorage'
-import { ChevronDown, ChevronLeft, Download, History, Moon, Play, Settings, Sun, Type, SlidersHorizontal, Settings2, Image, Video, Music, Save } from 'lucide-react'
+import { ChevronDown, ChevronLeft, Download, History, Moon, Play, Settings, Sun, Type, SlidersHorizontal, Settings2, Image, Video, Music } from 'lucide-react'
 import { generateImageFromConfigNode } from '@/lib/workflow/image'
 import { generateVideoFromConfigNode } from '@/lib/workflow/video'
 import { saveCurrentAsTemplate } from '@/lib/workflowTemplates'
@@ -170,15 +170,25 @@ export default function Canvas() {
     }
   }, [saveTemplateName, saveTemplateDesc])
 
-  // 画布右键菜单 - 创建节点
+  // 画布右键菜单 - 创建节点（仅在画布空白处触发）
   const handleCanvasContextMenu = useCallback((e: React.MouseEvent) => {
-    // 只处理在画布空白处的右键
     const target = e.target as HTMLElement
-    // 如果点击在节点上，不处理（让节点自己的右键菜单处理）
-    if (target.closest('.react-flow__node') || target.closest('.image-node') || target.closest('.video-node')) {
+    // 如果点击在节点、边、或其他 UI 元素上，不处理
+    if (
+      target.closest('.react-flow__node') ||
+      target.closest('.react-flow__edge') ||
+      target.closest('.image-node') ||
+      target.closest('.video-node') ||
+      target.closest('[data-context-menu]')
+    ) {
       return
     }
+    
     e.preventDefault()
+    
+    // 关闭原有的右键菜单
+    setCtxOpen(false)
+    setCtxPayload(null)
     
     // 计算画布坐标
     const vp = useGraphStore.getState().viewport
@@ -197,15 +207,14 @@ export default function Canvas() {
     })
   }, [])
 
-  // 右键菜单节点选项
+  // 右键菜单节点选项（不包含本地保存）
   const contextMenuNodeOptions = [
     { type: 'text', name: '文本节点', Icon: Type, color: '#3b82f6' },
     { type: 'imageConfig', name: '文生图配置', Icon: SlidersHorizontal, color: '#22c55e' },
     { type: 'videoConfig', name: '视频生成配置', Icon: Settings2, color: '#f59e0b' },
     { type: 'image', name: '图片节点', Icon: Image, color: '#8b5cf6' },
     { type: 'video', name: '视频节点', Icon: Video, color: '#ef4444' },
-    { type: 'audio', name: '音频节点', Icon: Music, color: '#0ea5e9' },
-    { type: 'localSave', name: '本地保存', Icon: Save, color: '#0f766e' }
+    { type: 'audio', name: '音频节点', Icon: Music, color: '#0ea5e9' }
   ]
 
   const spawnNodeFromContextMenu = useCallback((type: string) => {

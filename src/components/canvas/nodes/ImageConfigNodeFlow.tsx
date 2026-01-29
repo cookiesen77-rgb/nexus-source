@@ -288,14 +288,13 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
           {/* 连接输入指示 */}
           <ConnectionStatusIndicator getConnectionStatus={getConnectionStatus} />
 
-          {/* 生成按钮 */}
+          {/* 生成按钮 - 允许多次点击 */}
           <button
             onClick={handleGenerate}
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-[var(--accent-color)] hover:opacity-90 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-[var(--accent-color)] hover:opacity-90 text-white text-sm font-medium"
           >
             {loading ? <span className="animate-spin">⟳</span> : <span>◆</span>}
-            {loading ? '生成中...' : '立即生成'}
+            {loading ? '重新生成' : '立即生成'}
           </button>
         </div>
 
