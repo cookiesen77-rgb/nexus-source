@@ -138,21 +138,30 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
 
   const maxRetries = 2
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // Tauri HTTP 插件在某些平台（特别是 Windows）上对 AbortController 支持不完善
+    // 因此只在非 Tauri 环境或明确设置超时时使用 signal
     const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
-    const t = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null
+    const useSignal = !isTauri && timeoutMs > 0
+    const t = timeoutMs > 0 ? window.setTimeout(() => {
+      try { controller.abort() } catch { /* ignore */ }
+    }, timeoutMs) : null
 
     try {
-      const res = await safeFetch(url, {
+      const fetchOptions: RequestInit = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
           ...(authMode !== 'query' && apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
         },
-        body: JSON.stringify(body || {}),
-        signal: controller.signal
-      })
+        body: JSON.stringify(body || {})
+      }
+      // 只在非 Tauri 环境下使用 signal（避免 Windows Tauri 兼容性问题）
+      if (useSignal) {
+        fetchOptions.signal = controller.signal
+      }
+      const res = await safeFetch(url, fetchOptions)
 
       if (res.ok) {
         try {
@@ -227,18 +236,24 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
-    const t = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null
+    const useSignal = !isTauri && timeoutMs > 0
+    const t = timeoutMs > 0 ? window.setTimeout(() => {
+      try { controller.abort() } catch { /* ignore */ }
+    }, timeoutMs) : null
 
     try {
-      const res = await safeFetch(url, {
+      const fetchOptions: RequestInit = {
         method: 'POST',
         headers: {
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
           ...(authMode !== 'query' && apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
         },
-        body,
-        signal: controller.signal
-      })
+        body
+      }
+      if (useSignal) {
+        fetchOptions.signal = controller.signal
+      }
+      const res = await safeFetch(url, fetchOptions)
 
       if (res.ok) {
         try {
@@ -305,17 +320,23 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
-    const t = timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null
+    const useSignal = !isTauri && timeoutMs > 0
+    const t = timeoutMs > 0 ? window.setTimeout(() => {
+      try { controller.abort() } catch { /* ignore */ }
+    }, timeoutMs) : null
 
     try {
-      const res = await safeFetch(url, {
+      const fetchOptions: RequestInit = {
         method: 'GET',
         headers: {
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
           ...(authMode !== 'query' && apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
-        },
-        signal: controller.signal
-      })
+        }
+      }
+      if (useSignal) {
+        fetchOptions.signal = controller.signal
+      }
+      const res = await safeFetch(url, fetchOptions)
 
       if (res.ok) {
         try {

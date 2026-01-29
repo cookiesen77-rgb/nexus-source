@@ -6,6 +6,13 @@ import { resolveCachedImageUrl } from '@/lib/workflow/cache'
 import { saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
 import { requestQueue, type QueueTask } from '@/lib/workflow/requestQueue'
 import { useAssetsStore } from '@/store/assets'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+// 检测是否在 Tauri 环境中
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现（Windows Tauri 必须用插件 fetch 才能正常工作）
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 
 // 图片生成参数覆盖接口
 export interface ImageGenerationOverrides {
@@ -88,9 +95,14 @@ const resolveImageToInlineData = async (input: string) => {
   }
   if (!/^https?:\/\//i.test(v)) return null
 
+  // 使用 safeFetch（在 Tauri Windows 上必须使用插件 fetch）
   try {
-    const res = await fetch(v, { method: 'GET' })
-    if (!res.ok) return null
+    console.log('[resolveImageToInlineData] 获取图片:', v.slice(0, 80), '...')
+    const res = await safeFetch(v, { method: 'GET' })
+    if (!res.ok) {
+      console.warn('[resolveImageToInlineData] 请求失败:', res.status)
+      return null
+    }
     const blob = await res.blob()
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
@@ -100,8 +112,10 @@ const resolveImageToInlineData = async (input: string) => {
     })
     const m = base64.match(/^data:([^;]+);base64,(.*)$/)
     if (!m) return null
+    console.log('[resolveImageToInlineData] 成功获取图片, 大小:', base64.length)
     return { mimeType: m[1] || blob.type || 'image/png', data: m[2] || '' }
-  } catch {
+  } catch (err: any) {
+    console.error('[resolveImageToInlineData] 错误:', err?.message || err)
     return null
   }
 }
@@ -245,9 +259,17 @@ export const generateImageFromConfigNode = async (configNodeId: string, override
       const requestParts: any[] = []
       if (prompt) requestParts.push({ text: buildGeminiImagePrompt(prompt) })
       
-      for (const input of limitedRefImages) {
+      // 为多张参考图添加序列号标注
+      for (let i = 0; i < limitedRefImages.length; i++) {
+        const input = limitedRefImages[i]
         const inline = await resolveImageToInlineData(input)
         if (!inline) continue
+        
+        // 如果有多张参考图，添加序列号说明
+        if (limitedRefImages.length > 1) {
+          requestParts.push({ text: `[参考图${i + 1}]` })
+        }
+        
         requestParts.push({
           inline_data: {
             mime_type: inline.mimeType,

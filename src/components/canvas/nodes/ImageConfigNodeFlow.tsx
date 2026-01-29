@@ -362,22 +362,25 @@ const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({
 
   return (
     <div 
-      className="flex items-center gap-2 text-xs text-[var(--text-secondary)] py-1 border-t border-[var(--border-color)]"
+      className="text-xs text-[var(--text-secondary)] py-2 border-t border-[var(--border-color)]"
     >
-      <span className={`px-2 py-0.5 rounded-full ${
-        status.prompts > 0 
-          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 
-          : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
-      }`}>
-        提示词 {status.prompts > 0 ? '✓' : '○'}
-      </span>
-      <span className={`px-2 py-0.5 rounded-full ${
-        status.images > 0 
-          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
-          : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
-      }`}>
-        参考图 {status.images > 0 ? `${status.images}张` : '○'}
-      </span>
+      <div className="mb-1.5 opacity-70">支持多张参考图 + 提示词（最多 14 张参考图）</div>
+      <div className="flex items-center gap-2">
+        <span className={`px-2 py-0.5 rounded-full ${
+          status.prompts > 0 
+            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 
+            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+        }`}>
+          提示词 {status.prompts > 0 ? '✓' : '○'}
+        </span>
+        <span className={`px-2 py-0.5 rounded-full ${
+          status.images > 0 
+            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
+            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+        }`}>
+          参考图 {status.images > 0 ? `${status.images}张` : '○'}
+        </span>
+      </div>
     </div>
   )
 })

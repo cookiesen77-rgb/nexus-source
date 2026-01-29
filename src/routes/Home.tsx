@@ -34,6 +34,10 @@ export default function Home() {
   const deleteIdRef = useRef<string | null>(null)
   const deleteNameRef = useRef<string>('')
 
+  // 新建项目命名弹窗
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createName, setCreateName] = useState('')
+
   const openRename = (id: string, currentName: string) => {
     renameIdRef.current = id
     setRenameValue(currentName)
@@ -91,9 +95,16 @@ export default function Home() {
     nav(`/canvas/${id}`, { state: text ? { initialPrompt: text } : undefined })
   }
 
-  const createEmpty = () => {
-    const id = createProject('新项目')
+  const openCreateDialog = () => {
+    setCreateName('')
+    setCreateOpen(true)
+  }
+
+  const confirmCreate = () => {
+    const name = createName.trim() || '新项目'
+    const id = createProject(name)
     hydrateProjects()
+    setCreateOpen(false)
     nav(`/canvas/${id}`)
   }
 
@@ -149,7 +160,7 @@ export default function Home() {
             <div className="mt-3 flex items-center justify-end gap-2">
               <button
                 className="rounded-full border border-[var(--border-color)] bg-[var(--bg-tertiary)] px-4 py-2.5 text-sm font-semibold text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
-                onClick={() => createEmpty()}
+                onClick={openCreateDialog}
               >
                 新建空项目
               </button>
@@ -168,7 +179,7 @@ export default function Home() {
               <div className="text-sm font-semibold text-[var(--text-primary)]">我的项目</div>
               <button
                 className="rounded-full border border-[var(--border-color)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
-                onClick={() => createEmpty()}
+                onClick={openCreateDialog}
               >
                 新建项目
               </button>
@@ -359,6 +370,51 @@ export default function Home() {
                 onClick={() => confirmDelete()}
               >
                 删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {createOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-xl">
+            <div className="flex items-center justify-between border-b border-[var(--border-color)] px-5 py-4">
+              <div className="font-semibold text-[var(--text-primary)]">新建项目</div>
+              <button
+                className="text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                onClick={() => setCreateOpen(false)}
+              >
+                关闭
+              </button>
+            </div>
+            <div className="px-5 py-4">
+              <label className="mb-2 block text-sm text-[var(--text-secondary)]">项目名称</label>
+              <Input
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
+                placeholder="输入项目名称..."
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    confirmCreate()
+                  }
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-[var(--border-color)] px-5 py-4">
+              <button
+                className="rounded-full border border-[var(--border-color)] bg-[var(--bg-tertiary)] px-4 py-2 text-sm font-semibold hover:bg-[var(--bg-secondary)]"
+                onClick={() => setCreateOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                className="rounded-full bg-[var(--accent-color)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--accent-hover)]"
+                onClick={confirmCreate}
+              >
+                创建
               </button>
             </div>
           </div>

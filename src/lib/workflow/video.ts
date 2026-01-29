@@ -5,6 +5,13 @@ import { getJson, postFormData, postJson } from '@/lib/workflow/request'
 import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
 import { getMedia, getMediaByNodeId, saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
 import { requestQueue, type QueueTask } from '@/lib/workflow/requestQueue'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+// 检测是否在 Tauri 环境中
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现（Windows Tauri 必须用插件 fetch 才能正常工作）
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 
 // 视频生成参数覆盖接口
 export interface VideoGenerationOverrides {
@@ -174,10 +181,11 @@ const resolveImageToBlob = async (input: string): Promise<Blob | null> => {
     }
   }
   
-  // 2. HTTP/HTTPS URL
+  // 2. HTTP/HTTPS URL（使用 safeFetch，Windows Tauri 必须用插件 fetch）
   if (/^https?:\/\//i.test(v)) {
     try {
-      const res = await fetch(v, { method: 'GET' })
+      console.log('[resolveImageToBlob] 获取 HTTP 图片:', v.slice(0, 80), '...')
+      const res = await safeFetch(v, { method: 'GET' })
       if (!res.ok) {
         console.warn('[resolveImageToBlob] HTTP 请求失败:', res.status)
         return null
@@ -191,10 +199,10 @@ const resolveImageToBlob = async (input: string): Promise<Blob | null> => {
     }
   }
   
-  // 3. blob: URL
+  // 3. blob: URL（blob URL 只能用原生 fetch，因为它是浏览器内部 URL）
   if (v.startsWith('blob:')) {
     try {
-      const res = await fetch(v)
+      const res = await globalThis.fetch(v)
       if (!res.ok) {
         console.warn('[resolveImageToBlob] blob URL 请求失败')
         return null

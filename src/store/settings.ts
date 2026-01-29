@@ -2,13 +2,19 @@ import { create } from 'zustand'
 
 const API_KEY_STORAGE_KEY = 'apiKey'
 const THEME_STORAGE_KEY = 'nexus-theme-v1'
+const DEFAULT_IMAGE_MODEL_KEY = 'nexus-default-image-model'
+const DEFAULT_VIDEO_MODEL_KEY = 'nexus-default-video-model'
 
 type SettingsState = {
   apiKey: string
   dark: boolean
+  defaultImageModel: string
+  defaultVideoModel: string
   setApiKey: (value: string) => void
   clearApiKey: () => void
   toggleDark: () => void
+  setDefaultImageModel: (model: string) => void
+  setDefaultVideoModel: (model: string) => void
 }
 
 const readApiKey = () => {
@@ -31,6 +37,22 @@ const readDark = () => {
   }
 }
 
+const readDefaultImageModel = () => {
+  try {
+    return localStorage.getItem(DEFAULT_IMAGE_MODEL_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+const readDefaultVideoModel = () => {
+  try {
+    return localStorage.getItem(DEFAULT_VIDEO_MODEL_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
 const applyTheme = (dark: boolean) => {
   try {
     document.documentElement.classList.toggle('dark', dark)
@@ -42,6 +64,8 @@ const applyTheme = (dark: boolean) => {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   apiKey: readApiKey(),
   dark: readDark(),
+  defaultImageModel: readDefaultImageModel(),
+  defaultVideoModel: readDefaultVideoModel(),
   setApiKey: (value) => {
     const next = String(value || '')
     try {
@@ -68,6 +92,24 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
     applyTheme(next)
     set({ dark: next })
+  },
+  setDefaultImageModel: (model) => {
+    const next = String(model || '')
+    try {
+      localStorage.setItem(DEFAULT_IMAGE_MODEL_KEY, next)
+    } catch {
+      // ignore
+    }
+    set({ defaultImageModel: next })
+  },
+  setDefaultVideoModel: (model) => {
+    const next = String(model || '')
+    try {
+      localStorage.setItem(DEFAULT_VIDEO_MODEL_KEY, next)
+    } catch {
+      // ignore
+    }
+    set({ defaultVideoModel: next })
   }
 }))
 

@@ -36,6 +36,48 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   const [previewModalOpen, setPreviewModalOpen] = useState(false)
   const persistAttemptedRef = React.useRef<string>('')
   
+  // 计算此图片作为参考图时的序号
+  const [refIndex, setRefIndex] = useState<number | null>(null)
+  
+  // 计算序号的函数
+  const computeRefIndex = useCallback(() => {
+    const state = useGraphStore.getState()
+    // 找到从此节点出发连接到 imageConfig 或 videoConfig 的边
+    const outgoingEdges = state.edges.filter(e => e.source === id)
+    for (const edge of outgoingEdges) {
+      const targetNode = state.nodes.find(n => n.id === edge.target)
+      if (targetNode && (targetNode.type === 'imageConfig' || targetNode.type === 'videoConfig')) {
+        // 找到所有连接到同一配置节点的图片节点
+        const configId = targetNode.id
+        const inputEdges = state.edges.filter(e => e.target === configId)
+        const imageInputs = inputEdges
+          .map(e => state.nodes.find(n => n.id === e.source))
+          .filter(n => n?.type === 'image')
+        const idx = imageInputs.findIndex(n => n?.id === id)
+        if (imageInputs.length > 1 && idx >= 0) {
+          return idx + 1
+        }
+      }
+    }
+    return null
+  }, [id])
+  
+  // 订阅边变化以更新序号
+  useEffect(() => {
+    // 初始计算
+    setRefIndex(computeRefIndex())
+    
+    // 订阅边的变化
+    const unsubscribe = useGraphStore.subscribe(
+      (state, prevState) => {
+        if (state.edges !== prevState.edges) {
+          setRefIndex(computeRefIndex())
+        }
+      }
+    )
+    return unsubscribe
+  }, [computeRefIndex])
+  
   // 懒加载：只有节点进入可视区域时才加载图片
   const { ref: inViewRef, inView } = useInView({
     rootMargin: '200px', // 提前 200px 开始加载
@@ -297,9 +339,16 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
       >
         {/* 头部 */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-color)]">
-          <span className="text-sm font-medium text-[var(--text-secondary)]">
-            {nodeData?.label || '图片'}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-[var(--text-secondary)]">
+              {nodeData?.label || '图片'}
+            </span>
+            {refIndex && (
+              <span className="px-1.5 py-0.5 text-xs font-bold bg-[var(--accent-color)] text-white rounded">
+                参考图{refIndex}
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-1">
             <button onClick={handleDelete} className="p-1 hover:bg-[var(--bg-tertiary)] rounded">
               <Trash2 size={14} />

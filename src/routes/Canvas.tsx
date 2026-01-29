@@ -14,7 +14,7 @@ import EdgeOverlayLayer from '@/components/canvas/EdgeOverlayLayer'
 import EventCoordinator from '@/components/canvas/EventCoordinator'
 import CanvasContextMenu, { type CanvasContextPayload } from '@/components/canvas/CanvasContextMenu'
 import CanvasHud from '@/components/canvas/CanvasHud'
-import { DEFAULT_IMAGE_MODEL } from '@/config/models'
+import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { useProjectsStore } from '@/store/projects'
 import { useAssetsStore } from '@/store/assets'
 import CanvasAssistantDrawer from '@/components/canvas/CanvasAssistantDrawer'
@@ -26,6 +26,7 @@ import WorkflowTemplatesModal from '@/components/canvas/WorkflowTemplatesModal'
 import DirectorConsole from '@/components/canvas/DirectorConsole'
 import SketchEditor from '@/components/canvas/SketchEditor'
 import SonicStudio from '@/components/canvas/SonicStudio'
+import PromptReverseModal from '@/components/canvas/PromptReverseModal'
 import { getWorkflowById } from '@/config/workflows'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { useSettingsStore } from '@/store/settings'
@@ -64,6 +65,7 @@ export default function Canvas() {
   const [directorOpen, setDirectorOpen] = useState(false)
   const [sketchOpen, setSketchOpen] = useState(false)
   const [audioOpen, setAudioOpen] = useState(false)
+  const [promptReverseOpen, setPromptReverseOpen] = useState(false)
   const [batchGenerating, setBatchGenerating] = useState(false)
 
   // 一键全部生成（并发）
@@ -202,6 +204,14 @@ export default function Canvas() {
 
   const dark = useSettingsStore((s) => s.dark)
   const toggleDark = useSettingsStore((s) => s.toggleDark)
+  const defaultImageModel = useSettingsStore((s) => s.defaultImageModel)
+  const defaultVideoModel = useSettingsStore((s) => s.defaultVideoModel)
+  const setDefaultImageModel = useSettingsStore((s) => s.setDefaultImageModel)
+  const setDefaultVideoModel = useSettingsStore((s) => s.setDefaultVideoModel)
+  
+  // 显示的默认模型（如果未设置则使用配置中的默认值）
+  const effectiveImageModel = defaultImageModel || DEFAULT_IMAGE_MODEL
+  const effectiveVideoModel = defaultVideoModel || DEFAULT_VIDEO_MODEL
 
   const projectName = useMemo(() => projects.find((p) => p.id === projectId)?.name || projectId, [projectId, projects])
 
@@ -456,7 +466,7 @@ export default function Canvas() {
 
         for (let i = 0; i < pairs.length; i++) {
           const { file, dataUrl } = pairs[i]
-          const kind = /^image\\//i.test(file.type) ? 'image' : /^audio\\//i.test(file.type) ? 'audio' : /^video\\//i.test(file.type) ? 'video' : null
+          const kind = /^image\//i.test(file.type) ? 'image' : /^audio\//i.test(file.type) ? 'audio' : /^video\//i.test(file.type) ? 'video' : null
           if (!kind) continue
           const label = kind === 'image' ? '上传图片' : kind === 'audio' ? '上传音频' : '上传视频'
           const id = addNode(kind, { x: baseX, y: baseY + i * 36 }, {
@@ -533,6 +543,29 @@ export default function Canvas() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* 默认模型选择 */}
+          <div className="flex items-center gap-1">
+            <select
+              value={effectiveImageModel}
+              onChange={(e) => setDefaultImageModel(e.target.value)}
+              className="h-9 rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] px-2 text-xs text-[var(--text-primary)] outline-none hover:bg-[var(--bg-secondary)]"
+              title="默认绘画模型"
+            >
+              {(IMAGE_MODELS as any[]).map((m: any) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
+            </select>
+            <select
+              value={effectiveVideoModel}
+              onChange={(e) => setDefaultVideoModel(e.target.value)}
+              className="h-9 rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] px-2 text-xs text-[var(--text-primary)] outline-none hover:bg-[var(--bg-secondary)]"
+              title="默认视频模型"
+            >
+              {(VIDEO_MODELS as any[]).map((m: any) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
+            </select>
+          </div>
           <button
             className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
               batchGenerating
@@ -586,7 +619,7 @@ export default function Canvas() {
             e.preventDefault()
           }}
           onDrop={(e) => {
-            const files = Array.from(e.dataTransfer?.files || []).filter((f) => /^(image|audio|video)\\//i.test(f.type))
+            const files = Array.from(e.dataTransfer?.files || []).filter((f) => /^(image|audio|video)\//i.test(f.type))
             if (files.length > 0) {
               e.preventDefault()
               void addDroppedFiles(files, { x: e.clientX, y: e.clientY })
@@ -723,6 +756,7 @@ export default function Canvas() {
               onOpenSketch={() => setSketchOpen(true)}
               onOpenAudio={() => setAudioOpen(true)}
               onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
+              onOpenPromptReverse={() => setPromptReverseOpen(true)}
             />
 
             {/* CanvasHud 在 React Flow / DOM 画布模式下禁用，因为它订阅 viewport 会导致性能问题 */}
@@ -953,6 +987,11 @@ export default function Canvas() {
           window.$message?.success?.('音频已添加到画布')
           setAudioOpen(false)
         }}
+      />
+      
+      <PromptReverseModal
+        open={promptReverseOpen}
+        onClose={() => setPromptReverseOpen(false)}
       />
       
       {historyPanelOpen && (
