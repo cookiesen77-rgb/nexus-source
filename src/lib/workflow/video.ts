@@ -640,7 +640,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
         output_config: {
           storage_mode: 'Temporary',
           resolution: size.toUpperCase(),  // 720P, 1080P
-          duration: String(dur),
+          duration: dur,  // int 类型
         }
       }
       
