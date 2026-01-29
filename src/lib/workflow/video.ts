@@ -611,11 +611,14 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
         if (ratio) payload.aspect_ratio = ratio
       }
     } else if (modelCfg.format === 'tencent-video') {
+      // Tencent AIGC Video 格式 (Vidu / Hailuo / Kling)
       const version = modelCfg.defaultParams?.version
+      const size = d.size || modelCfg.defaultParams?.size || '720p'
       payload = { model: modelCfg.key, prompt }
       if (version) payload.version = version
       if (ratio) payload.aspect_ratio = ratio
       if (duration) payload.duration = Number(duration)
+      if (size) payload.resolution = size
     } else if (modelCfg.format === 'sora-video') {
       // Sora 2 / OpenAI Videos API 格式 (/videos/generations)
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)

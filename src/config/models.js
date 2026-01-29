@@ -17,7 +17,10 @@ const MODEL_ALIASES = {
     'veo3.1-fast': 'veo3.1-4k',
     'veo3.1-pro': 'veo3.1-pro-4k',
     'sora-2': 'sora-2-all',
-    'sora-2-pro': 'sora-2-all'
+    'sora-2-pro': 'sora-2-all',
+    // Tencent AIGC Video 兼容旧 key
+    'aigc-video-vidu': 'vidu-q2-pro',
+    'aigc-video-hailuo': 'hailuo-2.3-fast'
 }
 
 // Seedream image size options | 豆包图片尺寸选项
@@ -273,21 +276,195 @@ export const VIDEO_MODELS = [
         durs: [{ label: '10 秒', key: 10 }, { label: '15 秒', key: 15 }, { label: '25 秒', key: 25 }],
         defaultParams: { ratio: '9:16', duration: 15, size: 'large', watermark: false, private: false }
     },
+    // ========== Vidu 系列 ==========
     {
-        label: 'Tencent AIGC Video（Vidu · q2-pro）',
-        key: 'aigc-video-vidu',
+        label: 'Vidu q2-turbo（最快）',
+        key: 'vidu-q2-turbo',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
         authMode: 'bearer',
         format: 'tencent-video',
-        defaultParams: { version: 'q2-pro' }
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '4 秒', key: 4 },
+            { label: '8 秒', key: 8 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: 'q2-turbo', duration: 4 }
     },
     {
-        label: 'Tencent AIGC Video（Hailuo · 2.3-Fast）',
-        key: 'aigc-video-hailuo',
+        label: 'Vidu q2',
+        key: 'vidu-q2',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
         authMode: 'bearer',
         format: 'tencent-video',
-        defaultParams: { version: '2.3-Fast' }
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '4 秒', key: 4 },
+            { label: '8 秒', key: 8 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: 'q2', duration: 4 }
+    },
+    {
+        label: 'Vidu q2-pro（高质量）',
+        key: 'vidu-q2-pro',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '4 秒', key: 4 },
+            { label: '8 秒', key: 8 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: 'q2-pro', duration: 4 }
+    },
+    // ========== Hailuo 海螺系列 ==========
+    {
+        label: 'Hailuo 2.3-Fast（快速）',
+        key: 'hailuo-2.3-fast',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '768P', key: '768p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '6 秒', key: 6 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: '2.3-Fast', duration: 6 }
+    },
+    {
+        label: 'Hailuo 2.3',
+        key: 'hailuo-2.3',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '768P', key: '768p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '6 秒', key: 6 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: '2.3', duration: 6 }
+    },
+    {
+        label: 'Hailuo 02',
+        key: 'hailuo-02',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '768P', key: '768p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '6 秒', key: 6 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: '02', duration: 6 }
+    },
+    // ========== Kling 可灵系列 ==========
+    {
+        label: 'Kling 2.5（推荐）',
+        key: 'kling-2.5',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '5 秒', key: 5 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: '2.5', duration: 5 }
+    },
+    {
+        label: 'Kling 2.1',
+        key: 'kling-2.1',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '5 秒', key: 5 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: '2.1', duration: 5 }
+    },
+    {
+        label: 'Kling 2.0',
+        key: 'kling-2.0',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '5 秒', key: 5 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: '2.0', duration: 5 }
+    },
+    {
+        label: 'Kling 1.6',
+        key: 'kling-1.6',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '5 秒', key: 5 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: '1.6', duration: 5 }
+    },
+    {
+        label: 'Kling O1（最新）',
+        key: 'kling-o1',
+        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        authMode: 'bearer',
+        format: 'tencent-video',
+        sizes: [
+            { label: '720P', key: '720p' },
+            { label: '1080P', key: '1080p' }
+        ],
+        durs: [
+            { label: '5 秒', key: 5 },
+            { label: '10 秒', key: 10 }
+        ],
+        ratios: ['16:9', '9:16', '1:1'],
+        defaultParams: { version: 'O1', duration: 5 }
     }
 ]
 
