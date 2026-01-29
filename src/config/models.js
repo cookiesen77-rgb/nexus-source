@@ -310,6 +310,17 @@ export const VIDEO_MODELS = [
         authMode: 'bearer',
         format: 'tencent-video',
         defaultParams: { version: '2.3-Fast' }
+    },
+    {
+        label: 'Sora 2（OpenAI Chat · 720p）',
+        key: 'sora-2',
+        endpoint: '/chat/completions',
+        authMode: 'bearer',
+        format: 'openai-chat-video',
+        ratios: ['16:9', '9:16', '1:1'],
+        durs: [{ label: '4 秒', key: 4 }, { label: '8 秒', key: 8 }, { label: '12 秒', key: 12 }],
+        sizes: [{ label: '720p', key: '720p' }],
+        defaultParams: { ratio: '16:9', duration: 8, size: '720p' }
     }
 ]
 
