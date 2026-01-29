@@ -344,7 +344,7 @@ export const VIDEO_MODELS = [
             { label: '10 秒', key: 10 }
         ],
         ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '2.3-Fast', duration: 6 }
+        defaultParams: { version: '2.3-fast', duration: 6 }
     },
     {
         label: 'Hailuo 2.3',
