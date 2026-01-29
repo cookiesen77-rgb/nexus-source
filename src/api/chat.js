@@ -3,6 +3,13 @@
  */
 
 import { request, getBaseUrl } from '@/utils'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现（Windows Tauri 必须用插件 fetch）
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 
 // 对话补全
 export const chatCompletions = (data) =>
@@ -82,15 +89,19 @@ export const streamResponses = async function* (data, signal) {
   const apiKey = localStorage.getItem('apiKey')
   const baseUrl = getBaseUrl()
 
-  const response = await fetch(`${baseUrl}/responses`, {
+  // Tauri 环境不使用 signal（Windows 兼容性问题）
+  const fetchOptions = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({ ...data, stream: true }),
-    signal
-  })
+    body: JSON.stringify({ ...data, stream: true })
+  }
+  if (!isTauri && signal) {
+    fetchOptions.signal = signal
+  }
+  const response = await safeFetch(`${baseUrl}/responses`, fetchOptions)
 
   if (!response.ok) {
     const error = await response.json().catch(() => null)
@@ -155,15 +166,19 @@ export const streamChatCompletions = async function* (data, signal) {
   const apiKey = localStorage.getItem('apiKey')
   const baseUrl = getBaseUrl()
   
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  // Tauri 环境不使用 signal（Windows 兼容性问题）
+  const fetchOptions = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({ ...data, stream: true }),
-    signal
-  })
+    body: JSON.stringify({ ...data, stream: true })
+  }
+  if (!isTauri && signal) {
+    fetchOptions.signal = signal
+  }
+  const response = await safeFetch(`${baseUrl}/chat/completions`, fetchOptions)
 
   if (!response.ok) {
     let errorText = ''

@@ -4,6 +4,13 @@
  */
 
 import { create } from 'zustand'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现（Windows Tauri 必须用插件 fetch）
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 
 // ==================== Types ====================
 
@@ -418,7 +425,7 @@ const isDataUrl = (value: string): boolean =>
 const fetchAsDataUrl = async (url: string): Promise<string> => {
   if (!url) return ''
   if (isDataUrl(url)) return url
-  const res = await fetch(url)
+  const res = await safeFetch(url)
   if (!res.ok) return ''
   const blob = await res.blob()
   return await new Promise((resolve) => {
@@ -490,7 +497,7 @@ export const saveAssetToLocal = async ({
           getExtFromDataUrl(content) ||
           (type === 'video' ? '.mp4' : type === 'audio' ? '.mp3' : '.jpg')
         const filename = name ? `${name}${ext}` : `asset_${Date.now()}${ext}`
-        const resp = await fetch(`${base}/save-batch`, {
+        const resp = await safeFetch(`${base}/save-batch`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -556,7 +563,7 @@ const saveToLocalCache = async (
   }
 
   try {
-    const res = await fetch(`${base}/save-cache`, {
+    const res = await safeFetch(`${base}/save-cache`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

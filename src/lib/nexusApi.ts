@@ -6,6 +6,13 @@
 import { DEFAULT_API_BASE_URL } from '@/utils/constants'
 import { ERROR_MESSAGES, MODELS, NEXUS_SYSTEM_PROMPT } from '@/config/nexusPrompt'
 import { resolveEndpointUrl } from '@/lib/workflow/request'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现（Windows Tauri 必须用插件 fetch）
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 
 // ==================== 类型定义 ====================
 
@@ -192,15 +199,19 @@ const parseResponsesStreamEvent = (parsed: any): { kind: 'delta' | 'full' | 'unk
 
 export const streamResponses = async function* (data: any, signal?: AbortSignal): AsyncGenerator<string> {
   const apiKey = getApiKey()
-  const response = await fetch(resolveEndpointUrl('/responses'), {
+  // Tauri 环境不使用 signal（Windows 兼容性问题）
+  const fetchOptions: RequestInit = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({ ...(data || {}), stream: true }),
-    signal
-  })
+    body: JSON.stringify({ ...(data || {}), stream: true })
+  }
+  if (!isTauri && signal) {
+    fetchOptions.signal = signal
+  }
+  const response = await safeFetch(resolveEndpointUrl('/responses'), fetchOptions)
 
   if (!response.ok) {
     const error = await response.json().catch(() => null)
@@ -267,15 +278,19 @@ export const streamChatCompletions = async function* (
   signal?: AbortSignal
 ): AsyncGenerator<string> {
   const apiKey = getApiKey()
-  const response = await fetch(resolveEndpointUrl('/chat/completions'), {
+  // Tauri 环境不使用 signal（Windows 兼容性问题）
+  const fetchOptions: RequestInit = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify({ ...data, stream: true }),
-    signal
-  })
+    body: JSON.stringify({ ...data, stream: true })
+  }
+  if (!isTauri && signal) {
+    fetchOptions.signal = signal
+  }
+  const response = await safeFetch(resolveEndpointUrl('/chat/completions'), fetchOptions)
 
   if (!response.ok) {
     let errorText = ''
@@ -390,7 +405,7 @@ export async function chatCompletions(data: {
   tools?: any[]
 }): Promise<string> {
   const apiKey = getApiKey()
-  const response = await fetch(resolveEndpointUrl('/chat/completions'), {
+  const response = await safeFetch(resolveEndpointUrl('/chat/completions'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -19,6 +19,13 @@ import { getModelByName, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_
 import { request, DEFAULT_API_BASE_URL } from '@/utils'
 import { enhanceApiError } from '@/utils/errorResolver'
 import { useApiConfig } from './useApiConfig'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
+
+// 根据环境选择 fetch 实现（Windows Tauri 必须用插件 fetch）
+const safeFetch = isTauri ? tauriFetch : globalThis.fetch
 
 /**
  * Base API state hook | 基础 API 状态 Hook
@@ -288,7 +295,12 @@ const fetchJson = async (url, { authMode } = {}) => {
   const timeout = setTimeout(() => controller.abort(), 20000)
 
   try {
-    const res = await fetch(finalUrl, { method: 'GET', headers, signal: controller.signal })
+    // Tauri 环境不使用 signal（Windows 兼容性问题）
+    const fetchOptions = { method: 'GET', headers }
+    if (!isTauri) {
+      fetchOptions.signal = controller.signal
+    }
+    const res = await safeFetch(finalUrl, fetchOptions)
     const data = await res.json().catch(() => null)
     return { ok: res.ok, status: res.status, data }
   } catch {
@@ -447,7 +459,9 @@ const resolveImageToBlob = async (value) => {
 
   // blob: / http(s) URL -> fetch to blob | blob: 或 http(s) 拉取为 blob
   try {
-    const res = await fetch(value)
+    // blob: URL 使用原生 fetch，HTTP URL 使用 safeFetch
+    const useFetch = value.startsWith('blob:') ? globalThis.fetch : safeFetch
+    const res = await useFetch(value)
     if (!res.ok) throw new Error(`无法读取图片资源：${res.status}`)
     return await res.blob()
   } catch (err) {
