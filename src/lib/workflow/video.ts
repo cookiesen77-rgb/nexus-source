@@ -413,9 +413,24 @@ const pollVideoTask = async (id: string, modelCfg: any) => {
     }
 
     if (status === 'failed') {
-      const errMsg = resp?.error?.message || resp?.message || resp?.data?.error?.message || '视频生成失败'
-      console.error('[pollVideoTask] 视频生成失败:', errMsg)
-      throw new Error(errMsg)
+      const rawErr = resp?.error?.message || resp?.message || resp?.data?.error?.message || '视频生成失败'
+      console.error('[pollVideoTask] 视频生成失败:', rawErr)
+      
+      // 友好化常见错误消息
+      let friendlyMsg = rawErr
+      if (/AUDIO_FILTERED|audio.*filter/i.test(rawErr)) {
+        friendlyMsg = '视频生成失败：音频内容被审核过滤，请修改提示词后重试'
+      } else if (/CONTENT_FILTERED|content.*filter/i.test(rawErr)) {
+        friendlyMsg = '视频生成失败：内容被审核过滤，请修改提示词后重试'
+      } else if (/NSFW|sensitive|违规/i.test(rawErr)) {
+        friendlyMsg = '视频生成失败：内容不符合平台规定，请修改提示词'
+      } else if (/timeout|超时/i.test(rawErr)) {
+        friendlyMsg = '视频生成超时，请稍后重试'
+      } else if (/quota|limit|配额/i.test(rawErr)) {
+        friendlyMsg = '视频生成失败：API 配额不足，请检查账户余额'
+      }
+      
+      throw new Error(friendlyMsg)
     }
 
     await new Promise((r) => setTimeout(r, interval))
