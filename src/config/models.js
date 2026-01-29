@@ -191,9 +191,10 @@ export const VIDEO_RATIO_LIST = [
 ]
 
 // Video generation models | 视频生成模型
+// 价格说明：显示价格 = 原价 × 0.61 (RMB)
 export const VIDEO_MODELS = [
     {
-        label: 'Veo 3.1 Fast Components（统一视频格式）',
+        label: 'Veo 3.1 Fast Components ¥0.10',
         key: 'veo3.1-fast-components',
         endpoint: '/video/create',
         statusEndpoint: '/video/query',
@@ -206,7 +207,7 @@ export const VIDEO_MODELS = [
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
-        label: 'Veo 3.1 Fast Components 4K（统一视频格式）',
+        label: 'Veo 3.1 Fast Components 4K ¥0.31',
         key: 'veo_3_1-fast-components-4K',
         endpoint: '/video/create',
         statusEndpoint: '/video/query',
@@ -219,7 +220,19 @@ export const VIDEO_MODELS = [
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
-        label: 'Veo3.1 4K（统一视频格式）',
+        label: 'Veo 3.1 Components ¥0.27',
+        key: 'veo_3_1-components',
+        endpoint: '/v1/videos',
+        statusEndpoint: '/video/query',
+        authMode: 'bearer',
+        format: 'openai-video',
+        maxImages: 3,
+        ratios: ['16:9', '9:16'],
+        durs: [{ label: '8 秒', key: 8 }],
+        defaultParams: { ratio: '16:9', duration: 8 }
+    },
+    {
+        label: 'Veo 3.1 4K ¥0.85',
         key: 'veo3.1-4k',
         endpoint: '/video/create',
         statusEndpoint: '/video/query',
@@ -232,7 +245,7 @@ export const VIDEO_MODELS = [
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
-        label: 'Veo3.1 Pro 4K（统一视频格式）',
+        label: 'Veo 3.1 Pro 4K ¥2.99',
         key: 'veo3.1-pro-4k',
         endpoint: '/video/create',
         statusEndpoint: '/video/query',
@@ -244,7 +257,7 @@ export const VIDEO_MODELS = [
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
-        label: 'Kling Video（kling-v2-6 · pro · 10s）',
+        label: 'Kling Video (v2-6 pro 10s) ¥12.44',
         key: 'kling-video',
         // 注意：Kling 走 /kling/v1/...，不是 /v1/...（需用绝对 URL，避免多拼一个 /v1）
         endpoint: toAbsoluteUrl('/kling/v1/videos/text2video'),
@@ -259,7 +272,7 @@ export const VIDEO_MODELS = [
         statusEndpointImage: (id) => toAbsoluteUrl(`/kling/v1/videos/image2video/${id}`)
     },
     {
-        label: 'Sora 2 All（统一视频格式）',
+        label: 'Sora 2 All ¥0.07',
         key: 'sora-2-all',
         endpoint: '/video/create',
         statusEndpoint: '/video/query',
@@ -276,11 +289,12 @@ export const VIDEO_MODELS = [
         durs: [{ label: '10 秒', key: 10 }, { label: '15 秒', key: 15 }, { label: '25 秒', key: 25 }],
         defaultParams: { ratio: '9:16', duration: 15, size: 'large', watermark: false, private: false }
     },
-    // ========== Vidu 系列 ==========
+    // ========== Vidu 系列 (按秒计费) ==========
     {
-        label: 'Vidu q2-turbo（最快）',
+        label: 'Vidu q2-turbo ¥0.55/4s',
         key: 'vidu-q2-turbo',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -295,9 +309,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: 'q2-turbo', duration: 4 }
     },
     {
-        label: 'Vidu q2',
+        label: 'Vidu q2 ¥0.70/4s',
         key: 'vidu-q2',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -312,9 +327,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: 'q2', duration: 4 }
     },
     {
-        label: 'Vidu q2-pro（高质量）',
+        label: 'Vidu q2-pro ¥0.77/4s',
         key: 'vidu-q2-pro',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -330,9 +346,10 @@ export const VIDEO_MODELS = [
     },
     // ========== Hailuo 海螺系列 ==========
     {
-        label: 'Hailuo 2.3-Fast（快速）',
+        label: 'Hailuo 2.3-Fast ¥1.01/6s',
         key: 'hailuo-2.3-fast',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -347,9 +364,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: '2.3-fast', duration: 6 }
     },
     {
-        label: 'Hailuo 2.3',
+        label: 'Hailuo 2.3 ¥1.45/6s',
         key: 'hailuo-2.3',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -364,9 +382,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: '2.3', duration: 6 }
     },
     {
-        label: 'Hailuo 02',
+        label: 'Hailuo 02 ¥1.45/6s',
         key: 'hailuo-02',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -382,9 +401,10 @@ export const VIDEO_MODELS = [
     },
     // ========== Kling 可灵系列 ==========
     {
-        label: 'Kling 2.5（推荐）',
+        label: 'Kling 2.5 ¥1.10/5s',
         key: 'kling-2.5',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -399,9 +419,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: '2.5', duration: 5 }
     },
     {
-        label: 'Kling 2.1',
+        label: 'Kling 2.1 ¥1.46/5s',
         key: 'kling-2.1',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -416,9 +437,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: '2.1', duration: 5 }
     },
     {
-        label: 'Kling 2.0',
+        label: 'Kling 2.0 ¥1.46/5s',
         key: 'kling-2.0',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -433,9 +455,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: '2.0', duration: 5 }
     },
     {
-        label: 'Kling 1.6',
+        label: 'Kling 1.6 ¥1.46/5s',
         key: 'kling-1.6',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [
@@ -450,9 +473,10 @@ export const VIDEO_MODELS = [
         defaultParams: { version: '1.6', duration: 5 }
     },
     {
-        label: 'Kling O1（最新）',
+        label: 'Kling O1 ¥3.29/5s',
         key: 'kling-o1',
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
+        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
         authMode: 'bearer',
         format: 'tencent-video',
         sizes: [

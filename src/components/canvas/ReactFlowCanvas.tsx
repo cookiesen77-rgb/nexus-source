@@ -109,9 +109,10 @@ export interface ConnectEndEvent {
 interface ReactFlowCanvasInnerProps {
   onContextMenu?: (payload: CanvasContextPayload) => void
   onConnectEnd?: (event: ConnectEndEvent) => void
+  onFileDrop?: (files: File[], clientPos: { x: number; y: number }) => void
 }
 
-function ReactFlowCanvasInner({ onContextMenu, onConnectEnd }: ReactFlowCanvasInnerProps) {
+function ReactFlowCanvasInner({ onContextMenu, onConnectEnd, onFileDrop }: ReactFlowCanvasInnerProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const { screenToFlowPosition, setViewport: setRfViewport, getViewport } = useReactFlow()
   
@@ -889,8 +890,49 @@ function ReactFlowCanvasInner({ onContextMenu, onConnectEnd }: ReactFlowCanvasIn
     )
   }
 
+  // 处理文件拖放
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    const files = Array.from(e.dataTransfer?.files || []).filter((f) => /^(image|audio|video)\//i.test(f.type))
+    if (files.length > 0 && onFileDrop) {
+      e.preventDefault()
+      onFileDrop(files, { x: e.clientX, y: e.clientY })
+      return
+    }
+    // 处理从历史面板拖拽的素材
+    const raw = e.dataTransfer?.getData('application/json') || ''
+    if (raw && onFileDrop) {
+      try {
+        const asset = JSON.parse(raw)
+        const src = String(asset?.src || asset?.url || '').trim()
+        const type = String(asset?.type || '').trim()
+        if (src && type) {
+          e.preventDefault()
+          // 创建一个伪 File 对象来触发相同的处理逻辑
+          // 但这里我们需要直接处理，因为 asset 不是真正的文件
+          // 触发自定义事件让 Canvas.tsx 处理
+          const customEvent = new CustomEvent('nexus:asset-drop', {
+            detail: { asset, clientX: e.clientX, clientY: e.clientY }
+          })
+          window.dispatchEvent(customEvent)
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [onFileDrop])
+
   return (
-    <div ref={reactFlowWrapper} className="w-full h-full">
+    <div 
+      ref={reactFlowWrapper} 
+      className="w-full h-full"
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}

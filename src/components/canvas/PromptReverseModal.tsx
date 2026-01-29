@@ -14,25 +14,25 @@ interface Props {
   onClose: () => void
 }
 
-const SYSTEM_PROMPT = `You are an expert image analyst specializing in reverse-engineering image prompts. When given an image, analyze it thoroughly and provide:
+const SYSTEM_PROMPT = `你是一位专业的图像分析专家，擅长逆向推导图像生成提示词。当收到一张图片时，请仔细分析并提供：
 
-1. A detailed text description suitable for image generation
-2. A structured JSON representation of the image elements
+1. 详细的中文文本描述，适合直接用于图像生成
+2. 结构化的 JSON 表示
 
-Be specific about:
-- Subject/character details (appearance, clothing, pose, expression)
-- Art style and technique (realistic, anime, oil painting, etc.)
-- Composition and framing (close-up, wide shot, etc.)
-- Lighting and atmosphere
-- Color palette
-- Background and environment
-- Camera angle and perspective
-- Quality modifiers (4K, highly detailed, etc.)
+请具体描述：
+- 主体/角色细节（外貌、服装、姿势、表情）
+- 艺术风格和技法（写实、动漫、油画等）
+- 构图和取景（特写、全景等）
+- 光线和氛围
+- 色彩搭配
+- 背景和环境
+- 镜头角度和透视
+- 质量修饰词（高清、精细等）
 
-Output format:
-First, provide the TEXT PROMPT (plain text, suitable for direct use in image generation).
-Then, provide a separator line: ---JSON---
-Then, provide the STRUCTURED JSON with categorized elements.`
+输出格式：
+首先，提供中文文本提示词（纯文本，可直接用于图像生成）。
+然后，输出分隔符：---JSON---
+最后，提供结构化的 JSON（键名使用英文，值使用中文描述）。`
 
 const DEFAULT_CHAT_MODEL = 'gpt-5-mini'
 
@@ -89,7 +89,7 @@ export default function PromptReverseModal({ open, onClose }: Props) {
         {
           role: 'user',
           content: [
-            { type: 'text', text: 'Analyze this image and provide a detailed text prompt and structured JSON representation.' },
+            { type: 'text', text: '请分析这张图片，提供详细的中文文本提示词和结构化的 JSON 表示。' },
             { type: 'image_url', image_url: { url: image } }
           ]
         }

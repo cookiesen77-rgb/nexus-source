@@ -1,8 +1,12 @@
-import React, { useEffect, useMemo, useRef } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useGraphStore } from '@/graph/store'
 import type { GraphEdge, GraphNode, NodeType } from '@/graph/types'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '@/config/models'
+import { saveMedia } from '@/lib/mediaStorage'
+
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
 export type CanvasContextPayload =
   | { kind: 'node'; id: string; clientX: number; clientY: number }
@@ -33,6 +37,10 @@ export default function CanvasContextMenu({
   onRequestEditRemark?: (nodeId: string) => void
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingFileTypeRef = useRef<string | null>(null)
+  const pendingWorldRef = useRef<{ x: number; y: number } | null>(null)
+  
   const nodes = useGraphStore((s) => s.nodes)
   const edges = useGraphStore((s) => s.edges)
   const updateNode = useGraphStore((s) => s.updateNode)
@@ -44,6 +52,182 @@ export default function CanvasContextMenu({
   const setEdgeImageRole = useGraphStore((s) => s.setEdgeImageRole)
   const setSelected = useGraphStore((s) => s.setSelected)
   const withBatch = useGraphStore((s) => s.withBatchUpdates)
+
+  // 处理文件选择
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    console.log('[CanvasContextMenu] handleFileSelect 被调用')
+    const file = e.target.files?.[0]
+    const type = pendingFileTypeRef.current
+    const world = pendingWorldRef.current
+    console.log('[CanvasContextMenu] file:', file, 'type:', type, 'world:', world)
+    
+    if (!file || !type || !world) {
+      pendingFileTypeRef.current = null
+      pendingWorldRef.current = null
+      e.target.value = ''
+      return
+    }
+    
+    const { w, h } = getNodeSize(type)
+    const pos = { x: world.x - w * 0.5, y: world.y - h * 0.5 }
+    
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string
+      if (!dataUrl) return
+      
+      const store = useGraphStore.getState()
+      const newNodeId = store.addNode(type, pos, {
+        label: file.name || (type === 'image' ? '图片' : type === 'video' ? '视频' : '音频'),
+        url: dataUrl,
+        sourceUrl: '',
+        fileName: file.name,
+        fileType: file.type,
+        createdAt: Date.now()
+      })
+      
+      store.setSelected(newNodeId)
+      
+      // 保存到 IndexedDB
+      const projectId = store.projectId || 'default'
+      try {
+        const mediaId = await saveMedia({
+          nodeId: newNodeId,
+          projectId,
+          type: type as 'image' | 'video' | 'audio',
+          data: dataUrl,
+        })
+        if (mediaId) {
+          store.patchNodeDataSilent(newNodeId, { mediaId })
+        }
+      } catch {
+        // ignore
+      }
+    }
+    reader.readAsDataURL(file)
+    
+    pendingFileTypeRef.current = null
+    pendingWorldRef.current = null
+    e.target.value = ''
+    
+    // Web 环境下，文件选择完成后关闭菜单
+    onOpenChange(false)
+  }, [onOpenChange])
+
+  // 触发文件选择
+  const triggerFileUpload = useCallback(async (type: string, world: { x: number; y: number }) => {
+    pendingFileTypeRef.current = type
+    pendingWorldRef.current = world
+    
+    let filters: Array<{ name: string; extensions: string[] }> = []
+    let accept = ''
+    if (type === 'image') {
+      accept = 'image/*'
+      filters = [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }]
+    } else if (type === 'video') {
+      accept = 'video/*'
+      filters = [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov', 'avi', 'mkv'] }]
+    } else if (type === 'audio') {
+      accept = 'audio/*'
+      filters = [{ name: '音频文件', extensions: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'] }]
+    }
+    
+    if (isTauri) {
+      // Tauri 环境：先关闭菜单再打开系统对话框
+      onOpenChange(false)
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog')
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        
+        const result = await open({
+          multiple: false,
+          filters,
+          title: type === 'image' ? '选择图片' : type === 'video' ? '选择视频' : '选择音频'
+        })
+        
+        if (result && typeof result === 'string') {
+          const fileData = await readFile(result)
+          const fileName = result.split('/').pop() || result.split('\\').pop() || 'file'
+          const ext = fileName.split('.').pop()?.toLowerCase() || ''
+          
+          let mimeType = ''
+          if (type === 'image') {
+            const mimeMap: Record<string, string> = { 
+              png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', 
+              gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' 
+            }
+            mimeType = mimeMap[ext] || 'image/png'
+          } else if (type === 'video') {
+            const mimeMap: Record<string, string> = { 
+              mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', 
+              avi: 'video/x-msvideo', mkv: 'video/x-matroska' 
+            }
+            mimeType = mimeMap[ext] || 'video/mp4'
+          } else if (type === 'audio') {
+            const mimeMap: Record<string, string> = { 
+              mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', 
+              flac: 'audio/flac', aac: 'audio/aac', m4a: 'audio/mp4' 
+            }
+            mimeType = mimeMap[ext] || 'audio/mpeg'
+          }
+          
+          const blob = new Blob([fileData], { type: mimeType })
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+          
+          const { w, h } = getNodeSize(type)
+          const pos = { x: world.x - w * 0.5, y: world.y - h * 0.5 }
+          
+          const store = useGraphStore.getState()
+          const newNodeId = store.addNode(type, pos, {
+            label: fileName,
+            url: dataUrl,
+            sourceUrl: '',
+            fileName,
+            fileType: mimeType,
+            createdAt: Date.now()
+          })
+          
+          store.setSelected(newNodeId)
+          
+          // 保存到 IndexedDB
+          const projectId = store.projectId || 'default'
+          try {
+            const mediaId = await saveMedia({
+              nodeId: newNodeId,
+              projectId,
+              type: type as 'image' | 'video' | 'audio',
+              data: dataUrl,
+            })
+            if (mediaId) {
+              store.patchNodeDataSilent(newNodeId, { mediaId })
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } catch (err) {
+        console.error('[CanvasContextMenu] Tauri 文件选择失败:', err)
+        window.$message?.error?.('文件选择失败，请重试')
+      }
+      pendingFileTypeRef.current = null
+      pendingWorldRef.current = null
+    } else {
+      // Web 环境：先触发文件选择，选择完成后在 handleFileSelect 中关闭菜单
+      console.log('[CanvasContextMenu] Web 环境, fileInputRef:', fileInputRef.current)
+      if (fileInputRef.current) {
+        fileInputRef.current.accept = accept
+        console.log('[CanvasContextMenu] 触发 click, accept:', accept)
+        fileInputRef.current.click()
+        // 注意：不在这里关闭菜单，而是在 handleFileSelect 中关闭
+      } else {
+        console.error('[CanvasContextMenu] fileInputRef.current 为空!')
+      }
+    }
+  }, [onOpenChange])
 
   const info = useMemo(() => {
     if (!payload) return null
@@ -78,7 +262,17 @@ export default function CanvasContextMenu({
     }
   }, [onOpenChange, open])
 
-  if (!open || !payload || !info) return null
+  // 文件输入必须始终存在，不能在条件渲染内部
+  const fileInput = (
+    <input
+      ref={fileInputRef}
+      type="file"
+      className="hidden"
+      onChange={handleFileSelect}
+    />
+  )
+
+  if (!open || !payload || !info) return fileInput
 
   const style: React.CSSProperties = {
     left: payload.clientX,
@@ -270,37 +464,59 @@ export default function CanvasContextMenu({
   if (info.kind === 'canvas') {
     const world = info.world
     return (
-      <MenuShell>
-        <button
-          className={itemClass}
-          onClick={() => {
-            spawnNodeAt('text', world)
-            onOpenChange(false)
-          }}
-        >
-          <span>新建文本节点</span>
-        </button>
-        <button
-          className={itemClass}
-          onClick={() => {
-            spawnNodeAt('imageConfig', world)
-            onOpenChange(false)
-          }}
-        >
-          <span>新建生图配置</span>
-        </button>
-        <button
-          className={itemClass}
-          onClick={() => {
-            spawnNodeAt('videoConfig', world)
-            onOpenChange(false)
-          }}
-        >
-          <span>新建视频配置</span>
-        </button>
-      </MenuShell>
+      <>
+        <MenuShell>
+          <button
+            className={itemClass}
+            onClick={() => {
+              spawnNodeAt('text', world)
+              onOpenChange(false)
+            }}
+          >
+            <span>新建文本节点</span>
+          </button>
+          <button
+            className={itemClass}
+            onClick={() => {
+              spawnNodeAt('imageConfig', world)
+              onOpenChange(false)
+            }}
+          >
+            <span>新建生图配置</span>
+          </button>
+          <button
+            className={itemClass}
+            onClick={() => {
+              spawnNodeAt('videoConfig', world)
+              onOpenChange(false)
+            }}
+          >
+            <span>新建视频配置</span>
+          </button>
+          {sectionSep}
+          <button
+            className={itemClass}
+            onClick={() => triggerFileUpload('image', world)}
+          >
+            <span>新建图片节点</span>
+          </button>
+          <button
+            className={itemClass}
+            onClick={() => triggerFileUpload('video', world)}
+          >
+            <span>新建视频节点</span>
+          </button>
+          <button
+            className={itemClass}
+            onClick={() => triggerFileUpload('audio', world)}
+          >
+            <span>新建音频节点</span>
+          </button>
+        </MenuShell>
+        {fileInput}
+      </>
     )
   }
 
-  return null
+  return fileInput
 }

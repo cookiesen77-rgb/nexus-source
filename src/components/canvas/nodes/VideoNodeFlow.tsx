@@ -7,12 +7,15 @@
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Handle, Position, NodeProps } from '@xyflow/react'
-import { Trash2, Copy, Expand, Video, Image, Eye, Download, X } from 'lucide-react'
+import { Trash2, Copy, Expand, Video, Image, Eye, Download, X, RefreshCw } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
 import { downloadFile } from '@/lib/download'
 import { useInView } from '@/hooks/useInView'
 import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
+
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
 interface VideoNodeData {
   label?: string
@@ -170,6 +173,125 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
       store.addNode('video', { x: node.x + 50, y: node.y + 50 }, { ...node.data })
     }
   }, [id])
+
+  // 替换视频功能
+  const replaceInputRef = useRef<HTMLInputElement>(null)
+
+  const handleReplaceClick = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    
+    if (isTauri) {
+      // Tauri 环境：使用 dialog API
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog')
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        
+        const result = await open({
+          multiple: false,
+          filters: [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov', 'avi', 'mkv'] }],
+          title: '选择视频'
+        })
+        
+        if (result && typeof result === 'string') {
+          const fileData = await readFile(result)
+          const fileName = result.split('/').pop() || result.split('\\').pop() || 'video'
+          const ext = fileName.split('.').pop()?.toLowerCase() || 'mp4'
+          const mimeMap: Record<string, string> = { 
+            mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', 
+            avi: 'video/x-msvideo', mkv: 'video/x-matroska' 
+          }
+          const mimeType = mimeMap[ext] || 'video/mp4'
+          
+          const blob = new Blob([fileData], { type: mimeType })
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+          
+          const store = useGraphStore.getState()
+          const projectId = store.projectId || 'default'
+          
+          store.updateNode(id, {
+            data: {
+              url: dataUrl,
+              sourceUrl: '',
+              mediaId: undefined,
+              label: fileName || nodeData?.label || '视频',
+              loading: false,
+              error: undefined,
+            }
+          })
+          
+          // 保存到 IndexedDB
+          try {
+            const mediaId = await saveMedia({
+              nodeId: id,
+              projectId,
+              type: 'video',
+              data: dataUrl,
+            })
+            if (mediaId) {
+              store.patchNodeDataSilent(id, { mediaId })
+            }
+          } catch {
+            // ignore
+          }
+          
+          window.$message?.success?.('视频已替换')
+        }
+      } catch {
+        // ignore
+      }
+    } else {
+      // Web 环境：使用原生 file input
+      replaceInputRef.current?.click()
+    }
+  }, [id, nodeData?.label])
+
+  const handleReplaceFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string
+      if (!dataUrl) return
+
+      const store = useGraphStore.getState()
+      const projectId = store.projectId || 'default'
+
+      store.updateNode(id, {
+        data: {
+          url: dataUrl,
+          sourceUrl: '',
+          mediaId: undefined,
+          label: file.name || nodeData?.label || '视频',
+          loading: false,
+          error: undefined,
+        }
+      })
+
+      // 保存到 IndexedDB
+      try {
+        const mediaId = await saveMedia({
+          nodeId: id,
+          projectId,
+          type: 'video',
+          data: dataUrl,
+        })
+        if (mediaId) {
+          store.patchNodeDataSilent(id, { mediaId })
+        }
+      } catch {
+        // ignore
+      }
+
+      window.$message?.success?.('视频已替换')
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }, [id, nodeData?.label])
 
   const handleExtractFrame = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -424,6 +546,16 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
       {/* 右侧操作按钮 */}
       {showActions && displayUrl && (
         <div className="absolute right-10 top-20 -translate-y-1/2 translate-x-full flex flex-col gap-2 z-[1000]">
+          {/* 替换 */}
+          <button
+            onClick={handleReplaceClick}
+            className="group p-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 flex items-center gap-0 hover:gap-1.5 transition-all shadow-sm w-max"
+          >
+            <RefreshCw size={16} className="text-gray-600 dark:text-gray-300" />
+            <span className="text-xs text-gray-600 dark:text-gray-300 max-w-0 overflow-hidden group-hover:max-w-[60px] transition-all duration-200 whitespace-nowrap">
+              替换
+            </span>
+          </button>
           {/* 提取当前帧 */}
           <button
             onClick={handleExtractFrame}
@@ -467,6 +599,15 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
         />,
         document.body
       )}
+
+      {/* 隐藏的替换视频文件选择器 */}
+      <input
+        ref={replaceInputRef}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        onChange={handleReplaceFile}
+      />
     </div>
   )
 })

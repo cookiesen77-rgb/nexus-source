@@ -43,6 +43,9 @@ import { saveCurrentAsTemplate } from '@/lib/workflowTemplates'
 const USE_REACT_FLOW = true   // 使用 React Flow（60fps 性能保证）
 const USE_DOM_CANVAS = false  // 改为 false，使用 React Flow 代替
 const USE_NEW_EVENT_SYSTEM = false
+
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 const USE_SPATIAL_INDEX = true
 
 export default function Canvas() {
@@ -89,6 +92,16 @@ export default function Canvas() {
     sourceNodeId: string
     sourceNodeType: string
   } | null>(null)
+
+  // 连接菜单文件选择器
+  const connectMenuFileInputRef = useRef<HTMLInputElement | null>(null)
+  const connectMenuPendingTypeRef = useRef<string | null>(null)
+  
+  // 右键菜单文件选择器
+  const contextMenuFileInputRef = useRef<HTMLInputElement | null>(null)
+  const contextMenuPendingTypeRef = useRef<string | null>(null)
+  const contextMenuPendingPosRef = useRef<{ flowX: number; flowY: number } | null>(null)
+  const connectMenuPendingInfoRef = useRef<{ flowX: number; flowY: number; sourceNodeId: string } | null>(null)
 
   // 一键全部生成（并发）
   const handleBatchGenerate = useCallback(async () => {
@@ -227,9 +240,183 @@ export default function Canvas() {
     { type: 'audio', name: '音频节点', Icon: Music, color: '#0ea5e9' }
   ]
 
+  // 处理右键菜单文件选择
+  const handleContextMenuFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    const type = contextMenuPendingTypeRef.current
+    const pos = contextMenuPendingPosRef.current
+    
+    if (!file || !type || !pos) {
+      contextMenuPendingTypeRef.current = null
+      contextMenuPendingPosRef.current = null
+      e.target.value = ''
+      return
+    }
+    
+    const { flowX, flowY } = pos
+    const { w, h } = getNodeSize(type)
+    const nodePos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
+    
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string
+      if (!dataUrl) return
+      
+      const store = useGraphStore.getState()
+      const newNodeId = store.addNode(type, nodePos, {
+        label: file.name || (type === 'image' ? '图片' : type === 'video' ? '视频' : '音频'),
+        url: dataUrl,
+        sourceUrl: '',
+        fileName: file.name,
+        fileType: file.type,
+        createdAt: Date.now()
+      })
+      
+      store.setSelected(newNodeId)
+      
+      // 保存到 IndexedDB
+      const projectId = store.projectId || 'default'
+      try {
+        const mediaId = await saveMedia({
+          nodeId: newNodeId,
+          projectId,
+          type: type as 'image' | 'video' | 'audio',
+          data: dataUrl,
+        })
+        if (mediaId) {
+          store.patchNodeDataSilent(newNodeId, { mediaId })
+        }
+      } catch {
+        // ignore
+      }
+    }
+    reader.readAsDataURL(file)
+    
+    contextMenuPendingTypeRef.current = null
+    contextMenuPendingPosRef.current = null
+    e.target.value = ''
+  }, [])
+
+  // 触发右键菜单文件选择
+  const triggerContextMenuFileUpload = useCallback(async (type: string, pos: { flowX: number; flowY: number }) => {
+    contextMenuPendingTypeRef.current = type
+    contextMenuPendingPosRef.current = pos
+    setCanvasContextMenu(null)
+    
+    let filters: Array<{ name: string; extensions: string[] }> = []
+    let accept = ''
+    if (type === 'image') {
+      accept = 'image/*'
+      filters = [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }]
+    } else if (type === 'video') {
+      accept = 'video/*'
+      filters = [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov', 'avi', 'mkv'] }]
+    } else if (type === 'audio') {
+      accept = 'audio/*'
+      filters = [{ name: '音频文件', extensions: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'] }]
+    }
+    
+    if (isTauri) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog')
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        
+        const result = await open({
+          multiple: false,
+          filters,
+          title: type === 'image' ? '选择图片' : type === 'video' ? '选择视频' : '选择音频'
+        })
+        
+        if (result && typeof result === 'string') {
+          const fileData = await readFile(result)
+          const fileName = result.split('/').pop() || result.split('\\').pop() || 'file'
+          const ext = fileName.split('.').pop()?.toLowerCase() || ''
+          
+          let mimeType = ''
+          if (type === 'image') {
+            const mimeMap: Record<string, string> = { 
+              png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', 
+              gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' 
+            }
+            mimeType = mimeMap[ext] || 'image/png'
+          } else if (type === 'video') {
+            const mimeMap: Record<string, string> = { 
+              mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', 
+              avi: 'video/x-msvideo', mkv: 'video/x-matroska' 
+            }
+            mimeType = mimeMap[ext] || 'video/mp4'
+          } else if (type === 'audio') {
+            const mimeMap: Record<string, string> = { 
+              mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', 
+              flac: 'audio/flac', aac: 'audio/aac', m4a: 'audio/mp4' 
+            }
+            mimeType = mimeMap[ext] || 'audio/mpeg'
+          }
+          
+          const blob = new Blob([fileData], { type: mimeType })
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+          
+          const { flowX, flowY } = pos
+          const { w, h } = getNodeSize(type)
+          const nodePos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
+          
+          const store = useGraphStore.getState()
+          const newNodeId = store.addNode(type, nodePos, {
+            label: fileName,
+            url: dataUrl,
+            sourceUrl: '',
+            fileName,
+            fileType: mimeType,
+            createdAt: Date.now()
+          })
+          
+          store.setSelected(newNodeId)
+          
+          // 保存到 IndexedDB
+          const projectId = store.projectId || 'default'
+          try {
+            const mediaId = await saveMedia({
+              nodeId: newNodeId,
+              projectId,
+              type: type as 'image' | 'video' | 'audio',
+              data: dataUrl,
+            })
+            if (mediaId) {
+              store.patchNodeDataSilent(newNodeId, { mediaId })
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } catch (err) {
+        console.error('[Canvas] Tauri 文件选择失败:', err)
+        window.$message?.error?.('文件选择失败，请重试')
+      }
+      contextMenuPendingTypeRef.current = null
+      contextMenuPendingPosRef.current = null
+    } else {
+      // Web 环境
+      if (contextMenuFileInputRef.current) {
+        contextMenuFileInputRef.current.accept = accept
+        contextMenuFileInputRef.current.click()
+      }
+    }
+  }, [])
+
   const spawnNodeFromContextMenu = useCallback((type: string) => {
     if (!canvasContextMenu) return
     const { flowX, flowY } = canvasContextMenu
+    
+    // 图片/视频/音频节点需要先选择文件
+    if (type === 'image' || type === 'video' || type === 'audio') {
+      triggerContextMenuFileUpload(type, { flowX, flowY })
+      return
+    }
+    
     const { w, h } = getNodeSize(type)
     const pos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
     
@@ -253,7 +440,7 @@ export default function Canvas() {
     const id = store.addNode(type, pos, data)
     store.setSelected(id)
     setCanvasContextMenu(null)
-  }, [canvasContextMenu])
+  }, [canvasContextMenu, triggerContextMenuFileUpload])
 
   // 处理连接线拖拽结束（弹出节点选择菜单）
   const handleConnectEnd = useCallback((event: ConnectEndEvent) => {
@@ -299,10 +486,195 @@ export default function Canvas() {
     }
   }, [])
 
+  // 处理连接菜单文件选择
+  const handleConnectMenuFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    const type = connectMenuPendingTypeRef.current
+    const info = connectMenuPendingInfoRef.current
+    
+    if (!file || !type || !info) {
+      connectMenuPendingTypeRef.current = null
+      connectMenuPendingInfoRef.current = null
+      e.target.value = ''
+      return
+    }
+    
+    const { flowX, flowY, sourceNodeId } = info
+    const { w, h } = getNodeSize(type)
+    const pos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
+    
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string
+      if (!dataUrl) return
+      
+      const store = useGraphStore.getState()
+      const newNodeId = store.addNode(type, pos, {
+        label: file.name || (type === 'image' ? '图片' : type === 'video' ? '视频' : '音频'),
+        url: dataUrl,
+        sourceUrl: '',
+        fileName: file.name,
+        fileType: file.type,
+        createdAt: Date.now()
+      })
+      
+      // 自动创建连接
+      store.addEdge(sourceNodeId, newNodeId, {
+        sourceHandle: 'right',
+        targetHandle: 'left',
+      })
+      
+      store.setSelected(newNodeId)
+      
+      // 保存到 IndexedDB
+      const projectId = store.projectId || 'default'
+      try {
+        const mediaId = await saveMedia({
+          nodeId: newNodeId,
+          projectId,
+          type: type as 'image' | 'video' | 'audio',
+          data: dataUrl,
+        })
+        if (mediaId) {
+          store.patchNodeDataSilent(newNodeId, { mediaId })
+        }
+      } catch {
+        // ignore
+      }
+    }
+    reader.readAsDataURL(file)
+    
+    connectMenuPendingTypeRef.current = null
+    connectMenuPendingInfoRef.current = null
+    e.target.value = ''
+  }, [])
+
+  // 触发连接菜单文件选择
+  const triggerConnectMenuFileUpload = useCallback(async (type: string, info: { flowX: number; flowY: number; sourceNodeId: string }) => {
+    connectMenuPendingTypeRef.current = type
+    connectMenuPendingInfoRef.current = info
+    setConnectMenu(null)
+    
+    let filters: Array<{ name: string; extensions: string[] }> = []
+    let accept = ''
+    if (type === 'image') {
+      accept = 'image/*'
+      filters = [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }]
+    } else if (type === 'video') {
+      accept = 'video/*'
+      filters = [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov', 'avi', 'mkv'] }]
+    } else if (type === 'audio') {
+      accept = 'audio/*'
+      filters = [{ name: '音频文件', extensions: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'] }]
+    }
+    
+    if (isTauri) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog')
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        
+        const result = await open({
+          multiple: false,
+          filters,
+          title: type === 'image' ? '选择图片' : type === 'video' ? '选择视频' : '选择音频'
+        })
+        
+        if (result && typeof result === 'string') {
+          const fileData = await readFile(result)
+          const fileName = result.split('/').pop() || result.split('\\').pop() || 'file'
+          const ext = fileName.split('.').pop()?.toLowerCase() || ''
+          
+          let mimeType = ''
+          if (type === 'image') {
+            const mimeMap: Record<string, string> = { 
+              png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', 
+              gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' 
+            }
+            mimeType = mimeMap[ext] || 'image/png'
+          } else if (type === 'video') {
+            const mimeMap: Record<string, string> = { 
+              mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', 
+              avi: 'video/x-msvideo', mkv: 'video/x-matroska' 
+            }
+            mimeType = mimeMap[ext] || 'video/mp4'
+          } else if (type === 'audio') {
+            const mimeMap: Record<string, string> = { 
+              mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', 
+              flac: 'audio/flac', aac: 'audio/aac', m4a: 'audio/mp4' 
+            }
+            mimeType = mimeMap[ext] || 'audio/mpeg'
+          }
+          
+          const blob = new Blob([fileData], { type: mimeType })
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+          
+          const { flowX, flowY, sourceNodeId } = info
+          const { w, h } = getNodeSize(type)
+          const pos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
+          
+          const store = useGraphStore.getState()
+          const newNodeId = store.addNode(type, pos, {
+            label: fileName,
+            url: dataUrl,
+            sourceUrl: '',
+            fileName,
+            fileType: mimeType,
+            createdAt: Date.now()
+          })
+          
+          store.addEdge(sourceNodeId, newNodeId, {
+            sourceHandle: 'right',
+            targetHandle: 'left',
+          })
+          
+          store.setSelected(newNodeId)
+          
+          // 保存到 IndexedDB
+          const projectId = store.projectId || 'default'
+          try {
+            const mediaId = await saveMedia({
+              nodeId: newNodeId,
+              projectId,
+              type: type as 'image' | 'video' | 'audio',
+              data: dataUrl,
+            })
+            if (mediaId) {
+              store.patchNodeDataSilent(newNodeId, { mediaId })
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } catch (err) {
+        console.error('[Canvas] Tauri 文件选择失败:', err)
+        window.$message?.error?.('文件选择失败，请重试')
+      }
+      connectMenuPendingTypeRef.current = null
+      connectMenuPendingInfoRef.current = null
+    } else {
+      // Web 环境
+      if (connectMenuFileInputRef.current) {
+        connectMenuFileInputRef.current.accept = accept
+        connectMenuFileInputRef.current.click()
+      }
+    }
+  }, [])
+
   // 从连接线菜单创建节点并自动连接
   const spawnNodeFromConnectMenu = useCallback((type: string) => {
     if (!connectMenu) return
     const { flowX, flowY, sourceNodeId } = connectMenu
+    
+    // 图片/视频/音频节点需要先选择文件
+    if (type === 'image' || type === 'video' || type === 'audio') {
+      triggerConnectMenuFileUpload(type, { flowX, flowY, sourceNodeId })
+      return
+    }
+    
     const { w, h } = getNodeSize(type)
     const pos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
     
@@ -334,7 +706,7 @@ export default function Canvas() {
     
     store.setSelected(newNodeId)
     setConnectMenu(null)
-  }, [connectMenu])
+  }, [connectMenu, triggerConnectMenuFileUpload])
 
   // 新事件系统状态
   const [connectPreview, setConnectPreview] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } | null>(null)
@@ -450,6 +822,52 @@ export default function Canvas() {
       if (transientViewportRafRef.current) cancelAnimationFrame(transientViewportRafRef.current)
     }
   }, [])
+
+  // 同步画布素材到历史记录
+  useEffect(() => {
+    const syncAssetsFromCanvas = () => {
+      const graphNodes = useGraphStore.getState().nodes
+      const assetsStore = useAssetsStore.getState()
+      const existingAssets = assetsStore.assets
+      
+      // 收集画布上所有 image 和 video 节点的素材
+      graphNodes.forEach((node) => {
+        if (node.type === 'image') {
+          const d = node.data as any
+          const src = d?.src || d?.url || d?.imageUrl
+          if (src && !src.startsWith('data:') && src.startsWith('http')) {
+            // 检查是否已存在
+            const exists = existingAssets.some((a) => a.src === src)
+            if (!exists) {
+              assetsStore.addAsset({
+                type: 'image',
+                src,
+                title: d?.label || d?.prompt?.slice?.(0, 50) || '画布图片'
+              })
+            }
+          }
+        } else if (node.type === 'video') {
+          const d = node.data as any
+          const src = d?.src || d?.url || d?.videoUrl
+          if (src && src.startsWith('http')) {
+            const exists = existingAssets.some((a) => a.src === src)
+            if (!exists) {
+              assetsStore.addAsset({
+                type: 'video',
+                src,
+                title: d?.label || d?.prompt?.slice?.(0, 50) || '画布视频',
+                duration: d?.duration
+              })
+            }
+          }
+        }
+      })
+    }
+    
+    // 延迟执行，确保画布数据已加载
+    const timer = setTimeout(syncAssetsFromCanvas, 1000)
+    return () => clearTimeout(timer)
+  }, [id])
 
   useEffect(() => {
     if (!nodeMenuOpen) setSpawnAt(null)
@@ -713,6 +1131,35 @@ export default function Canvas() {
     [addEdge, addNode, setSelection]
   )
 
+  // 监听从历史面板拖拽素材到画布的事件
+  useEffect(() => {
+    const handleAssetDrop = (e: CustomEvent<{ asset: any; clientX: number; clientY: number }>) => {
+      const { asset, clientX, clientY } = e.detail
+      const src = String(asset?.src || asset?.url || '').trim()
+      const type = String(asset?.type || '').trim()
+      if (!src || !type) return
+      const kind = type === 'video' ? 'video' : type === 'audio' ? 'audio' : type === 'image' ? 'image' : null
+      if (!kind) return
+      const wrap = canvasWrapRef.current
+      const rect = wrap?.getBoundingClientRect()
+      const vp = useGraphStore.getState().viewport
+      const z = vp.zoom || 1
+      const local = rect ? { x: clientX - rect.left, y: clientY - rect.top } : { x: 0, y: 0 }
+      const world = { x: (local.x - vp.x) / z, y: (local.y - vp.y) / z }
+      const id = addNode(kind, { x: world.x - 120, y: world.y - 80 }, {
+        label: String(asset?.title || asset?.label || '').trim() || (kind === 'video' ? '视频' : kind === 'audio' ? '音频' : '图片'),
+        url: src,
+        sourceUrl: src,
+        model: String(asset?.model || '').trim(),
+        duration: asset?.duration,
+        createdAt: Date.now()
+      })
+      setSelected(id)
+    }
+    window.addEventListener('nexus:asset-drop', handleAssetDrop as EventListener)
+    return () => window.removeEventListener('nexus:asset-drop', handleAssetDrop as EventListener)
+  }, [addNode, setSelected])
+
   return (
     <div className="h-full w-full bg-[var(--bg-primary)] text-[var(--text-primary)]">
       <header className="flex h-[72px] items-center justify-between border-b border-[var(--border-color)] bg-[var(--bg-secondary)] px-6 py-4">
@@ -865,6 +1312,7 @@ export default function Canvas() {
                 setCtxOpen(true)
               }}
               onConnectEnd={handleConnectEnd}
+              onFileDrop={addDroppedFiles}
             />
           ) : USE_DOM_CANVAS ? (
             // 高性能 DOM 画布模式
@@ -1272,6 +1720,22 @@ export default function Canvas() {
           </div>
         </div>
       )}
+
+      {/* 连接菜单文件选择器（隐藏） */}
+      <input
+        ref={connectMenuFileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleConnectMenuFileSelect}
+      />
+
+      {/* 右键菜单文件选择器（隐藏） */}
+      <input
+        ref={contextMenuFileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleContextMenuFileSelect}
+      />
 
       {/* 保存模板弹窗 */}
       {saveTemplateOpen && (

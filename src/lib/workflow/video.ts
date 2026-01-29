@@ -21,9 +21,289 @@ export interface VideoGenerationOverrides {
   size?: string
 }
 
+// 正在运行的视频任务 Map：nodeId -> { cancelled: boolean }
+const runningTasks = new Map<string, { cancelled: boolean }>()
+
+// 全局取消标记 - 页面卸载时设为 true
+let globalCancelled = false
+
+// 取消指定节点的视频生成任务
+export const cancelVideoTask = (nodeId: string) => {
+  const task = runningTasks.get(nodeId)
+  if (task) {
+    task.cancelled = true
+    console.log('[cancelVideoTask] 已标记取消任务:', nodeId)
+  }
+}
+
+// 取消所有正在运行的视频任务
+export const cancelAllVideoTasks = () => {
+  globalCancelled = true
+  runningTasks.forEach((task, nodeId) => {
+    task.cancelled = true
+    console.log('[cancelAllVideoTasks] 已标记取消任务:', nodeId)
+  })
+}
+
+// 检查任务是否被取消
+const isTaskCancelled = (nodeId: string) => {
+  return globalCancelled || runningTasks.get(nodeId)?.cancelled === true
+}
+
+// 页面卸载时取消所有任务
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    console.log('[video] 页面卸载，取消所有任务')
+    cancelAllVideoTasks()
+  })
+  window.addEventListener('unload', () => {
+    cancelAllVideoTasks()
+  })
+}
+
 const normalizeText = (text: unknown) => String(text || '').replace(/\r\n/g, '\n').trim()
 
 const isHttpUrl = (v: string) => /^https?:\/\//i.test(v)
+
+// 检测 Tauri 环境
+const isTauriEnv = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+// 将 base64 图片上传到图床，获取公网 URL
+// 腾讯 AIGC API 需要公网可访问的图片 URL
+const uploadBase64ToImageHost = async (base64Data: string): Promise<string> => {
+  console.log('[uploadImage] 开始上传图片到图床..., Tauri 环境:', isTauriEnv)
+  
+  // 将 base64 转换为 Blob/ArrayBuffer
+  const base64Content = base64Data.split(',')[1] || base64Data
+  const mimeMatch = base64Data.match(/^data:([^;]+);/)
+  const mimeType = mimeMatch ? mimeMatch[1] : 'image/png'
+  const byteCharacters = atob(base64Content)
+  const byteNumbers = new Array(byteCharacters.length)
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i)
+  }
+  const byteArray = new Uint8Array(byteNumbers)
+  const blob = new Blob([byteArray], { type: mimeType })
+  
+  // Tauri 环境：使用原生 HTTP 请求绕过 CORS，优先使用 sm.ms
+  if (isTauriEnv) {
+    try {
+      console.log('[uploadImage] Tauri 环境，使用原生 HTTP 上传到 sm.ms...')
+      const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
+      
+      // 构建 multipart/form-data
+      const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
+      const ext = mimeType.split('/')[1] || 'png'
+      const fileName = `image.${ext}`
+      
+      // 手动构建 multipart body
+      const header = `--${boundary}\r\nContent-Disposition: form-data; name="smfile"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+      const footer = `\r\n--${boundary}--\r\n`
+      
+      const headerBytes = new TextEncoder().encode(header)
+      const footerBytes = new TextEncoder().encode(footer)
+      
+      const bodyLength = headerBytes.length + byteArray.length + footerBytes.length
+      const body = new Uint8Array(bodyLength)
+      body.set(headerBytes, 0)
+      body.set(byteArray, headerBytes.length)
+      body.set(footerBytes, headerBytes.length + byteArray.length)
+      
+      const response = await tauriFetch('https://sm.ms/api/v2/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        },
+        body: body
+      })
+      
+      const data = await response.json() as any
+      console.log('[uploadImage] sm.ms 响应:', JSON.stringify(data, null, 2))
+      
+      // sm.ms 返回格式: { success: true, data: { url: "https://..." } }
+      // 或已存在时: { success: false, code: "image_repeated", images: "https://..." }
+      if (data.success && data.data?.url) {
+        console.log('[uploadImage] sm.ms 上传成功:', data.data.url)
+        return data.data.url
+      }
+      if (data.code === 'image_repeated' && data.images) {
+        console.log('[uploadImage] sm.ms 图片已存在:', data.images)
+        return data.images
+      }
+      throw new Error(data.message || 'sm.ms 上传失败')
+    } catch (smErr: any) {
+      console.warn('[uploadImage] sm.ms 上传失败，尝试 catbox.moe:', smErr)
+      
+      // 备用：catbox.moe
+      try {
+        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
+        
+        const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
+        const ext = mimeType.split('/')[1] || 'png'
+        const fileName = `image.${ext}`
+        
+        const parts = [
+          `--${boundary}\r\nContent-Disposition: form-data; name="reqtype"\r\n\r\nfileupload\r\n`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="fileToUpload"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+        ]
+        const footer = `\r\n--${boundary}--\r\n`
+        
+        const part1Bytes = new TextEncoder().encode(parts[0])
+        const part2Bytes = new TextEncoder().encode(parts[1])
+        const footerBytes = new TextEncoder().encode(footer)
+        
+        const bodyLength = part1Bytes.length + part2Bytes.length + byteArray.length + footerBytes.length
+        const body = new Uint8Array(bodyLength)
+        let offset = 0
+        body.set(part1Bytes, offset); offset += part1Bytes.length
+        body.set(part2Bytes, offset); offset += part2Bytes.length
+        body.set(byteArray, offset); offset += byteArray.length
+        body.set(footerBytes, offset)
+        
+        const response = await tauriFetch('https://catbox.moe/user/api.php', {
+          method: 'POST',
+          headers: {
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          },
+          body: body
+        })
+        
+        const text = await response.text()
+        console.log('[uploadImage] catbox.moe 响应:', text)
+        
+        if (text.startsWith('https://')) {
+          console.log('[uploadImage] catbox.moe 上传成功:', text.trim())
+          return text.trim()
+        }
+        throw new Error(text)
+      } catch (catboxErr) {
+        console.warn('[uploadImage] catbox.moe 也失败:', catboxErr)
+        throw smErr // 抛出原始 sm.ms 错误
+      }
+    }
+  }
+  
+  // Web 环境：使用 allapi 图床（可能有 CORS 限制）
+  // 文档: https://help.allapi.store/doc-8123330
+  const imageHosts = [
+    {
+      name: 'allapi 官方图床',
+      url: 'https://imageproxy.zhongzhuan.chat/api/upload',
+      buildFormData: () => {
+        const formData = new FormData()
+        const ext = mimeType.split('/')[1] || 'png'
+        formData.append('file', blob, `image.${ext}`)
+        return formData
+      },
+      parseResponse: async (response: Response) => {
+        const data = await response.json()
+        console.log('[uploadImage] allapi 图床响应:', JSON.stringify(data, null, 2))
+        if (data.url) {
+          console.log('[uploadImage] 返回的图片 URL:', data.url)
+          return data.url
+        }
+        throw new Error(data.error || '上传失败')
+      }
+    }
+  ]
+  
+  let lastError: any = null
+  for (const host of imageHosts) {
+    try {
+      console.log(`[uploadImage] 尝试上传到 ${host.name}...`)
+      const formData = host.buildFormData()
+      
+      const response = await fetch(host.url, {
+        method: 'POST',
+        body: formData
+      })
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      
+      const url = await host.parseResponse(response)
+      console.log(`[uploadImage] 上传成功: ${url}`)
+      return url
+    } catch (err) {
+      console.warn(`[uploadImage] ${host.name} 上传失败:`, err)
+      lastError = err
+    }
+  }
+  
+  throw new Error(`图片上传失败，请使用公网可访问的图片 URL。错误: ${lastError?.message || '未知错误'}`)
+}
+
+// 图片压缩工具函数 - 将 base64 图片压缩到指定大小以下
+const compressImageBase64 = async (base64Data: string, maxSizeBytes: number = 800 * 1024): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('无法创建 canvas context'))
+        return
+      }
+      
+      let { width, height } = img
+      let quality = 0.9
+      let result = base64Data
+      
+      // 如果图片本身就很小，直接返回
+      const currentSize = Math.ceil((base64Data.length - (base64Data.indexOf(',') + 1)) * 0.75)
+      if (currentSize <= maxSizeBytes) {
+        resolve(base64Data)
+        return
+      }
+      
+      // 计算需要缩小的比例
+      const sizeRatio = Math.sqrt(maxSizeBytes / currentSize)
+      if (sizeRatio < 1) {
+        width = Math.floor(width * Math.max(sizeRatio, 0.5))
+        height = Math.floor(height * Math.max(sizeRatio, 0.5))
+      }
+      
+      // 限制最大尺寸
+      const maxDim = 1920
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height)
+        width = Math.floor(width * scale)
+        height = Math.floor(height * scale)
+      }
+      
+      canvas.width = width
+      canvas.height = height
+      ctx.drawImage(img, 0, 0, width, height)
+      
+      // 逐步降低质量直到满足大小要求
+      for (let q = 0.85; q >= 0.3; q -= 0.1) {
+        result = canvas.toDataURL('image/jpeg', q)
+        const size = Math.ceil((result.length - (result.indexOf(',') + 1)) * 0.75)
+        if (size <= maxSizeBytes) {
+          console.log(`[compressImage] 压缩成功: ${Math.round(currentSize/1024)}KB -> ${Math.round(size/1024)}KB, 质量=${q.toFixed(1)}, 尺寸=${width}x${height}`)
+          resolve(result)
+          return
+        }
+        quality = q
+      }
+      
+      // 如果还是太大，进一步缩小尺寸
+      width = Math.floor(width * 0.7)
+      height = Math.floor(height * 0.7)
+      canvas.width = width
+      canvas.height = height
+      ctx.drawImage(img, 0, 0, width, height)
+      result = canvas.toDataURL('image/jpeg', 0.6)
+      
+      const finalSize = Math.ceil((result.length - (result.indexOf(',') + 1)) * 0.75)
+      console.log(`[compressImage] 最终压缩: ${Math.round(currentSize/1024)}KB -> ${Math.round(finalSize/1024)}KB, 尺寸=${width}x${height}`)
+      resolve(result)
+    }
+    img.onerror = () => reject(new Error('图片加载失败'))
+    img.src = base64Data
+  })
+}
 
 const pickFirstHttpUrlFromText = (text: string) => {
   const t = String(text || '').trim()
@@ -45,18 +325,30 @@ const extractVideoUrlDeep = (payload: any) => {
   const seen = new Set<string>()
   const urls: string[] = []
 
-  const push = (val: any) => {
+  // 检查是否为图片 URL
+  const isImageUrl = (url: string) => /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?|$)/i.test(url)
+  // 检查是否为视频 URL
+  const isVideoUrl = (url: string) => /\.(mp4|webm|mov|m4v|m3u8|avi|mkv)(\?|$)/i.test(url)
+
+  const push = (val: any, isFromVideoKey = false) => {
     if (typeof val !== 'string') return
     if (!val.startsWith('http')) return
     if (seen.has(val)) return
+    // 排除明显的图片 URL
+    if (isImageUrl(val)) return
     seen.add(val)
-    urls.push(val)
+    // 优先添加明确的视频 URL
+    if (isVideoUrl(val)) {
+      urls.unshift(val) // 添加到开头
+    } else if (isFromVideoKey) {
+      urls.push(val) // 来自视频相关字段的 URL
+    }
   }
 
   const walk = (obj: any, depth = 0) => {
     if (!obj || depth > 6) return
     if (typeof obj === 'string') {
-      if (/\.(mp4|webm|mov|m4v|m3u8)(\?|$)/i.test(obj)) push(obj)
+      if (isVideoUrl(obj)) push(obj, true)
       return
     }
     if (Array.isArray(obj)) {
@@ -65,9 +357,23 @@ const extractVideoUrlDeep = (payload: any) => {
     }
     if (typeof obj !== 'object') return
 
-    for (const k of ['video_url', 'videoUrl', 'url', 'result_url', 'output_url']) {
-      if (typeof obj[k] === 'string') push(obj[k])
+    // 检查 FileInfos 数组中的 FileType
+    if (Array.isArray(obj.FileInfos) || Array.isArray(obj.file_infos)) {
+      const fileInfos = obj.FileInfos || obj.file_infos || []
+      for (const fi of fileInfos) {
+        const fileType = String(fi?.FileType || fi?.file_type || '').toLowerCase()
+        const fileUrl = fi?.FileUrl || fi?.file_url || fi?.Url || fi?.url
+        // 只接受视频类型或无法确定类型但 URL 是视频格式的
+        if (fileUrl && (fileType === 'video' || fileType.includes('video') || isVideoUrl(fileUrl))) {
+          push(fileUrl, true)
+        }
+      }
     }
+
+    for (const k of ['video_url', 'videoUrl', 'result_url', 'output_url']) {
+      if (typeof obj[k] === 'string') push(obj[k], true)
+    }
+    // 不再盲目匹配 'url', 'FileUrl' 等通用字段，避免误取图片 URL
     for (const v of Object.values(obj)) walk(v, depth + 1)
   }
 
@@ -338,12 +644,12 @@ const findConnectedOutputVideoNode = (configId: string) => {
   return null
 }
 
-const pollVideoTask = async (id: string, modelCfg: any) => {
+const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNodeId?: string) => {
   const maxAttempts = 300  // 增加到 300 次（15 分钟）
   const interval = 3000    // 3 秒间隔
   const maxConsecutiveErrors = 10 // 连续错误次数限制
   
-  console.log('[pollVideoTask] 开始轮询, 任务 ID:', id, '最大尝试:', maxAttempts)
+  console.log('[pollVideoTask] 开始轮询, 任务 ID:', id, 'nodeId:', nodeId, '最大尝试:', maxAttempts)
   let lastErr: any = null
   let consecutiveErrors = 0
   let lastSuccessStatus = ''
@@ -363,12 +669,32 @@ const pollVideoTask = async (id: string, modelCfg: any) => {
   }
 
   for (let i = 0; i < maxAttempts; i++) {
+    // 检查任务是否被取消
+    if (nodeId && isTaskCancelled(nodeId)) {
+      console.log('[pollVideoTask] 任务已被取消:', nodeId)
+      throw new Error('任务已取消')
+    }
+    
+    // 检查节点是否还存在（用户可能已删除配置节点或视频节点）
+    if (nodeId || videoNodeId) {
+      const store = useGraphStore.getState()
+      const configExists = !nodeId || store.nodes.some(n => n.id === nodeId)
+      const videoExists = !videoNodeId || store.nodes.some(n => n.id === videoNodeId)
+      if (!configExists || !videoExists) {
+        console.log('[pollVideoTask] 节点已被删除，停止轮询:', { nodeId, videoNodeId, configExists, videoExists })
+        throw new Error('节点已删除，任务已取消')
+      }
+    }
     const statusEndpoint = modelCfg.statusEndpoint
     if (!statusEndpoint) throw new Error('未配置视频查询端点')
 
     let resp: any
     try {
-      if (typeof statusEndpoint === 'function') {
+      // Tencent AIGC Video 格式使用 GET 请求到 /tencent-vod/v1/query/{task_id} 查询任务状态
+      if (modelCfg.format === 'tencent-video') {
+        const queryUrl = typeof statusEndpoint === 'function' ? statusEndpoint(id) : `${statusEndpoint}/${id}`
+        resp = await getJson<any>(queryUrl, undefined, { authMode: modelCfg.authMode })
+      } else if (typeof statusEndpoint === 'function') {
         resp = await getJson<any>(statusEndpoint(id), undefined, { authMode: modelCfg.authMode })
       } else {
         resp = await getJson<any>(statusEndpoint, { id }, { authMode: modelCfg.authMode })
@@ -398,21 +724,100 @@ const pollVideoTask = async (id: string, modelCfg: any) => {
       continue
     }
     
-    const status = String(resp?.status || resp?.data?.status || '').toLowerCase()
+    // 支持多种响应格式的状态解析 (PascalCase 和 snake_case)
+    const response = resp?.Response || resp?.response || resp
+    // 腾讯 AIGC 格式: Response.AigcVideoTask 或 Response.AigcImageTask
+    const aigcTask = response?.AigcVideoTask || response?.AigcImageTask || response?.aigc_video_task || response?.aigc_image_task
+    // 注意：output 必须优先从 aigcTask.Output 获取，不能跳过 aigcTask
+    const aigcOutput = aigcTask?.Output || aigcTask?.output
+    const output = aigcOutput || response?.Output || response?.output || resp?.output || resp?.data?.output || resp?.data || resp
+    
+    // 状态优先从 Response.Status 或 AigcTask.Status 获取
+    const status = String(
+      response?.Status || response?.status ||
+      aigcTask?.Status || aigcTask?.status ||
+      output?.TaskStatus || output?.task_status || output?.status || 
+      resp?.status || resp?.data?.status || ''
+    ).toLowerCase()
     const elapsed = Math.round((i + 1) * interval / 1000)
     lastSuccessStatus = status
+    
+    // 尝试从多个位置获取视频 URL (腾讯 AIGC 格式: AigcTask.Output.FileInfos[0].FileUrl)
+    const fileInfos = aigcOutput?.FileInfos || aigcOutput?.file_infos || output?.FileInfos || output?.file_infos || []
+    
+    // 从 FileInfos 中筛选视频文件（排除图片）
+    const isImageUrl = (url: string) => /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?|$)/i.test(url)
+    const isVideoUrl = (url: string) => /\.(mp4|webm|mov|m4v|m3u8|avi|mkv)(\?|$)/i.test(url)
+    
+    let videoUrlFromFileInfos = ''
+    for (const fi of fileInfos) {
+      const fileType = String(fi?.FileType || fi?.file_type || '').toLowerCase()
+      const fileUrl = fi?.FileUrl || fi?.file_url || fi?.Url || fi?.url || ''
+      // 优先选择类型为 video 的文件，或者 URL 是视频格式的文件
+      if (fileUrl && (fileType === 'video' || fileType.includes('video') || isVideoUrl(fileUrl))) {
+        videoUrlFromFileInfos = fileUrl
+        break
+      }
+      // 如果没有明确的视频类型，选择第一个非图片的文件
+      if (fileUrl && !isImageUrl(fileUrl) && !videoUrlFromFileInfos) {
+        videoUrlFromFileInfos = fileUrl
+      }
+    }
+    
+    const videoUrl = videoUrlFromFileInfos ||
+                     aigcOutput?.VideoUrl || aigcOutput?.video_url ||
+                     output?.VideoUrl || output?.video_url || output?.ResultUrl || output?.result_url || 
+                     response?.VideoUrl || response?.video_url ||
+                     resp?.VideoUrl || resp?.video_url || resp?.result_url || resp?.data?.video_url
+    
     console.log(`[pollVideoTask] 轮询 ${i + 1}/${maxAttempts} (${elapsed}s):`, {
       status,
-      hasVideoUrl: !!(resp?.video_url || resp?.data?.video_url || resp?.url || resp?.data?.url)
+      hasVideoUrl: !!videoUrl,
+      videoUrlPreview: videoUrl?.slice?.(0, 80),
+      responseKeys: Object.keys(response || {}),
+      aigcTaskKeys: Object.keys(aigcTask || {}),
+      aigcOutputKeys: Object.keys(aigcOutput || {}),
+      fileInfosCount: fileInfos?.length || 0,
+      firstFileInfo: fileInfos?.[0] ? Object.keys(fileInfos[0]) : []
     })
+
+    // 如果直接有视频 URL，返回
+    if (videoUrl && videoUrl.startsWith('http')) {
+      console.log('[pollVideoTask] 获取到视频 URL:', videoUrl?.slice(0, 80))
+      return videoUrl
+    }
 
     const direct = extractVideoUrlDeep(resp)
     if (direct) {
-      console.log('[pollVideoTask] 获取到视频 URL:', direct?.slice(0, 80))
+      console.log('[pollVideoTask] 深度解析获取到视频 URL:', direct?.slice(0, 80))
       return direct
     }
 
-    if (status === 'failed') {
+    // 如果状态是 finish/completed/success 但没有视频 URL，检查错误信息
+    if (/^(finish|finished|completed|complete|success|done)$/i.test(status) && !videoUrl) {
+      // 检查 AigcTask 中的错误码和消息
+      const errCode = aigcTask?.ErrCode || aigcTask?.err_code || aigcTask?.error_code
+      const errMsg = aigcTask?.Message || aigcTask?.message || aigcTask?.error_message || aigcTask?.error
+      
+      console.warn('[pollVideoTask] 状态已完成但未找到视频 URL，详细结构:', {
+        'ErrCode': errCode,
+        'Message': errMsg,
+        'Progress': aigcTask?.Progress,
+        'FileInfos': fileInfos,
+        'AigcOutput keys': Object.keys(aigcOutput || {}),
+        'fullResp': JSON.stringify(resp)?.slice(0, 2000)
+      })
+      
+      // 如果有错误码或 FileInfos 为空，说明生成失败
+      if (errCode || errMsg || (fileInfos && fileInfos.length === 0)) {
+        const errorDetail = errMsg || errCode || '视频生成完成但未返回文件，可能是内容审核未通过或生成失败'
+        console.error('[pollVideoTask] 视频生成失败:', errorDetail)
+        throw new Error(errorDetail)
+      }
+    }
+
+    // 检查失败状态 (支持多种格式: failed, FAILED, fail, error, FAIL)
+    if (/^(failed|fail|error)$/i.test(status)) {
       const rawErr = resp?.error?.message || resp?.message || resp?.data?.error?.message || '视频生成失败'
       console.error('[pollVideoTask] 视频生成失败:', rawErr)
       
@@ -445,6 +850,9 @@ const pollVideoTask = async (id: string, modelCfg: any) => {
 
 export const generateVideoFromConfigNode = async (configNodeId: string, overrides?: VideoGenerationOverrides) => {
   console.log('[generateVideo] 开始生成视频, configNodeId:', configNodeId, 'overrides:', overrides)
+  
+  // 注册任务，以便可以被取消
+  runningTasks.set(configNodeId, { cancelled: false })
   
   const store = useGraphStore.getState()
   const cfg = store.nodes.find((n) => n.id === configNodeId)
@@ -651,7 +1059,30 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       
       // 添加首帧图片（如果有）
       if (firstFrame || refImages.length > 0) {
-        const imageUrl = firstFrame || refImages[0]
+        let imageUrl = firstFrame || refImages[0]
+        
+        // 腾讯 AIGC API 只支持公网可访问的 HTTP(S) URL
+        // 如果是 base64 或 blob，自动上传到图床获取公网 URL
+        if (imageUrl.startsWith('data:')) {
+          console.log('[tencent-video] 检测到 base64 图片，自动上传到图床...')
+          try {
+            imageUrl = await uploadBase64ToImageHost(imageUrl)
+            console.log('[tencent-video] 图片已上传，公网 URL:', imageUrl)
+          } catch (uploadErr: any) {
+            console.error('[tencent-video] 图片上传失败:', uploadErr)
+            throw new Error(`图片上传失败：${uploadErr?.message || '未知错误'}。请使用公网可访问的图片 URL`)
+          }
+        }
+        if (imageUrl.startsWith('blob:')) {
+          throw new Error('腾讯 AIGC 视频模型不支持 blob 图片，请使用公网可访问的图片 URL（https://...）')
+        }
+        if (/^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/i.test(imageUrl)) {
+          throw new Error('腾讯 AIGC 视频模型不支持内网图片地址，请使用公网可访问的图片 URL')
+        }
+        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+          throw new Error('腾讯 AIGC 视频模型需要公网可访问的图片 URL（以 http:// 或 https:// 开头）')
+        }
+        
         payload.file_infos = [{
           type: 'Url',
           url: imageUrl
@@ -660,7 +1091,23 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       
       // 添加尾帧图片（如果有）
       if (lastFrame) {
-        payload.last_frame_url = lastFrame
+        let lastFrameUrl = lastFrame
+        // 如果是 base64，自动上传到图床
+        if (lastFrameUrl.startsWith('data:')) {
+          console.log('[tencent-video] 检测到 base64 尾帧图片，自动上传到图床...')
+          try {
+            lastFrameUrl = await uploadBase64ToImageHost(lastFrameUrl)
+          } catch (uploadErr: any) {
+            throw new Error(`尾帧图片上传失败：${uploadErr?.message || '未知错误'}`)
+          }
+        }
+        if (lastFrameUrl.startsWith('blob:')) {
+          throw new Error('腾讯 AIGC 视频模型不支持 blob 图片作为尾帧')
+        }
+        if (!lastFrameUrl.startsWith('http://') && !lastFrameUrl.startsWith('https://')) {
+          throw new Error('腾讯 AIGC 视频模型的尾帧图片需要公网可访问的 URL')
+        }
+        payload.last_frame_url = lastFrameUrl
       }
       
       console.log('[tencent-video] 请求参数:', JSON.stringify(payload, null, 2))
@@ -772,10 +1219,50 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       throw lastError || new Error('视频 API 调用失败')
     }
     
-    console.log('[generateVideo] API 响应:', task)
+    console.log('[generateVideo] API 响应:', JSON.stringify(task, null, 2))
 
     // 尝试从不同格式提取视频 URL
     let extractedVideoUrl = ''
+    
+    // Tencent AIGC Video 格式 (Vidu/Hailuo/Kling)
+    if (modelCfg.format === 'tencent-video') {
+      // 响应格式（PascalCase）:
+      // { Response: { TaskId, RequestId } }
+      // 或 snake_case: { task_id, request_id, output: { video_url } }
+      const response = task?.Response || task?.response || task
+      const output = response?.Output || response?.output || task?.output || task?.data?.output || task?.data || task
+      
+      // 支持 PascalCase 和 snake_case
+      const taskId = response?.TaskId || response?.task_id || 
+                     output?.TaskId || output?.task_id || output?.id ||
+                     task?.TaskId || task?.task_id || task?.id ||
+                     task?.RequestId || task?.request_id
+      const videoUrl = output?.VideoUrl || output?.video_url || output?.result_url || 
+                       response?.VideoUrl || response?.video_url ||
+                       task?.VideoUrl || task?.video_url || task?.result_url
+      const taskStatus = output?.TaskStatus || output?.task_status || output?.status ||
+                         response?.TaskStatus || response?.task_status || task?.status
+      
+      console.log('[generateVideo] Tencent Video 解析:', { 
+        taskId, 
+        taskStatus, 
+        videoUrl: videoUrl?.slice?.(0, 80),
+        responseKeys: Object.keys(response || {}),
+        outputKeys: Object.keys(output || {})
+      })
+      
+      if (videoUrl && videoUrl.startsWith('http')) {
+        extractedVideoUrl = videoUrl
+      } else if (taskId) {
+        // 需要轮询，将 task_id 存入 task 对象供后续使用
+        task.id = taskId
+        task.task_id = taskId
+        console.log('[generateVideo] Tencent Video 需要轮询, taskId:', taskId)
+      } else {
+        // 没有 taskId 也没有 videoUrl，打印完整响应以便调试
+        console.error('[generateVideo] Tencent Video 无法解析响应:', JSON.stringify(task, null, 2))
+      }
+    }
     
     // Sora 2 Videos API 格式
     if (modelCfg.format === 'sora-video') {
@@ -808,7 +1295,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       const id = task?.id || task?.task_id || task?.taskId || task?.data?.id || task?.data?.task_id || task?.data?.taskId
       if (!id) throw new Error('视频返回异常：未获取到任务 ID')
       errorStage = 'poll'
-      const polled = await pollVideoTask(String(id), { ...modelCfg, statusEndpoint: statusEndpointOverride })
+      const polled = await pollVideoTask(String(id), { ...modelCfg, statusEndpoint: statusEndpointOverride }, configNodeId, videoNodeId)
       videoUrl = normalizeMediaUrl(polled)
     }
 
@@ -922,6 +1409,10 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       }
     } as any)
     throw err
+  } finally {
+    // 清理任务注册
+    runningTasks.delete(configNodeId)
+    console.log('[generateVideo] 任务已清理:', configNodeId)
   }
 }
 

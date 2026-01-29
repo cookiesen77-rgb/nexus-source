@@ -18,6 +18,9 @@ import ImageCropModal from '@/components/canvas/ImageCropModal'
 import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
 import ImageEditToolbar from '@/components/canvas/ImageEditToolbar'
 
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
 interface ImageNodeData {
   label?: string
   url?: string
@@ -357,10 +360,76 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   // 替换图片功能
   const replaceInputRef = useRef<HTMLInputElement>(null)
 
-  const handleReplaceClick = useCallback((e: React.MouseEvent) => {
+  const handleReplaceClick = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
-    replaceInputRef.current?.click()
-  }, [])
+    
+    if (isTauri) {
+      // Tauri 环境：使用 dialog API
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog')
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        
+        const result = await open({
+          multiple: false,
+          filters: [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }],
+          title: '选择图片'
+        })
+        
+        if (result && typeof result === 'string') {
+          const fileData = await readFile(result)
+          const fileName = result.split('/').pop() || result.split('\\').pop() || 'image'
+          const ext = fileName.split('.').pop()?.toLowerCase() || 'png'
+          const mimeMap: Record<string, string> = { 
+            png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', 
+            gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' 
+          }
+          const mimeType = mimeMap[ext] || 'image/png'
+          
+          const blob = new Blob([fileData], { type: mimeType })
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+          
+          const store = useGraphStore.getState()
+          const projectId = store.projectId || 'default'
+          
+          store.updateNode(id, {
+            data: {
+              url: dataUrl,
+              sourceUrl: '',
+              mediaId: undefined,
+              label: fileName || nodeData?.label || '图片',
+              loading: false,
+            }
+          })
+          
+          // 保存到 IndexedDB
+          try {
+            const mediaId = await saveMedia({
+              nodeId: id,
+              projectId,
+              type: 'image',
+              data: dataUrl,
+            })
+            if (mediaId) {
+              store.patchNodeDataSilent(id, { mediaId })
+            }
+          } catch {
+            // ignore
+          }
+          
+          window.$message?.success?.('图片已替换')
+        }
+      } catch {
+        // ignore
+      }
+    } else {
+      // Web 环境：使用原生 file input
+      replaceInputRef.current?.click()
+    }
+  }, [id, nodeData?.label])
 
   const handleReplaceFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]

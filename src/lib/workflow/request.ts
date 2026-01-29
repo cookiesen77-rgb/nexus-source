@@ -111,7 +111,13 @@ export const resolveEndpointUrl = (endpoint: string) => {
   // 相对路径处理
   if (useViteProxy) {
     // 开发环境（非 Tauri）：返回相对路径，走 Vite 代理
-    return `/v1${ep.startsWith('/') ? ep : `/${ep}`}`
+    // 如果路径已经以特定前缀开头（如 /tencent-vod, /kling, /v1beta），不再添加 /v1
+    const noV1Prefixes = ['/tencent-vod', '/kling', '/v1beta', '/v1/', '/video/']
+    const path = ep.startsWith('/') ? ep : `/${ep}`
+    if (noV1Prefixes.some(p => path.startsWith(p))) {
+      return path
+    }
+    return `/v1${path}`
   }
   
   // 生产环境或 Tauri 环境：拼接完整 URL

@@ -6,6 +6,9 @@ import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } 
 import { Image, Music, Save, Settings2, SlidersHorizontal, Type, Video } from 'lucide-react'
 import { saveMedia } from '@/lib/mediaStorage'
 
+// 检测 Tauri 环境
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
 const NODE_OPTIONS: { type: NodeType; name: string; Icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>; color: string }[] = [
   { type: 'text', name: '文本节点', Icon: Type, color: '#3b82f6' },
   { type: 'imageConfig', name: '文生图配置', Icon: SlidersHorizontal, color: '#22c55e' },
@@ -121,20 +124,128 @@ export default function NodePalettePanel({
   }, [spawnAt, onSpawned, onClose])
 
   // 触发文件选择器
-  const triggerFileUpload = useCallback((type: NodeType) => {
+  const triggerFileUpload = useCallback(async (type: NodeType) => {
     pendingTypeRef.current = type
     
-    // 根据类型设置 accept
+    // 根据类型设置过滤器
+    let filters: Array<{ name: string; extensions: string[] }> = []
     let accept = ''
-    if (type === 'image') accept = 'image/*'
-    else if (type === 'video') accept = 'video/*'
-    else if (type === 'audio') accept = 'audio/*'
-
-    if (fileInputRef.current) {
-      fileInputRef.current.accept = accept
-      fileInputRef.current.click()
+    if (type === 'image') {
+      accept = 'image/*'
+      filters = [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] }]
+    } else if (type === 'video') {
+      accept = 'video/*'
+      filters = [{ name: '视频文件', extensions: ['mp4', 'webm', 'mov', 'avi', 'mkv'] }]
+    } else if (type === 'audio') {
+      accept = 'audio/*'
+      filters = [{ name: '音频文件', extensions: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'] }]
     }
-  }, [])
+
+    console.log('[NodePalettePanel] triggerFileUpload called, type:', type, 'isTauri:', isTauri)
+    
+    if (isTauri) {
+      // Tauri 环境：使用 dialog API
+      try {
+        console.log('[NodePalettePanel] Tauri 环境，尝试导入 dialog 和 fs 插件...')
+        const { open } = await import('@tauri-apps/plugin-dialog')
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+        
+        console.log('[NodePalettePanel] 导入成功，打开文件选择对话框...')
+        const result = await open({
+          multiple: false,
+          filters,
+          title: type === 'image' ? '选择图片' : type === 'video' ? '选择视频' : '选择音频'
+        })
+        
+        console.log('[NodePalettePanel] 文件选择结果:', result)
+        
+        if (result && typeof result === 'string') {
+          // 读取文件内容
+          const fileData = await readFile(result)
+          const fileName = result.split('/').pop() || result.split('\\').pop() || 'file'
+          const ext = fileName.split('.').pop()?.toLowerCase() || ''
+          
+          // 根据扩展名确定 MIME 类型
+          let mimeType = ''
+          if (type === 'image') {
+            const mimeMap: Record<string, string> = { 
+              png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', 
+              gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml' 
+            }
+            mimeType = mimeMap[ext] || 'image/png'
+          } else if (type === 'video') {
+            const mimeMap: Record<string, string> = { 
+              mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', 
+              avi: 'video/x-msvideo', mkv: 'video/x-matroska' 
+            }
+            mimeType = mimeMap[ext] || 'video/mp4'
+          } else if (type === 'audio') {
+            const mimeMap: Record<string, string> = { 
+              mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', 
+              flac: 'audio/flac', aac: 'audio/aac', m4a: 'audio/mp4' 
+            }
+            mimeType = mimeMap[ext] || 'audio/mpeg'
+          }
+          
+          // 转换为 data URL
+          const blob = new Blob([fileData], { type: mimeType })
+          const dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.readAsDataURL(blob)
+          })
+          
+          // 创建节点
+          const { w, h } = getNodeSize(type)
+          const pos = { x: spawnAt.x - w * 0.5, y: spawnAt.y - h * 0.5 }
+          
+          useGraphStore.getState().withBatchUpdates(() => {
+            const store = useGraphStore.getState()
+            const id = store.addNode(type, pos, {
+              label: fileName,
+              url: dataUrl,
+              sourceUrl: '',
+              fileName,
+              fileType: mimeType,
+              createdAt: Date.now()
+            })
+            useGraphStore.getState().setSelected(id)
+            
+            // 异步保存到 IndexedDB
+            const projectId = store.projectId || 'default'
+            saveMedia({
+              nodeId: id,
+              projectId,
+              type,
+              data: dataUrl,
+            }).then((mediaId) => {
+              if (mediaId) {
+                useGraphStore.getState().patchNodeDataSilent(id, { mediaId })
+              }
+            }).catch(() => {
+              // ignore
+            })
+          })
+          
+          onSpawned()
+          onClose()
+        }
+      } catch (err) {
+        console.error('[NodePalettePanel] Tauri 文件选择失败:', err)
+        window.$message?.error?.('文件选择失败，请重试')
+      }
+    } else {
+      // Web 环境：使用原生 file input
+      console.log('[NodePalettePanel] Web 环境，fileInputRef:', fileInputRef.current)
+      if (fileInputRef.current) {
+        fileInputRef.current.accept = accept
+        console.log('[NodePalettePanel] 触发 click, accept:', accept)
+        fileInputRef.current.click()
+      } else {
+        console.error('[NodePalettePanel] fileInputRef.current 为空!')
+      }
+    }
+  }, [spawnAt, onSpawned, onClose])
 
   const spawn = (type: NodeType) => {
     // 图片/视频/音频节点触发文件选择器
