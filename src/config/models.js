@@ -190,28 +190,6 @@ export const VIDEO_RATIO_LIST = [
 // Video generation models | 视频生成模型
 export const VIDEO_MODELS = [
     {
-        label: 'Veo 3.1 Fast（OpenAI 视频格式）',
-        key: 'veo_3_1-fast',
-        endpoint: '/videos',
-        statusEndpoint: (id) => `/videos/${id}`,
-        authMode: 'bearer',
-        format: 'openai-video',
-        ratios: ['16:9', '9:16'],
-        durs: [{ label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
-        defaultParams: { ratio: '16:9', duration: 8, watermark: false }
-    },
-    {
-        label: 'Veo 3.1 Fast 4K（OpenAI 视频格式）',
-        key: 'veo_3_1-fast-4K',
-        endpoint: '/videos',
-        statusEndpoint: (id) => `/videos/${id}`,
-        authMode: 'bearer',
-        format: 'openai-video',
-        ratios: ['16:9', '9:16'],
-        durs: [{ label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
-        defaultParams: { ratio: '16:9', duration: 8, watermark: false }
-    },
-    {
         label: 'Veo 3.1 Fast Components（统一视频格式）',
         key: 'veo3.1-fast-components',
         endpoint: '/video/create',
@@ -221,7 +199,7 @@ export const VIDEO_MODELS = [
         // components 模型支持最多 3 张图片作为视频元素
         maxImages: 3,
         ratios: ['16:9', '9:16'],
-        durs: [{ label: '5 秒', key: 5 }, { label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
+        durs: [{ label: '8 秒', key: 8 }],
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
@@ -234,7 +212,7 @@ export const VIDEO_MODELS = [
         // components 模型支持最多 3 张图片作为视频元素
         maxImages: 3,
         ratios: ['16:9', '9:16'],
-        durs: [{ label: '5 秒', key: 5 }, { label: '8 秒', key: 8 }, { label: '10 秒', key: 10 }],
+        durs: [{ label: '8 秒', key: 8 }],
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
@@ -247,8 +225,8 @@ export const VIDEO_MODELS = [
         // Veo 首尾帧：通常 2 张（首/尾）；更多图片会触发上游校验或被忽略
         maxImages: 2,
         ratios: ['16:9', '9:16'],
-        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }],
-        defaultParams: { ratio: '16:9', duration: 5, enhancePrompt: true, enableUpsample: true }
+        durs: [{ label: '8 秒', key: 8 }],
+        defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
         label: 'Veo3.1 Pro 4K（统一视频格式）',
@@ -259,8 +237,8 @@ export const VIDEO_MODELS = [
         format: 'veo-unified',
         maxImages: 2,
         ratios: ['16:9', '9:16'],
-        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }],
-        defaultParams: { ratio: '16:9', duration: 5, enhancePrompt: true, enableUpsample: true }
+        durs: [{ label: '8 秒', key: 8 }],
+        defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
     },
     {
         label: 'Kling Video（kling-v2-6 · pro · 10s）',
@@ -310,17 +288,6 @@ export const VIDEO_MODELS = [
         authMode: 'bearer',
         format: 'tencent-video',
         defaultParams: { version: '2.3-Fast' }
-    },
-    {
-        label: 'Sora 2（720p）',
-        key: 'sora-2',
-        endpoint: '/videos/generations',
-        authMode: 'bearer',
-        format: 'sora-video',
-        ratios: ['16:9', '9:16', '1:1'],
-        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }, { label: '15 秒', key: 15 }, { label: '20 秒', key: 20 }],
-        sizes: [{ label: '480p', key: '480p' }, { label: '720p', key: '720p' }, { label: '1080p', key: '1080p' }],
-        defaultParams: { ratio: '16:9', duration: 10, size: '720p' }
     }
 ]
 

@@ -28,14 +28,28 @@ export default function UpdateChecker() {
   const [showBanner, setShowBanner] = useState(false)
 
   const checkForUpdates = useCallback(async () => {
-    if (!isTauri) return
+    if (!isTauri) {
+      console.log('[UpdateChecker] 非 Tauri 环境，跳过更新检查')
+      return
+    }
     
     setStatus('checking')
     setError(null)
     
+    console.log('[UpdateChecker] 开始检查更新...')
+    console.log('[UpdateChecker] 当前版本:', __APP_VERSION__)
+    
     try {
       const { check } = await import('@tauri-apps/plugin-updater')
+      console.log('[UpdateChecker] 调用 check()...')
       const update = await check()
+      
+      console.log('[UpdateChecker] 检查结果:', update ? {
+        version: update.version,
+        currentVersion: update.currentVersion,
+        date: update.date,
+        body: update.body?.slice(0, 100)
+      } : 'null (无更新)')
       
       if (update) {
         setUpdateInfo({
@@ -45,12 +59,19 @@ export default function UpdateChecker() {
         })
         setStatus('available')
         setShowBanner(true)
+        console.log('[UpdateChecker] 发现新版本:', update.version)
       } else {
         setStatus('up-to-date')
+        console.log('[UpdateChecker] 已是最新版本')
         setTimeout(() => setStatus('idle'), 3000)
       }
     } catch (err: any) {
       console.error('[UpdateChecker] 检查更新失败:', err)
+      console.error('[UpdateChecker] 错误详情:', {
+        message: err?.message,
+        name: err?.name,
+        stack: err?.stack?.slice(0, 500)
+      })
       setError(err?.message || '检查更新失败')
       setStatus('error')
     }
