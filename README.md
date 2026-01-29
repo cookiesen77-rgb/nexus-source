@@ -1,10 +1,24 @@
 # Nexus
 
-一个基于 Vue Flow 的可视化 AI 创作画布，支持文生图、视频生成等 AI 工作流的节点式编排。默认对接 NexusAPI（`https://nexusapi.cn/v1`）。
+一个基于 React Flow 的可视化 AI 创作画布，支持文生图、视频生成等 AI 工作流的节点式编排。默认对接 NexusAPI（`https://nexusapi.cn/v1`）。
 
-![Vue](https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vue.js)
+![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)
 ![Vite](https://img.shields.io/badge/Vite-5.2-646CFF?logo=vite)
+![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131?logo=tauri)
 ![License](https://img.shields.io/badge/License-MIT-blue)
+
+## 📥 下载安装
+
+**最新版本: v0.0.50**
+
+| 平台 | 下载链接 |
+|------|---------|
+| **macOS (Apple Silicon)** | [Nexus_0.0.50_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_aarch64.dmg) |
+| **macOS (Intel)** | [Nexus_0.0.50_x64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_x64.dmg) |
+| **Windows (安装包)** | [Nexus_0.0.50_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_x64-setup.exe) |
+| **Windows (MSI)** | [Nexus_0.0.50_x64-setup.msi](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_x64-setup.msi) |
+
+> 所有版本下载: [Releases](https://github.com/cookiesen77-rgb/nexus-source/releases)
 
 ## 📸 截图
 
@@ -82,12 +96,12 @@ npm run build
 
 ## 🛠️ 技术栈
 
-- **框架**: [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/)
-- **画布**: [Vue Flow](https://vueflow.dev/)
-- **UI 组件**: [Naive UI](https://www.naiveui.com/)
+- **框架**: [React 18](https://react.dev/) + [Vite](https://vitejs.dev/)
+- **桌面端**: [Tauri 2.0](https://tauri.app/)
+- **画布**: [React Flow](https://reactflow.dev/)
 - **样式**: [Tailwind CSS](https://tailwindcss.com/)
-- **图标**: [@vicons/ionicons5](https://www.xicons.org/)
-- **路由**: [Vue Router](https://router.vuejs.org/)
+- **图标**: [Lucide React](https://lucide.dev/)
+- **路由**: [React Router](https://reactrouter.com/)
 
 ## 📁 项目结构
 
