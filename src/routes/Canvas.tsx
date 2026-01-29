@@ -6,7 +6,7 @@ import { useGraphStore } from '@/graph/store'
 import type { Viewport } from '@/graph/types'
 import WebGLGraphCanvas from '@/components/canvas/WebGLGraphCanvas'
 import DOMGraphCanvas from '@/components/canvas/DOMGraphCanvas'
-import ReactFlowCanvas from '@/components/canvas/ReactFlowCanvas'
+import ReactFlowCanvas, { type ConnectEndEvent } from '@/components/canvas/ReactFlowCanvas'
 import CanvasSidebar, { type CanvasTool } from '@/components/canvas/CanvasSidebar'
 import NodePalettePanel from '@/components/canvas/NodePalettePanel'
 import NodeCardsLayer from '@/components/canvas/NodeCardsLayer'
@@ -78,6 +78,16 @@ export default function Canvas() {
     y: number
     flowX: number  // 画布坐标（用于节点创建）
     flowY: number
+  } | null>(null)
+  
+  // 连接线拖拽菜单状态
+  const [connectMenu, setConnectMenu] = useState<{
+    x: number           // 屏幕坐标
+    y: number
+    flowX: number       // 画布坐标
+    flowY: number
+    sourceNodeId: string
+    sourceNodeType: string
   } | null>(null)
 
   // 一键全部生成（并发）
@@ -244,6 +254,87 @@ export default function Canvas() {
     store.setSelected(id)
     setCanvasContextMenu(null)
   }, [canvasContextMenu])
+
+  // 处理连接线拖拽结束（弹出节点选择菜单）
+  const handleConnectEnd = useCallback((event: ConnectEndEvent) => {
+    setConnectMenu({
+      x: event.screenX,
+      y: event.screenY,
+      flowX: event.flowX,
+      flowY: event.flowY,
+      sourceNodeId: event.sourceNodeId,
+      sourceNodeType: event.sourceNodeType,
+    })
+  }, [])
+
+  // 根据来源节点类型过滤可选目标节点
+  const getConnectMenuOptions = useCallback((sourceType: string) => {
+    // 智能过滤：根据来源节点类型推荐合适的目标节点
+    const allOptions = [
+      { type: 'text', name: '文本节点', Icon: Type, color: '#3b82f6' },
+      { type: 'imageConfig', name: '文生图配置', Icon: SlidersHorizontal, color: '#22c55e' },
+      { type: 'videoConfig', name: '视频生成配置', Icon: Settings2, color: '#f59e0b' },
+      { type: 'image', name: '图片节点', Icon: Image, color: '#8b5cf6' },
+      { type: 'video', name: '视频节点', Icon: Video, color: '#ef4444' },
+      { type: 'audio', name: '音频节点', Icon: Music, color: '#0ea5e9' }
+    ]
+    
+    // 根据来源节点类型过滤
+    switch (sourceType) {
+      case 'text':
+        // 文本节点 → 生图配置、视频配置
+        return allOptions.filter(o => ['imageConfig', 'videoConfig'].includes(o.type))
+      case 'imageConfig':
+        // 生图配置 → 图片节点
+        return allOptions.filter(o => o.type === 'image')
+      case 'videoConfig':
+        // 视频配置 → 视频节点
+        return allOptions.filter(o => o.type === 'video')
+      case 'image':
+        // 图片节点 → 视频配置、生图配置（参考图）
+        return allOptions.filter(o => ['videoConfig', 'imageConfig'].includes(o.type))
+      default:
+        // 其他情况显示所有选项
+        return allOptions
+    }
+  }, [])
+
+  // 从连接线菜单创建节点并自动连接
+  const spawnNodeFromConnectMenu = useCallback((type: string) => {
+    if (!connectMenu) return
+    const { flowX, flowY, sourceNodeId } = connectMenu
+    const { w, h } = getNodeSize(type)
+    const pos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
+    
+    const store = useGraphStore.getState()
+    const data: Record<string, unknown> = { label: type === 'text' ? '文本' : type === 'imageConfig' ? '生图配置' : type === 'videoConfig' ? '视频配置' : type }
+    
+    if (type === 'imageConfig') {
+      const baseModelCfg: any = (IMAGE_MODELS as any[]).find((m: any) => m.key === DEFAULT_IMAGE_MODEL) || (IMAGE_MODELS as any[])[0]
+      data.model = DEFAULT_IMAGE_MODEL
+      if (baseModelCfg?.defaultParams?.size) data.size = baseModelCfg.defaultParams.size
+      if (baseModelCfg?.defaultParams?.quality) data.quality = baseModelCfg.defaultParams.quality
+    }
+    if (type === 'videoConfig') {
+      const baseModelCfg: any = (VIDEO_MODELS as any[]).find((m: any) => m.key === DEFAULT_VIDEO_MODEL) || (VIDEO_MODELS as any[])[0]
+      data.model = DEFAULT_VIDEO_MODEL
+      if (baseModelCfg?.defaultParams?.ratio) data.ratio = baseModelCfg.defaultParams.ratio
+      if (baseModelCfg?.defaultParams?.duration) data.dur = baseModelCfg.defaultParams.duration
+      if (baseModelCfg?.defaultParams?.size) data.size = baseModelCfg.defaultParams.size
+    }
+    
+    // 创建新节点
+    const newNodeId = store.addNode(type, pos, data)
+    
+    // 自动创建连接
+    store.addEdge(sourceNodeId, newNodeId, {
+      sourceHandle: 'right',
+      targetHandle: 'left',
+    })
+    
+    store.setSelected(newNodeId)
+    setConnectMenu(null)
+  }, [connectMenu])
 
   // 新事件系统状态
   const [connectPreview, setConnectPreview] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } | null>(null)
@@ -720,7 +811,10 @@ export default function Canvas() {
           data-canvas-wrap="1"
           className="relative h-full w-full bg-[var(--bg-primary)]"
           onContextMenu={handleCanvasContextMenu}
-          onClick={() => setCanvasContextMenu(null)}
+          onClick={() => {
+            setCanvasContextMenu(null)
+            setConnectMenu(null)
+          }}
           onDragOver={(e) => {
             e.preventDefault()
           }}
@@ -770,6 +864,7 @@ export default function Canvas() {
                 setCtxPayload(payload)
                 setCtxOpen(true)
               }}
+              onConnectEnd={handleConnectEnd}
             />
           ) : USE_DOM_CANVAS ? (
             // 高性能 DOM 画布模式
@@ -1146,6 +1241,35 @@ export default function Canvas() {
               <span className="text-sm text-[var(--text-primary)]">{opt.name}</span>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* 连接线拖拽菜单 - 快速添加并连接节点 */}
+      {connectMenu && (
+        <div
+          className="fixed z-[9999] w-[200px] rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-xl py-1"
+          style={{ left: connectMenu.x, top: connectMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs text-[var(--text-secondary)] font-medium">连接到新节点</div>
+          {getConnectMenuOptions(connectMenu.sourceNodeType).map((opt) => (
+            <button
+              key={opt.type}
+              onClick={() => spawnNodeFromConnectMenu(opt.type)}
+              className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+            >
+              <opt.Icon className="h-4 w-4" style={{ color: opt.color }} />
+              <span className="text-sm text-[var(--text-primary)]">{opt.name}</span>
+            </button>
+          ))}
+          <div className="border-t border-[var(--border-color)] mt-1 pt-1">
+            <button
+              onClick={() => setConnectMenu(null)}
+              className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-secondary)]"
+            >
+              <span className="text-sm">取消</span>
+            </button>
+          </div>
         </div>
       )}
 

@@ -97,11 +97,21 @@ function graphNodeToFlowNode(node: GraphNode): Node {
   }
 }
 
-interface ReactFlowCanvasInnerProps {
-  onContextMenu?: (payload: CanvasContextPayload) => void
+export interface ConnectEndEvent {
+  sourceNodeId: string
+  sourceNodeType: string
+  screenX: number
+  screenY: number
+  flowX: number
+  flowY: number
 }
 
-function ReactFlowCanvasInner({ onContextMenu }: ReactFlowCanvasInnerProps) {
+interface ReactFlowCanvasInnerProps {
+  onContextMenu?: (payload: CanvasContextPayload) => void
+  onConnectEnd?: (event: ConnectEndEvent) => void
+}
+
+function ReactFlowCanvasInner({ onContextMenu, onConnectEnd }: ReactFlowCanvasInnerProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const { screenToFlowPosition, setViewport: setRfViewport, getViewport } = useReactFlow()
   
@@ -574,6 +584,71 @@ function ReactFlowCanvasInner({ onContextMenu }: ReactFlowCanvasInnerProps) {
     []
   )
 
+  // 记录连接开始时的源节点信息
+  const connectSourceRef = useRef<{ nodeId: string; nodeType: string } | null>(null)
+
+  // 处理连接开始
+  const handleConnectStart = useCallback(
+    (_event: any, params: { nodeId: string | null; handleType: 'source' | 'target' | null }) => {
+      if (!params.nodeId) return
+      const store = useGraphStore.getState()
+      const sourceNode = store.nodes.find((n) => n.id === params.nodeId)
+      if (sourceNode) {
+        connectSourceRef.current = { nodeId: sourceNode.id, nodeType: sourceNode.type }
+      }
+    },
+    []
+  )
+
+  // 处理连接结束（拖拽到空白区域）
+  const handleConnectEndCallback = useCallback(
+    (event: MouseEvent | TouchEvent) => {
+      // 如果没有源节点信息，忽略
+      if (!connectSourceRef.current) return
+
+      // 检查是否拖拽到了空白区域（而不是连接到了节点）
+      // 通过检查事件目标来判断
+      const target = event.target as HTMLElement
+      const isOnNode = target?.closest('.react-flow__node')
+      const isOnHandle = target?.closest('.react-flow__handle')
+      
+      // 如果是在节点或连接点上释放，表示正常连接，不处理
+      if (isOnNode || isOnHandle) {
+        connectSourceRef.current = null
+        return
+      }
+
+      // 获取鼠标/触摸位置
+      let clientX = 0, clientY = 0
+      if ('touches' in event && event.touches.length > 0) {
+        clientX = event.touches[0].clientX
+        clientY = event.touches[0].clientY
+      } else if ('changedTouches' in event && event.changedTouches.length > 0) {
+        clientX = event.changedTouches[0].clientX
+        clientY = event.changedTouches[0].clientY
+      } else if ('clientX' in event) {
+        clientX = event.clientX
+        clientY = event.clientY
+      }
+
+      // 转换为画布坐标
+      const flowPosition = screenToFlowPosition({ x: clientX, y: clientY })
+
+      // 调用回调
+      onConnectEnd?.({
+        sourceNodeId: connectSourceRef.current.nodeId,
+        sourceNodeType: connectSourceRef.current.nodeType,
+        screenX: clientX,
+        screenY: clientY,
+        flowX: flowPosition.x,
+        flowY: flowPosition.y,
+      })
+
+      connectSourceRef.current = null
+    },
+    [onConnectEnd, screenToFlowPosition]
+  )
+
   // 处理视口变化 - 仅记录，交互结束时提交
   const handleViewportChange = useCallback(
     (vp: { x: number; y: number; zoom: number }) => {
@@ -824,6 +899,8 @@ function ReactFlowCanvasInner({ onContextMenu }: ReactFlowCanvasInnerProps) {
         onNodeDragStart={handleNodeDragStart}
         onNodeDragStop={handleNodeDragStop}
         onConnect={handleConnect}
+        onConnectStart={handleConnectStart}
+        onConnectEnd={handleConnectEndCallback}
         onSelectionChange={handleSelectionChange}
         onViewportChange={handleViewportChange}
         onMoveStart={handleMoveStart}
