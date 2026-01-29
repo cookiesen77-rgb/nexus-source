@@ -590,16 +590,33 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       if (version) payload.version = version
       if (ratio) payload.aspect_ratio = ratio
       if (duration) payload.duration = Number(duration)
+    } else if (modelCfg.format === 'openai-video') {
+      // Sora 2 / OpenAI Videos API 格式 (/videos/generations)
+      const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
+      const size = d.size || modelCfg.defaultParams?.size || '720p'
+      const aspectRatio = ratio || modelCfg.defaultParams?.ratio || '16:9'
+      
+      payload = {
+        model: modelCfg.key,
+        prompt: prompt || '',
+        duration: dur,
+        size: size,
+        aspect_ratio: aspectRatio
+      }
+      
+      // 如果有参考图，添加为 image 参数
+      if (firstFrame || refImages.length > 0) {
+        const imageUrl = firstFrame || refImages[0]
+        payload.image = imageUrl
+      }
     } else if (modelCfg.format === 'openai-chat-video') {
-      // Sora 2 OpenAI Chat Completions 格式
+      // 旧的 Chat Completions 视频格式（兼容性保留）
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 8)
       const size = d.size || modelCfg.defaultParams?.size || '720p'
       const aspectRatio = ratio || modelCfg.defaultParams?.ratio || '16:9'
       
-      // 构建视频生成提示词
       let videoPrompt = prompt || ''
       if (firstFrame || refImages.length > 0) {
-        // 如果有参考图，在消息中包含
         const imageUrl = firstFrame || refImages[0]
         payload = {
           model: modelCfg.key,
@@ -612,27 +629,13 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
               ]
             }
           ],
-          // Sora 2 视频生成参数
-          video: {
-            duration: dur,
-            size: size,
-            aspect_ratio: aspectRatio
-          }
+          video: { duration: dur, size: size, aspect_ratio: aspectRatio }
         }
       } else {
         payload = {
           model: modelCfg.key,
-          messages: [
-            {
-              role: 'user',
-              content: `Generate a ${dur} second video at ${size} resolution with aspect ratio ${aspectRatio}. ${videoPrompt}`
-            }
-          ],
-          video: {
-            duration: dur,
-            size: size,
-            aspect_ratio: aspectRatio
-          }
+          messages: [{ role: 'user', content: `Generate a ${dur} second video at ${size} resolution with aspect ratio ${aspectRatio}. ${videoPrompt}` }],
+          video: { duration: dur, size: size, aspect_ratio: aspectRatio }
         }
       }
     } else {
@@ -688,22 +691,29 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
     
     console.log('[generateVideo] API 响应:', task)
 
-    // 尝试从 chat completions 格式提取视频 URL
-    let chatVideoUrl = ''
+    // 尝试从不同格式提取视频 URL
+    let extractedVideoUrl = ''
+    
+    // OpenAI Videos API 格式
+    if (modelCfg.format === 'openai-video') {
+      // 标准响应格式: { id, status, video_url } 或 { data: [{ url }] }
+      extractedVideoUrl = task?.video_url || task?.url || task?.data?.[0]?.url || task?.data?.video_url || ''
+      console.log('[generateVideo] OpenAI Video 解析:', { extractedVideoUrl, taskKeys: Object.keys(task || {}) })
+    }
+    
+    // Chat Completions 视频格式
     if (modelCfg.format === 'openai-chat-video') {
       const choice = task?.choices?.[0]
       const content = choice?.message?.content || ''
-      // 尝试从返回内容中提取视频 URL
-      chatVideoUrl = pickFirstHttpUrlFromText(content) || ''
-      // 也检查是否有直接的 video_url 字段
-      if (!chatVideoUrl) {
-        chatVideoUrl = task?.video_url || task?.data?.video_url || choice?.message?.video_url || ''
+      extractedVideoUrl = pickFirstHttpUrlFromText(content) || ''
+      if (!extractedVideoUrl) {
+        extractedVideoUrl = task?.video_url || task?.data?.video_url || choice?.message?.video_url || ''
       }
-      console.log('[generateVideo] Chat Video 解析:', { content: content?.slice(0, 200), chatVideoUrl })
+      console.log('[generateVideo] Chat Video 解析:', { content: content?.slice(0, 200), extractedVideoUrl })
     }
 
     const directRaw =
-      chatVideoUrl ||
+      extractedVideoUrl ||
       task?.video_url ||
       task?.data?.video_url ||
       task?.data?.url ||

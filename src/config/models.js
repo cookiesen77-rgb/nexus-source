@@ -312,15 +312,15 @@ export const VIDEO_MODELS = [
         defaultParams: { version: '2.3-Fast' }
     },
     {
-        label: 'Sora 2（OpenAI Chat · 720p）',
+        label: 'Sora 2（720p）',
         key: 'sora-2',
-        endpoint: '/chat/completions',
+        endpoint: '/videos/generations',
         authMode: 'bearer',
-        format: 'openai-chat-video',
+        format: 'openai-video',
         ratios: ['16:9', '9:16', '1:1'],
-        durs: [{ label: '4 秒', key: 4 }, { label: '8 秒', key: 8 }, { label: '12 秒', key: 12 }],
-        sizes: [{ label: '720p', key: '720p' }],
-        defaultParams: { ratio: '16:9', duration: 8, size: '720p' }
+        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }, { label: '15 秒', key: 15 }, { label: '20 秒', key: 20 }],
+        sizes: [{ label: '480p', key: '480p' }, { label: '720p', key: '720p' }, { label: '1080p', key: '1080p' }],
+        defaultParams: { ratio: '16:9', duration: 10, size: '720p' }
     }
 ]
 
