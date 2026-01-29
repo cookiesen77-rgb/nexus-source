@@ -5,6 +5,7 @@ import { getJson, postJson } from '@/lib/workflow/request'
 import { resolveCachedImageUrl } from '@/lib/workflow/cache'
 import { saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
 import { requestQueue, type QueueTask } from '@/lib/workflow/requestQueue'
+import { useAssetsStore } from '@/store/assets'
 
 // 图片生成参数覆盖接口
 export interface ImageGenerationOverrides {
@@ -464,6 +465,18 @@ export const generateImageFromConfigNode = async (configNodeId: string, override
     
     // 选中新创建的图片节点
     latestStore.setSelected(imageNodeId)
+
+    // 同步到历史素材
+    try {
+      useAssetsStore.getState().addAsset({
+        type: 'image',
+        src: displayUrl,
+        title: prompt?.slice(0, 50) || '画布生成',
+        model: modelKey
+      })
+    } catch (e) {
+      console.warn('[generateImage] 添加到历史素材失败:', e)
+    }
 
     // 标记配置节点已执行
     latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: imageNodeId } } as any)

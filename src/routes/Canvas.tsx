@@ -16,6 +16,7 @@ import CanvasContextMenu, { type CanvasContextPayload } from '@/components/canva
 import CanvasHud from '@/components/canvas/CanvasHud'
 import { DEFAULT_IMAGE_MODEL } from '@/config/models'
 import { useProjectsStore } from '@/store/projects'
+import { useAssetsStore } from '@/store/assets'
 import CanvasAssistantDrawer from '@/components/canvas/CanvasAssistantDrawer'
 import NodeRemarkModal from '@/components/canvas/NodeRemarkModal'
 import DownloadModal from '@/components/canvas/DownloadModal'
@@ -829,7 +830,35 @@ export default function Canvas() {
             startY = (rect.height * 0.2 - vp.y) / z
           }
           
-          // 创建分镜节点
+          // 单图预设模式：直接创建图片节点
+          if (payload.singleImageUrl) {
+            const imageId = store.addNode('image', { x: startX, y: startY }, {
+              label: '导演台生成',
+              url: payload.singleImageUrl
+            })
+            
+            // 创建提示词节点
+            if (payload.singleImagePrompt) {
+              const textId = store.addNode('text', { x: startX - 350, y: startY }, {
+                label: '提示词',
+                content: payload.singleImagePrompt
+              })
+            }
+            
+            // 同步到历史素材
+            useAssetsStore.getState().addAsset({
+              type: 'image',
+              src: payload.singleImageUrl,
+              title: payload.singleImagePrompt?.slice(0, 50) || '导演台生成',
+              model: payload.imageModel
+            })
+            
+            window.$message?.success?.('已添加图片到画布')
+            setDirectorOpen(false)
+            return
+          }
+          
+          // 分镜模式：创建分镜节点
           const spacing = 400
           payload.shots.forEach((shot, index) => {
             const textId = store.addNode('text', { x: startX, y: startY + index * 200 }, {

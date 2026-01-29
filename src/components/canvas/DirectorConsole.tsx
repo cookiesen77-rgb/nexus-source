@@ -33,6 +33,7 @@ import {
   getAspectRatioOptions
 } from '@/lib/directorPresets'
 import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL } from '@/config/models'
+import { useAssetsStore } from '@/store/assets'
 
 interface HistoryEntry {
   storyIdea: string
@@ -360,6 +361,18 @@ Output ONLY the polished prompt. No explanations.`
       }
       
       setGeneratedImageUrl(imageUrl)
+      
+      // 同步到历史素材
+      try {
+        useAssetsStore.getState().addAsset({
+          type: 'image',
+          src: imageUrl,
+          title: userPrompt?.slice(0, 50) || '导演台生成',
+          model: imageModel
+        })
+      } catch (e) {
+        console.warn('[DirectorConsole] 添加到历史素材失败:', e)
+      }
     } catch (err: any) {
       console.error('[DirectorConsole] 生成图片失败:', err)
       setGenerateError(err?.message || '生成失败')
@@ -533,6 +546,18 @@ Output ONLY the polished prompt. No explanations.`
       }
       
       setGeneratedImageUrl(imageUrl)
+      
+      // 同步到历史素材
+      try {
+        useAssetsStore.getState().addAsset({
+          type: 'image',
+          src: imageUrl,
+          title: userPrompt?.slice(0, 50) || '导演台生成',
+          model: imageModel
+        })
+      } catch (e) {
+        console.warn('[DirectorConsole] 添加到历史素材失败:', e)
+      }
     } catch (err: any) {
       console.error('[DirectorConsole] 生成图片失败:', err)
       setGenerateError(err?.message || '生成失败')
