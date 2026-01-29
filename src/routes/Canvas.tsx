@@ -31,9 +31,10 @@ import { getWorkflowById } from '@/config/workflows'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { useSettingsStore } from '@/store/settings'
 import { saveMedia } from '@/lib/mediaStorage'
-import { ChevronDown, ChevronLeft, Download, History, Moon, Play, Settings, Sun } from 'lucide-react'
+import { ChevronDown, ChevronLeft, Download, History, Moon, Play, Settings, Sun, Type, SlidersHorizontal, Settings2, Image, Video, Music, Save } from 'lucide-react'
 import { generateImageFromConfigNode } from '@/lib/workflow/image'
 import { generateVideoFromConfigNode } from '@/lib/workflow/video'
+import { saveCurrentAsTemplate } from '@/lib/workflowTemplates'
 
 // 功能开关
 // USE_REACT_FLOW: 使用 React Flow（推荐，完全对齐 Huobao 架构）
@@ -67,6 +68,17 @@ export default function Canvas() {
   const [audioOpen, setAudioOpen] = useState(false)
   const [promptReverseOpen, setPromptReverseOpen] = useState(false)
   const [batchGenerating, setBatchGenerating] = useState(false)
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [saveTemplateName, setSaveTemplateName] = useState('')
+  const [saveTemplateDesc, setSaveTemplateDesc] = useState('')
+  
+  // 右键菜单状态（画布空白处）
+  const [canvasContextMenu, setCanvasContextMenu] = useState<{
+    x: number      // 屏幕坐标（用于菜单定位）
+    y: number
+    flowX: number  // 画布坐标（用于节点创建）
+    flowY: number
+  } | null>(null)
 
   // 一键全部生成（并发）
   const handleBatchGenerate = useCallback(async () => {
@@ -140,6 +152,89 @@ export default function Canvas() {
       window.$message?.warning?.(`批量生成完成：成功 ${successCount} 个，失败 ${errorCount} 个`)
     }
   }, [])
+
+  // 保存为模板
+  const handleSaveAsTemplate = useCallback(() => {
+    setSaveTemplateName('')
+    setSaveTemplateDesc('')
+    setSaveTemplateOpen(true)
+  }, [])
+
+  const confirmSaveTemplate = useCallback(() => {
+    const name = saveTemplateName.trim() || '未命名模板'
+    const desc = saveTemplateDesc.trim() || undefined
+    const result = saveCurrentAsTemplate(name, desc)
+    if (result) {
+      window.$message?.success?.(`模板「${result.name}」保存成功`)
+      setSaveTemplateOpen(false)
+    }
+  }, [saveTemplateName, saveTemplateDesc])
+
+  // 画布右键菜单 - 创建节点
+  const handleCanvasContextMenu = useCallback((e: React.MouseEvent) => {
+    // 只处理在画布空白处的右键
+    const target = e.target as HTMLElement
+    // 如果点击在节点上，不处理（让节点自己的右键菜单处理）
+    if (target.closest('.react-flow__node') || target.closest('.image-node') || target.closest('.video-node')) {
+      return
+    }
+    e.preventDefault()
+    
+    // 计算画布坐标
+    const vp = useGraphStore.getState().viewport
+    const wrap = canvasWrapRef.current
+    if (!wrap) return
+    const rect = wrap.getBoundingClientRect()
+    const z = vp.zoom || 1
+    const flowX = (e.clientX - rect.left - vp.x) / z
+    const flowY = (e.clientY - rect.top - vp.y) / z
+    
+    setCanvasContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      flowX,
+      flowY
+    })
+  }, [])
+
+  // 右键菜单节点选项
+  const contextMenuNodeOptions = [
+    { type: 'text', name: '文本节点', Icon: Type, color: '#3b82f6' },
+    { type: 'imageConfig', name: '文生图配置', Icon: SlidersHorizontal, color: '#22c55e' },
+    { type: 'videoConfig', name: '视频生成配置', Icon: Settings2, color: '#f59e0b' },
+    { type: 'image', name: '图片节点', Icon: Image, color: '#8b5cf6' },
+    { type: 'video', name: '视频节点', Icon: Video, color: '#ef4444' },
+    { type: 'audio', name: '音频节点', Icon: Music, color: '#0ea5e9' },
+    { type: 'localSave', name: '本地保存', Icon: Save, color: '#0f766e' }
+  ]
+
+  const spawnNodeFromContextMenu = useCallback((type: string) => {
+    if (!canvasContextMenu) return
+    const { flowX, flowY } = canvasContextMenu
+    const { w, h } = getNodeSize(type)
+    const pos = { x: flowX - w * 0.5, y: flowY - h * 0.5 }
+    
+    const store = useGraphStore.getState()
+    const data: Record<string, unknown> = { label: type === 'text' ? '文本' : type === 'imageConfig' ? '生图配置' : type === 'videoConfig' ? '视频配置' : type }
+    
+    if (type === 'imageConfig') {
+      const baseModelCfg: any = (IMAGE_MODELS as any[]).find((m: any) => m.key === DEFAULT_IMAGE_MODEL) || (IMAGE_MODELS as any[])[0]
+      data.model = DEFAULT_IMAGE_MODEL
+      if (baseModelCfg?.defaultParams?.size) data.size = baseModelCfg.defaultParams.size
+      if (baseModelCfg?.defaultParams?.quality) data.quality = baseModelCfg.defaultParams.quality
+    }
+    if (type === 'videoConfig') {
+      const baseModelCfg: any = (VIDEO_MODELS as any[]).find((m: any) => m.key === DEFAULT_VIDEO_MODEL) || (VIDEO_MODELS as any[])[0]
+      data.model = DEFAULT_VIDEO_MODEL
+      if (baseModelCfg?.defaultParams?.ratio) data.ratio = baseModelCfg.defaultParams.ratio
+      if (baseModelCfg?.defaultParams?.duration) data.dur = baseModelCfg.defaultParams.duration
+      if (baseModelCfg?.defaultParams?.size) data.size = baseModelCfg.defaultParams.size
+    }
+    
+    const id = store.addNode(type, pos, data)
+    store.setSelected(id)
+    setCanvasContextMenu(null)
+  }, [canvasContextMenu])
 
   // 新事件系统状态
   const [connectPreview, setConnectPreview] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } | null>(null)
@@ -615,6 +710,8 @@ export default function Canvas() {
           ref={canvasWrapRef}
           data-canvas-wrap="1"
           className="relative h-full w-full bg-[var(--bg-primary)]"
+          onContextMenu={handleCanvasContextMenu}
+          onClick={() => setCanvasContextMenu(null)}
           onDragOver={(e) => {
             e.preventDefault()
           }}
@@ -757,6 +854,7 @@ export default function Canvas() {
               onOpenAudio={() => setAudioOpen(true)}
               onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
               onOpenPromptReverse={() => setPromptReverseOpen(true)}
+              onSaveAsTemplate={handleSaveAsTemplate}
             />
 
             {/* CanvasHud 在 React Flow / DOM 画布模式下禁用，因为它订阅 viewport 会导致性能问题 */}
@@ -1018,6 +1116,79 @@ export default function Canvas() {
               setSelected(id)
             }}
           />
+        </div>
+      )}
+
+      {/* 画布右键菜单 - 添加节点 */}
+      {canvasContextMenu && (
+        <div
+          className="fixed z-[9999] w-[200px] rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-xl py-1"
+          style={{ left: canvasContextMenu.x, top: canvasContextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-2 text-xs text-[var(--text-secondary)] font-medium">添加节点</div>
+          {contextMenuNodeOptions.map((opt) => (
+            <button
+              key={opt.type}
+              onClick={() => spawnNodeFromContextMenu(opt.type)}
+              className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--bg-tertiary)] transition-colors"
+            >
+              <opt.Icon className="h-4 w-4" style={{ color: opt.color }} />
+              <span className="text-sm text-[var(--text-primary)]">{opt.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 保存模板弹窗 */}
+      {saveTemplateOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={() => setSaveTemplateOpen(false)}
+        >
+          <div
+            className="w-[400px] rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-4">保存为模板</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-[var(--text-secondary)] mb-1">模板名称</label>
+                <input
+                  type="text"
+                  value={saveTemplateName}
+                  onChange={(e) => setSaveTemplateName(e.target.value)}
+                  placeholder="输入模板名称"
+                  className="w-full px-3 py-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-primary)] placeholder-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent-color)]"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[var(--text-secondary)] mb-1">描述（可选）</label>
+                <textarea
+                  value={saveTemplateDesc}
+                  onChange={(e) => setSaveTemplateDesc(e.target.value)}
+                  placeholder="简要描述此模板的用途"
+                  rows={3}
+                  className="w-full px-3 py-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-primary)] placeholder-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent-color)] resize-none"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => setSaveTemplateOpen(false)}
+                className="px-4 py-2 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmSaveTemplate}
+                className="px-4 py-2 rounded-lg bg-[var(--accent-color)] text-white hover:bg-[var(--accent-hover)] transition-colors"
+              >
+                保存
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

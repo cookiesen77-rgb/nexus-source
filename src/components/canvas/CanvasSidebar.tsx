@@ -1,5 +1,5 @@
 import React from 'react'
-import { Brush, Hand, LayoutGrid, Link2, MousePointer, Music, Plus, Video, BookOpen, Undo2, Redo2, ScanSearch } from 'lucide-react'
+import { Brush, Hand, LayoutGrid, Link2, MousePointer, Music, Plus, Video, BookOpen, Undo2, Redo2, ScanSearch, Save } from 'lucide-react'
 
 export type CanvasTool = 'select' | 'pan' | 'connect'
 
@@ -14,6 +14,7 @@ type Props = {
   onOpenAudio?: () => void
   onOpenPromptLibrary?: () => void
   onOpenPromptReverse?: () => void
+  onSaveAsTemplate?: () => void
   onUndo?: () => void
   onRedo?: () => void
   canUndo?: boolean
@@ -64,6 +65,7 @@ export default function CanvasSidebar({
   onOpenAudio,
   onOpenPromptLibrary,
   onOpenPromptReverse,
+  onSaveAsTemplate,
   onUndo,
   onRedo,
   canUndo,
@@ -123,6 +125,13 @@ export default function CanvasSidebar({
         onClick={() => onOpenPromptReverse?.()}
       >
         <ScanSearch className="h-5 w-5" />
+      </IconButton>
+
+      <IconButton
+        title="保存为模板"
+        onClick={() => onSaveAsTemplate?.()}
+      >
+        <Save className="h-5 w-5" />
       </IconButton>
 
       <div className="my-1 h-px w-8 bg-[var(--border-color)]" />

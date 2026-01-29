@@ -5,10 +5,10 @@
  * 
  * 性能优化：使用 IntersectionObserver 实现懒加载
  */
-import React, { memo, useState, useCallback, useEffect } from 'react'
+import React, { memo, useState, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Handle, Position, NodeProps } from '@xyflow/react'
-import { Trash2, Download, Expand, Loader2, Copy, ImageIcon, Crop, Eye, Video } from 'lucide-react'
+import { Trash2, Download, Expand, Loader2, Copy, ImageIcon, Crop, Eye, Video, RefreshCw } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
 import { downloadFile } from '@/lib/download'
@@ -322,6 +322,62 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     }
   }, [id])
 
+  // 替换图片功能
+  const replaceInputRef = useRef<HTMLInputElement>(null)
+
+  const handleReplaceClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    replaceInputRef.current?.click()
+  }, [])
+
+  const handleReplaceFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    // 读取文件为 DataURL
+    const reader = new FileReader()
+    reader.onload = async (event) => {
+      const dataUrl = event.target?.result as string
+      if (!dataUrl) return
+
+      const store = useGraphStore.getState()
+      const projectId = store.projectId || 'default'
+
+      // 更新节点 URL
+      store.updateNode(id, {
+        data: {
+          url: dataUrl,
+          sourceUrl: '',
+          mediaId: undefined,
+          label: file.name || nodeData?.label || '图片',
+          loading: false,
+          error: undefined
+        }
+      } as any)
+
+      // 异步保存到 IndexedDB
+      try {
+        const mediaId = await saveMedia({
+          nodeId: id,
+          projectId,
+          type: 'image',
+          data: dataUrl,
+        })
+        if (mediaId) {
+          store.patchNodeDataSilent(id, { mediaId })
+        }
+      } catch {
+        // ignore
+      }
+
+      window.$message?.success?.('图片已替换')
+    }
+    reader.readAsDataURL(file)
+
+    // 清理 input
+    e.target.value = ''
+  }, [id, nodeData?.label])
+
   return (
     // 外层 wrapper 提供悬浮按钮空间（参考 Vue 版本）
     // ref 用于懒加载检测
@@ -414,9 +470,28 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
         />
       )}
 
+      {/* 隐藏的替换图片文件选择器 */}
+      <input
+        ref={replaceInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleReplaceFile}
+      />
+
       {/* 右侧操作按钮（只在有图片时显示） */}
       {showActions && nodeData?.url && (
         <div className="absolute right-10 top-1/2 -translate-y-1/2 translate-x-full flex flex-col gap-2 z-[1000]">
+          {/* 替换 */}
+          <button
+            onClick={handleReplaceClick}
+            className="group p-2 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 flex items-center gap-0 hover:gap-1.5 transition-all shadow-sm w-max"
+          >
+            <RefreshCw size={16} className="text-gray-600 dark:text-gray-300" />
+            <span className="text-xs text-gray-600 dark:text-gray-300 max-w-0 overflow-hidden group-hover:max-w-[60px] transition-all duration-200 whitespace-nowrap">
+              替换
+            </span>
+          </button>
           {/* 复制 */}
           <button
             onClick={handleDuplicate}
