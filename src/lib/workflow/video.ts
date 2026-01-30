@@ -806,8 +806,9 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
     
     if (isCompleted && !videoUrl) {
       // 对于 sora-openai 格式，视频 URL 就是 /videos/{id}/content 端点
+      // 使用相对路径，让请求通过 Vite 代理（避免 CORS 问题）
       if (modelCfg.format === 'sora-openai') {
-        const contentUrl = `https://nexusapi.cn/v1/videos/${id}/content`
+        const contentUrl = `/v1/videos/${id}/content`
         console.log('[pollVideoTask] Sora OpenAI 格式：构造视频下载 URL:', contentUrl)
         return contentUrl
       }

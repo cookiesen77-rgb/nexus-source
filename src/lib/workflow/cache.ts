@@ -51,8 +51,15 @@ export const resolveCachedMediaUrl = async (url: string) => {
     }
   }
   
-  // Web 环境：检查是否需要鉴权的 URL（nexusapi.cn 的视频 URL 需要 Bearer token）
-  if (/^https?:\/\//i.test(u) && u.includes('nexusapi.cn')) {
+  // Web 环境：检查是否需要鉴权的 URL
+  // 1. nexusapi.cn 的绝对 URL
+  // 2. /v1/ 开头的相对路径（通过 Vite 代理）
+  const needsAuth = (
+    (/^https?:\/\//i.test(u) && u.includes('nexusapi.cn')) ||
+    u.startsWith('/v1/')
+  )
+  
+  if (needsAuth) {
     try {
       const token = getApiKey()
       console.log('[resolveCachedMediaUrl] Web 环境下载需要鉴权的视频:', u.slice(0, 80))
