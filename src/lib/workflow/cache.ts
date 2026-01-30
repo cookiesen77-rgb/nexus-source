@@ -36,7 +36,7 @@ export const resolveCachedMediaUrl = async (url: string) => {
 
   const t = await getTauri()
   
-  // Tauri 环境：使用原生缓存
+  // Tauri 环境：使用 Rust 端的 cache_remote_media 命令（通过 reqwest 库发送 HTTP 请求）
   if (t.isTauri) {
     // 如果是相对路径，转换为绝对 URL（Tauri 没有 Vite 代理）
     let absoluteUrl = u
@@ -46,15 +46,21 @@ export const resolveCachedMediaUrl = async (url: string) => {
     }
     if (!/^https?:\/\//i.test(absoluteUrl)) return { displayUrl: absoluteUrl, localPath: '' }
     
-    const token = getApiKey()
-    const path = await tauriInvoke<string>('cache_remote_media', { url: absoluteUrl, authToken: token || null })
-    if (!path) return { displayUrl: '', localPath: '', error: '缓存媒体失败' }
-
     try {
+      const token = getApiKey()
+      console.log('[resolveCachedMediaUrl] Tauri: 调用 cache_remote_media 命令')
+      const path = await tauriInvoke<string>('cache_remote_media', { url: absoluteUrl, authToken: token || null })
+      if (!path) {
+        console.error('[resolveCachedMediaUrl] Tauri: cache_remote_media 返回空')
+        return { displayUrl: '', localPath: '', error: '缓存媒体失败' }
+      }
+
       const displayUrl = t.convertFileSrc ? t.convertFileSrc(path) : absoluteUrl
+      console.log('[resolveCachedMediaUrl] Tauri: 缓存成功, displayUrl:', displayUrl.slice(0, 80))
       return { displayUrl, localPath: path }
-    } catch {
-      return { displayUrl: absoluteUrl, localPath: path }
+    } catch (err) {
+      console.error('[resolveCachedMediaUrl] Tauri: cache_remote_media 异常:', err)
+      return { displayUrl: '', localPath: '', error: String(err) }
     }
   }
   
