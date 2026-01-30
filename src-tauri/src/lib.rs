@@ -716,8 +716,13 @@ async fn cache_remote_image(
     request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token_ref));
   }
 
-  let response = request.send().await.map_err(|e| e.to_string())?;
+  log::info!("[cache_remote_image] 开始下载: {}", &url[..url.len().min(80)]);
+  let response = request.send().await.map_err(|e| {
+    log::error!("[cache_remote_image] 请求失败: {}", e);
+    e.to_string()
+  })?;
   if !response.status().is_success() {
+    log::error!("[cache_remote_image] HTTP 错误: {}", response.status());
     return Err(format!("HTTP {}", response.status()));
   }
 
@@ -727,8 +732,12 @@ async fn cache_remote_image(
     .and_then(|v| v.to_str().ok())
     .map(|v| v.to_string());
 
-  let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+  let bytes = response.bytes().await.map_err(|e| {
+    log::error!("[cache_remote_image] 读取响应失败: {}", e);
+    e.to_string()
+  })?;
   if bytes.len() as u64 > MAX_IMAGE_BYTES {
+    log::error!("[cache_remote_image] 图片过大: {} bytes", bytes.len());
     return Err("图片过大，已拒绝缓存".to_string());
   }
   let ext = extension_from_url(&url)
@@ -736,10 +745,16 @@ async fn cache_remote_image(
     .unwrap_or_else(|| "png".to_string());
   let target = cache_root.join(format!("{}.{}", file_stem, ext));
 
+  log::info!("[cache_remote_image] Content-Type: {:?}, 扩展名: {}, 大小: {} bytes", content_type, ext, bytes.len());
+
   if !target.exists() {
-    std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+    std::fs::write(&target, &bytes).map_err(|e| {
+      log::error!("[cache_remote_image] 写入文件失败: {}", e);
+      e.to_string()
+    })?;
   }
 
+  log::info!("[cache_remote_image] 缓存成功: {}", target.to_string_lossy());
   Ok(target.to_string_lossy().to_string())
 }
 
