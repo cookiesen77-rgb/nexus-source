@@ -17,6 +17,7 @@ const MEDIA_CACHE_DIR: &str = "nexus-media-cache";
 const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_MEDIA_BYTES: u64 = 300 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
+const MEDIA_DOWNLOAD_TIMEOUT_SECS: u64 = 300; // 视频下载需要更长时间
 
 fn hash_key(key: &str) -> String {
   let mut hasher = Sha256::new();
@@ -156,6 +157,16 @@ fn extension_from_content_type(content_type: Option<&str>) -> Option<String> {
   };
 
   Some(ext.to_string())
+}
+
+// 根据 URL 路径推断媒体类型（用于没有扩展名的 URL）
+fn extension_from_url_path(url: &str) -> Option<String> {
+  let lower = url.to_ascii_lowercase();
+  // OpenAI Sora 视频内容端点
+  if lower.contains("/videos/") && lower.contains("/content") {
+    return Some("mp4".to_string());
+  }
+  None
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -766,9 +777,10 @@ async fn cache_remote_media(
     }
   }
 
+  // 视频下载需要更长的超时时间
   let client = reqwest::Client::builder()
     .user_agent("Nexus/1.0")
-    .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+    .timeout(Duration::from_secs(MEDIA_DOWNLOAD_TIMEOUT_SECS))
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -777,8 +789,10 @@ async fn cache_remote_media(
     request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token_ref));
   }
 
+  log::info!("[cache_remote_media] 开始下载: {}", &url[..url.len().min(80)]);
   let response = request.send().await.map_err(|e| e.to_string())?;
   if !response.status().is_success() {
+    log::error!("[cache_remote_media] HTTP 错误: {}", response.status());
     return Err(format!("HTTP {}", response.status()));
   }
 
@@ -788,9 +802,13 @@ async fn cache_remote_media(
     .and_then(|v| v.to_str().ok())
     .map(|v| v.to_string());
 
+  // 扩展名优先级：URL 扩展名 > Content-Type > URL 路径推断 > 默认 mp4
   let ext = extension_from_url(&url)
     .or_else(|| extension_from_content_type(content_type.as_deref()))
-    .unwrap_or_else(|| "bin".to_string());
+    .or_else(|| extension_from_url_path(&url))
+    .unwrap_or_else(|| "mp4".to_string()); // 默认 mp4 而不是 bin
+  
+  log::info!("[cache_remote_media] Content-Type: {:?}, 扩展名: {}", content_type, ext);
   let target = cache_root.join(format!("{}.{}", file_stem, ext));
 
   if target.exists() {
@@ -805,12 +823,14 @@ async fn cache_remote_media(
     size += bytes.len() as u64;
     if size > MAX_MEDIA_BYTES {
       let _ = tokio::fs::remove_file(&target).await;
+      log::error!("[cache_remote_media] 文件过大: {} bytes", size);
       return Err("媒体文件过大，已拒绝缓存".to_string());
     }
     file.write_all(&bytes).await.map_err(|e| e.to_string())?;
   }
   file.flush().await.map_err(|e| e.to_string())?;
 
+  log::info!("[cache_remote_media] 下载完成: {} bytes -> {}", size, target.to_string_lossy());
   Ok(target.to_string_lossy().to_string())
 }
 
