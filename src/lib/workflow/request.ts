@@ -65,8 +65,11 @@ const isRetryableError = (err: any) => {
   // 代理/TLS/网络抖动（尤其是 Vite proxy 与上游 TLS 握手偶发失败）
   // 以及：偶发的响应体截断会导致 JSON 解析失败（应视为可重试）
   // 502 Bad Gateway 也是常见的临时错误，特别是在 Tauri 环境下
-  // Tauri HTTP 插件特有错误: "The string did not match the expected pattern"
-  return /Failed to fetch|NetworkError|socket|TLS|ECONNRESET|EPIPE|ETIMEDOUT|Unexpected end of JSON|Unexpected token|JSON|502|Bad Gateway|Gateway|upstream|did not match|expected pattern|connect error|connection/i.test(msg)
+  // Tauri HTTP 插件特有错误: 
+  //   - "The string did not match the expected pattern"
+  //   - "error sending request for url"
+  //   - "request error"
+  return /Failed to fetch|NetworkError|socket|TLS|ECONNRESET|EPIPE|ETIMEDOUT|Unexpected end of JSON|Unexpected token|JSON|502|Bad Gateway|Gateway|upstream|did not match|expected pattern|connect error|connection|error sending request|request error|sending request/i.test(msg)
 }
 
 const backoffMs = (attempt: number) => {

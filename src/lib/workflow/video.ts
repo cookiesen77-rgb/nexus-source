@@ -660,8 +660,13 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
   const isTransientPollError = (err: any) => {
     const msg = String(err?.message || err || '')
     if (!msg) return true
+    // 网络错误
     if (/Failed to fetch|NetworkError|Network request failed/i.test(msg)) return true
-    if (/响应解析失败（JSON）|Unexpected end of JSON|Unexpected token/i.test(msg)) return true
+    // JSON 解析错误
+    if (/响应解析失败（JSON）|Unexpected end of JSON|Unexpected token|did not match|expected pattern/i.test(msg)) return true
+    // Tauri HTTP 插件特有错误
+    if (/error sending request|request error|sending request|connect error|connection/i.test(msg)) return true
+    // HTTP 状态码
     const m = msg.match(/HTTP\s+(\d{3})/i)
     if (m) {
       const code = Number(m[1])

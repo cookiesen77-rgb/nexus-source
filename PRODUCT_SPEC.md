@@ -220,7 +220,59 @@ const safeFetch = async (url, options) => {
 | Luma | `luma` | 图生视频 |
 | Veo 2 | `veo-unified` | 文生视频 |
 
-### 4.3 API 请求规范
+### 4.3 模型开发规范（重要）
+
+#### 4.3.1 最小改动原则
+
+**增加新模型时，必须遵循最小改动原则：**
+
+1. **只修改 `src/config/models.js`**
+   - 在对应的 `IMAGE_MODELS` 或 `VIDEO_MODELS` 数组中添加新模型配置
+   - 不要修改其他模型的配置
+   - 不要修改公共函数或工具类
+
+2. **复用现有的 API 格式（format）**
+   - 优先使用已有的 format：`openai`, `veo-unified`, `sora-openai`, `kling-video`, `tencent-video` 等
+   - 只有当现有 format 完全无法满足时，才考虑新增 format
+
+3. **新增 format 的规范**
+   - 只在 `src/lib/workflow/video.ts` 或 `src/lib/workflow/image.ts` 中添加对应的 `if (modelCfg.format === 'new-format')` 分支
+   - 不要修改其他 format 的处理逻辑
+   - 不要修改公共的 URL 构建函数（如 `resolveEndpointUrl`）
+
+4. **禁止的操作**
+   - 不要修改 `src/lib/workflow/request.ts` 中的 URL 处理逻辑
+   - 不要修改 `noV1Prefixes` 列表（除非有明确的技术需求和审批）
+   - 不要修改其他模型的参数构建逻辑
+   - 不要在公共工具类中添加模型特定的逻辑
+
+#### 4.3.2 模型配置结构
+
+```javascript
+{
+  label: '显示名称 ¥价格',        // UI 显示
+  key: 'model-key',              // 模型标识（发送到 API）
+  endpoint: '/video/create',     // API 端点（相对路径或绝对 URL）
+  statusEndpoint: '/v1/video/query', // 轮询端点
+  authMode: 'bearer',            // 认证方式：bearer | query
+  format: 'veo-unified',         // API 格式（决定参数构建逻辑）
+  maxImages: 2,                  // 最大图片数量
+  ratios: ['16:9', '9:16'],      // 支持的宽高比
+  durs: [{ label: '8 秒', key: 8 }], // 支持的时长
+  defaultParams: { ... }         // 默认参数
+}
+```
+
+#### 4.3.3 端点配置规则
+
+| 端点类型 | 配置方式 | 示例 |
+|---------|---------|------|
+| 标准 /v1 路径 | 相对路径（不带 /v1） | `endpoint: '/video/create'` → `/v1/video/create` |
+| 已包含 /v1 | 相对路径（带 /v1） | `endpoint: '/v1/videos'` → `/v1/videos` |
+| 特殊前缀 | 使用 `toAbsoluteUrl()` | `endpoint: toAbsoluteUrl('/kling/v1/videos')` |
+| 外部 API | 完整 URL | `endpoint: 'https://api.example.com/v1/...'` |
+
+### 4.4 API 请求规范
 
 #### 4.3.1 基础 URL
 
