@@ -119,6 +119,23 @@ export default defineConfig(({ mode }) => {
               proxyReq.setHeader('Connection', 'keep-alive')
             })
           }
+        },
+        // 视频状态查询接口（allapi.store 统一端点）
+        '/video': {
+          target: 'https://nexusapi.cn',
+          changeOrigin: true,
+          secure: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+          agent: httpsAgent,
+          configure: (proxy) => {
+            proxy.on('error', (err) => {
+              console.log('[Proxy Error]', err.message)
+            })
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('Connection', 'keep-alive')
+            })
+          }
         }
       }
     }
