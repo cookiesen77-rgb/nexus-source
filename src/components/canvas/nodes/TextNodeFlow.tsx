@@ -272,9 +272,9 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
             onBlur={handleBlur}
             onMouseDown={(e) => e.stopPropagation()}
             onWheel={(e) => e.stopPropagation()}
-            className="nodrag nowheel w-full bg-transparent resize-none outline-none text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] flex-1"
+            className="nodrag nowheel w-full bg-transparent resize-none outline-none text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] flex-1 select-text"
             placeholder="请输入文本内容..."
-            style={{ minHeight: Math.max(60, nodeHeight - 100) }}
+            style={{ minHeight: Math.max(60, nodeHeight - 100), userSelect: 'text', WebkitUserSelect: 'text' }}
           />
         </div>
 
