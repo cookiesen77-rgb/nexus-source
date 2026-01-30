@@ -104,13 +104,13 @@ jobs:
             "pub_date": "${PUB_DATE}",
             "platforms": {
               "darwin-x86_64": {
-                "url": "https://github.com/cookiesen77-rgb/nexus-source/releases/download/v${VERSION}/Nexus_${VERSION}_x64.dmg"
+                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_x64.dmg"
               },
               "darwin-aarch64": {
-                "url": "https://github.com/cookiesen77-rgb/nexus-source/releases/download/v${VERSION}/Nexus_${VERSION}_aarch64.dmg"
+                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_aarch64.dmg"
               },
               "windows-x86_64": {
-                "url": "https://github.com/cookiesen77-rgb/nexus-source/releases/download/v${VERSION}/Nexus_${VERSION}_x64-setup.exe"
+                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_x64-setup.exe"
               }
             }
           }
@@ -120,6 +120,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          repository: cookiesen77-rgb/nexus-releases
+          tag_name: v${{ steps.version.outputs.version }}
           name: Nexus v${{ steps.version.outputs.version }}
           body: |
             ## Nexus v${{ steps.version.outputs.version }}
@@ -139,4 +141,4 @@ jobs:
             artifacts/**/*.msi
             latest.json
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
