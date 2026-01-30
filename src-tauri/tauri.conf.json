@@ -46,7 +46,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/cookiesen77-rgb/nexus-source/releases/latest/download/latest.json"
+        "https://github.com/cookiesen77-rgb/nexus-releases/releases/latest/download/latest.json"
       ],
       "pubkey": "",
       "windows": {

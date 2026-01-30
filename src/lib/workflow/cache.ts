@@ -1,4 +1,33 @@
+/**
+ * 统一缓存抽象层
+ * 
+ * 根据运行环境自动选择最优缓存实现：
+ * - Tauri 环境：使用 Rust 后端进行文件系统缓存
+ * - Web 环境：使用 IndexedDB 进行本地缓存
+ */
+
 import { getTauri, tauriInvoke } from '@/lib/tauri'
+import { LocalCacheManager, type CacheEntry } from '@/lib/indexedDB'
+
+// 缓存结果类型
+export interface CacheResult {
+  displayUrl: string
+  localPath: string
+  source: 'tauri' | 'indexeddb' | 'memory' | 'direct'
+  error?: string
+}
+
+// 缓存分类
+export type CacheCategory = CacheEntry['category']
+
+// 缓存状态
+export type CacheStatus = 'cached' | 'pending' | 'none' | 'error'
+
+// 内存中的 pending 状态跟踪
+const pendingCache = new Map<string, Promise<CacheResult>>()
+
+// URL 到缓存 ID 的映射
+const urlToCacheId = new Map<string, string>()
 
 const getApiKey = () => {
   try {
@@ -6,6 +35,226 @@ const getApiKey = () => {
   } catch {
     return ''
   }
+}
+
+/**
+ * 生成缓存 ID
+ */
+const generateCacheId = (url: string, category: CacheCategory = 'general'): string => {
+  let hash = 0
+  for (let i = 0; i < url.length; i++) {
+    const char = url.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash
+  }
+  return `${category}_${Math.abs(hash).toString(36)}`
+}
+
+/**
+ * 获取缓存状态
+ */
+export const getCacheStatus = (url: string): CacheStatus => {
+  if (!url) return 'none'
+  if (pendingCache.has(url)) return 'pending'
+  if (urlToCacheId.has(url)) return 'cached'
+  return 'none'
+}
+
+/**
+ * 统一的媒体缓存函数
+ * 
+ * @param url 媒体 URL
+ * @param category 缓存分类
+ * @param options 可选配置
+ */
+export const cacheMedia = async (
+  url: string,
+  category: CacheCategory = 'general',
+  options: {
+    forceRefresh?: boolean
+    metadata?: Record<string, unknown>
+  } = {}
+): Promise<CacheResult> => {
+  const u = String(url || '').trim()
+  if (!u) return { displayUrl: '', localPath: '', source: 'direct' }
+  
+  // data: 和 blob: 直接返回
+  if (u.startsWith('data:') || u.startsWith('blob:')) {
+    return { displayUrl: u, localPath: '', source: 'memory' }
+  }
+
+  // 检查是否有正在进行的缓存操作
+  if (!options.forceRefresh && pendingCache.has(u)) {
+    return pendingCache.get(u)!
+  }
+
+  const cachePromise = (async (): Promise<CacheResult> => {
+    const t = await getTauri()
+    
+    // Tauri 环境：使用 Rust 后端
+    if (t.isTauri) {
+      return cacheTauri(u, category)
+    }
+    
+    // Web 环境：使用 IndexedDB
+    return cacheWeb(u, category, options.metadata)
+  })()
+
+  pendingCache.set(u, cachePromise)
+  
+  try {
+    const result = await cachePromise
+    if (result.displayUrl && !result.error) {
+      urlToCacheId.set(u, generateCacheId(u, category))
+    }
+    return result
+  } finally {
+    pendingCache.delete(u)
+  }
+}
+
+/**
+ * Tauri 环境缓存
+ */
+const cacheTauri = async (url: string, category: CacheCategory): Promise<CacheResult> => {
+  // 如果是相对路径，转换为绝对 URL
+  let absoluteUrl = url
+  if (url.startsWith('/v1/')) {
+    absoluteUrl = `https://nexusapi.cn${url}`
+    console.log(`[Cache:Tauri] 相对路径转换为绝对 URL:`, absoluteUrl.slice(0, 80))
+  }
+  
+  if (!/^https?:\/\//i.test(absoluteUrl)) {
+    return { displayUrl: absoluteUrl, localPath: '', source: 'direct' }
+  }
+  
+  try {
+    const token = getApiKey()
+    const t = await getTauri()
+    
+    // 根据 URL 判断是图片还是视频
+    const isVideo = /\.(mp4|webm|mov|m4v|m3u8)(\?|$)/i.test(absoluteUrl) ||
+                    absoluteUrl.includes('/videos/') ||
+                    absoluteUrl.includes('/video/')
+    
+    const command = isVideo ? 'cache_remote_media' : 'cache_remote_image'
+    console.log(`[Cache:Tauri] 调用 ${command} 命令`)
+    
+    const path = await tauriInvoke<string>(command, { 
+      url: absoluteUrl, 
+      authToken: token || null 
+    })
+    
+    if (!path) {
+      console.error(`[Cache:Tauri] ${command} 返回空`)
+      return { displayUrl: '', localPath: '', source: 'tauri', error: '缓存失败' }
+    }
+
+    const displayUrl = t.convertFileSrc ? t.convertFileSrc(path) : absoluteUrl
+    console.log(`[Cache:Tauri] 缓存成功:`, displayUrl.slice(0, 80))
+    return { displayUrl, localPath: path, source: 'tauri' }
+  } catch (err) {
+    console.error(`[Cache:Tauri] 缓存异常:`, err)
+    return { displayUrl: '', localPath: '', source: 'tauri', error: String(err) }
+  }
+}
+
+/**
+ * Web 环境缓存（使用 IndexedDB）
+ */
+const cacheWeb = async (
+  url: string,
+  category: CacheCategory,
+  metadata?: Record<string, unknown>
+): Promise<CacheResult> => {
+  // 检查是否需要鉴权
+  const needsAuth = (
+    (/^https?:\/\//i.test(url) && url.includes('nexusapi.cn')) ||
+    url.startsWith('/v1/')
+  )
+  
+  const cacheId = generateCacheId(url, category)
+  
+  // 尝试从 IndexedDB 获取已缓存的数据
+  const cached = await LocalCacheManager.getMedia(cacheId)
+  if (cached) {
+    console.log(`[Cache:Web] 从 IndexedDB 获取缓存:`, cacheId)
+    return { displayUrl: cached, localPath: '', source: 'indexeddb' }
+  }
+  
+  if (needsAuth) {
+    try {
+      const token = getApiKey()
+      // 如果是绝对 URL (nexusapi.cn)，转换为相对路径通过代理
+      let fetchUrl = url
+      if (/^https?:\/\//i.test(url) && url.includes('nexusapi.cn')) {
+        try {
+          const parsed = new URL(url)
+          fetchUrl = parsed.pathname + parsed.search
+          console.log(`[Cache:Web] 转换绝对 URL 为相对路径:`, fetchUrl)
+        } catch {
+          // 保持原 URL
+        }
+      }
+      
+      console.log(`[Cache:Web] 下载需要鉴权的媒体:`, fetchUrl.slice(0, 80))
+      const response = await fetch(fetchUrl, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      })
+      
+      if (!response.ok) {
+        console.error(`[Cache:Web] 下载失败:`, response.status)
+        return { displayUrl: '', localPath: '', source: 'indexeddb', error: `下载失败: ${response.status}` }
+      }
+      
+      const blob = await response.blob()
+      
+      // 保存到 IndexedDB
+      const blobUrl = await LocalCacheManager.saveMedia(cacheId, blob, {
+        category,
+        sourceUrl: url,
+        metadata
+      })
+      
+      if (blobUrl) {
+        console.log(`[Cache:Web] 已缓存到 IndexedDB:`, cacheId)
+        urlToCacheId.set(url, cacheId)
+        return { displayUrl: blobUrl, localPath: '', source: 'indexeddb' }
+      }
+      
+      // IndexedDB 保存失败，使用临时 blob URL
+      const tempBlobUrl = URL.createObjectURL(blob)
+      console.log(`[Cache:Web] IndexedDB 保存失败，使用临时 blob URL`)
+      return { displayUrl: tempBlobUrl, localPath: '', source: 'memory' }
+    } catch (err) {
+      console.error(`[Cache:Web] 缓存失败:`, err)
+      return { displayUrl: '', localPath: '', source: 'indexeddb', error: String(err) }
+    }
+  }
+  
+  // 不需要鉴权的 URL 直接返回
+  return { displayUrl: url, localPath: '', source: 'direct' }
+}
+
+/**
+ * 清理指定分类的缓存
+ */
+export const clearCacheByCategory = async (category: CacheCategory): Promise<void> => {
+  await LocalCacheManager.clearCategoryCache(category)
+  
+  // 清理内存映射
+  for (const [url, id] of urlToCacheId.entries()) {
+    if (id.startsWith(category)) {
+      urlToCacheId.delete(url)
+    }
+  }
+}
+
+/**
+ * 获取缓存统计信息
+ */
+export const getCacheStats = async () => {
+  return LocalCacheManager.getCacheStats()
 }
 
 export const resolveCachedImageUrl = async (url: string): Promise<{ displayUrl: string; localPath: string; error?: string }> => {

@@ -8,6 +8,9 @@ import { request, DEFAULT_API_BASE_URL } from '@/utils'
 const noV1Prefixes = ['/tencent-vod', '/kling', '/v1beta', '/v1/', '/video/']
 
 // 构建完整 URL（处理特殊前缀）
+// 注意：axios 的 baseURL 是 https://nexusapi.cn/v1
+// 当 url 以 / 开头时，axios 会从域名根目录拼接（忽略 baseURL 的 /v1 部分）
+// 所以需要返回不带 / 前缀的相对路径，或者返回完整的绝对 URL
 const buildUrl = (endpoint) => {
   if (!endpoint) return ''
   if (/^https?:\/\//i.test(endpoint)) return endpoint
@@ -24,8 +27,9 @@ const buildUrl = (endpoint) => {
     }
   }
   
-  // 其他路径使用默认 base URL
-  return endpoint
+  // 其他路径：去掉开头的 /，让 axios 相对于 baseURL 拼接
+  // 例如 '/images/generations' -> 'images/generations' -> axios 拼接为 https://nexusapi.cn/v1/images/generations
+  return path.startsWith('/') ? path.slice(1) : path
 }
 
 // 生成图片

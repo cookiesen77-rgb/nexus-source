@@ -64,13 +64,22 @@ const isRetryableError = (err: any) => {
   const msg = String(err?.message || err || '')
   // 代理/TLS/网络抖动（尤其是 Vite proxy 与上游 TLS 握手偶发失败）
   // 以及：偶发的响应体截断会导致 JSON 解析失败（应视为可重试）
-  return /Failed to fetch|NetworkError|socket|TLS|ECONNRESET|EPIPE|ETIMEDOUT|Unexpected end of JSON|Unexpected token|JSON/i.test(msg)
+  // 502 Bad Gateway 也是常见的临时错误，特别是在 Tauri 环境下
+  // Tauri HTTP 插件特有错误: "The string did not match the expected pattern"
+  return /Failed to fetch|NetworkError|socket|TLS|ECONNRESET|EPIPE|ETIMEDOUT|Unexpected end of JSON|Unexpected token|JSON|502|Bad Gateway|Gateway|upstream|did not match|expected pattern|connect error|connection/i.test(msg)
 }
 
 const backoffMs = (attempt: number) => {
   const base = 600 * Math.pow(2, Math.max(0, attempt))
   const jitter = Math.floor(Math.random() * 300)
   return Math.min(8000, base + jitter)
+}
+
+// 502 Bad Gateway 专用退避：更长的等待时间（服务器过载常见）
+const get502BackoffMs = (attempt: number) => {
+  const base = 2000 * Math.pow(2, Math.max(0, attempt)) // 2s, 4s, 8s...
+  const jitter = Math.floor(Math.random() * 1000)
+  return Math.min(15000, base + jitter) // 最多 15 秒
 }
 
 const getApiKey = () => {
@@ -154,10 +163,12 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
     finalUrl: url,
     authMode,
     hasApiKey: !!apiKey,
-    bodyKeys: Object.keys(body || {})
+    bodyKeys: Object.keys(body || {}),
+    isTauri
   })
 
-  const maxRetries = 2
+  // Tauri 环境下增加重试次数（502 错误在 Tauri 中更常见）
+  const maxRetries = isTauri ? 3 : 2
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // Tauri HTTP 插件在某些平台（特别是 Windows）上对 AbortController 支持不完善
     // 因此只在非 Tauri 环境或明确设置超时时使用 signal
@@ -188,8 +199,20 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
         try {
           return (await res.json()) as T
         } catch (e: any) {
-          // 不要吞掉解析失败，否则上层会误判为“返回为空”
-          throw new Error(`响应解析失败（JSON）：${String(e?.message || e || '')}`)
+          // JSON 解析失败：在 Tauri 环境下可能是响应被截断或格式问题，应该重试
+          const errMsg = String(e?.message || e || '')
+          const isRetryableJsonError = /did not match|expected pattern|Unexpected/i.test(errMsg)
+          if (isTauri && attempt < maxRetries && isRetryableJsonError) {
+            const wait = get502BackoffMs(attempt)
+            console.warn('[postJson] Tauri JSON 解析失败，准备重试:', { 
+              attempt: attempt + 1, 
+              waitMs: wait, 
+              error: errMsg.slice(0, 100) 
+            })
+            await sleep(wait)
+            continue
+          }
+          throw new Error(`响应解析失败（JSON）：${errMsg}`)
         }
       }
 
@@ -209,13 +232,20 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
 
       const shouldRetry = attempt < maxRetries && isRetryableStatus(res.status)
       if (shouldRetry) {
-        const wait = backoffMs(attempt)
-        console.warn('[postJson] 可重试失败，准备重试:', { status: res.status, attempt: attempt + 1, waitMs: wait })
+        // 502 Bad Gateway 使用更长的退避时间
+        const wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        console.warn('[postJson] 可重试失败，准备重试:', { 
+          status: res.status, 
+          attempt: attempt + 1, 
+          waitMs: wait,
+          isTauri,
+          endpoint: endpoint.slice(0, 50)
+        })
         await sleep(wait)
         continue
       }
 
-      console.error('[postJson] 请求失败:', { status: res.status, errorMsg })
+      console.error('[postJson] 请求失败:', { status: res.status, errorMsg, isTauri })
       throw new Error(errorMsg)
     } catch (err: any) {
       // AbortError 通常表示超时；默认不自动重试，避免重复扣费/生成
@@ -250,10 +280,12 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
     finalUrl: url,
     authMode,
     hasApiKey: !!apiKey,
-    formDataKeys: [...body.keys()]
+    formDataKeys: [...body.keys()],
+    isTauri
   })
 
-  const maxRetries = 2
+  // Tauri 环境下增加重试次数
+  const maxRetries = isTauri ? 3 : 2
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
@@ -280,7 +312,20 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
         try {
           return (await res.json()) as T
         } catch (e: any) {
-          throw new Error(`响应解析失败（JSON）：${String(e?.message || e || '')}`)
+          // JSON 解析失败：在 Tauri 环境下可能是响应被截断或格式问题，应该重试
+          const errMsg = String(e?.message || e || '')
+          const isRetryableJsonError = /did not match|expected pattern|Unexpected/i.test(errMsg)
+          if (isTauri && attempt < maxRetries && isRetryableJsonError) {
+            const wait = get502BackoffMs(attempt)
+            console.warn('[postFormData] Tauri JSON 解析失败，准备重试:', { 
+              attempt: attempt + 1, 
+              waitMs: wait, 
+              error: errMsg.slice(0, 100) 
+            })
+            await sleep(wait)
+            continue
+          }
+          throw new Error(`响应解析失败（JSON）：${errMsg}`)
         }
       }
 
@@ -299,13 +344,20 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
 
       const shouldRetry = attempt < maxRetries && isRetryableStatus(res.status)
       if (shouldRetry) {
-        const wait = backoffMs(attempt)
-        console.warn('[postFormData] 可重试失败，准备重试:', { status: res.status, attempt: attempt + 1, waitMs: wait })
+        // 502 Bad Gateway 使用更长的退避时间
+        const wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        console.warn('[postFormData] 可重试失败，准备重试:', { 
+          status: res.status, 
+          attempt: attempt + 1, 
+          waitMs: wait,
+          isTauri,
+          endpoint: endpoint.slice(0, 50)
+        })
         await sleep(wait)
         continue
       }
 
-      console.error('[postFormData] 请求失败:', { status: res.status, errorMsg })
+      console.error('[postFormData] 请求失败:', { status: res.status, errorMsg, isTauri })
       throw new Error(errorMsg)
     } catch (err: any) {
       const name = String(err?.name || '')
@@ -337,7 +389,8 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
 
   const url = qs.toString() ? `${url0}${url0.includes('?') ? '&' : '?'}${qs.toString()}` : url0
 
-  const maxRetries = 2
+  // Tauri 环境下增加重试次数（轮询视频状态时 502 更常见）
+  const maxRetries = isTauri ? 3 : 2
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
@@ -363,7 +416,20 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
         try {
           return (await res.json()) as T
         } catch (e: any) {
-          throw new Error(`响应解析失败（JSON）：${String(e?.message || e || '')}`)
+          // JSON 解析失败：在 Tauri 环境下可能是响应被截断或格式问题，应该重试
+          const errMsg = String(e?.message || e || '')
+          const isRetryableJsonError = /did not match|expected pattern|Unexpected/i.test(errMsg)
+          if (isTauri && attempt < maxRetries && isRetryableJsonError) {
+            const wait = get502BackoffMs(attempt)
+            console.warn('[getJson] Tauri JSON 解析失败，准备重试:', { 
+              attempt: attempt + 1, 
+              waitMs: wait, 
+              error: errMsg.slice(0, 100) 
+            })
+            await sleep(wait)
+            continue
+          }
+          throw new Error(`响应解析失败（JSON）：${errMsg}`)
         }
       }
 
@@ -383,18 +449,20 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
 
       const shouldRetry = attempt < maxRetries && isRetryableStatus(res.status)
       if (shouldRetry) {
-        const wait = backoffMs(attempt)
+        // 502 Bad Gateway 使用更长的退避时间
+        const wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
         console.warn('[getJson] 可重试失败，准备重试:', { 
           url: url.slice(0, 100), 
           status: res.status, 
           attempt: attempt + 1, 
           waitMs: wait,
+          isTauri,
           errorPreview: errorMsg.slice(0, 100)
         })
         await sleep(wait)
         continue
       }
-      console.error('[getJson] 请求失败:', { url: url.slice(0, 100), status: res.status, errorMsg: errorMsg.slice(0, 200) })
+      console.error('[getJson] 请求失败:', { url: url.slice(0, 100), status: res.status, errorMsg: errorMsg.slice(0, 200), isTauri })
       throw new Error(errorMsg)
     } catch (err: any) {
       const name = String(err?.name || '')
