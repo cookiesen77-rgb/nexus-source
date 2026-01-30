@@ -805,6 +805,13 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
     const isCompleted = /^(finish|finished|completed|complete|success|done|ready|succeeded)$/i.test(status)
     
     if (isCompleted && !videoUrl) {
+      // 对于 sora-openai 格式，视频 URL 就是 /videos/{id}/content 端点
+      if (modelCfg.format === 'sora-openai') {
+        const contentUrl = `https://nexusapi.cn/v1/videos/${id}/content`
+        console.log('[pollVideoTask] Sora OpenAI 格式：构造视频下载 URL:', contentUrl)
+        return contentUrl
+      }
+      
       // 检查 AigcTask 中的错误码和消息
       const errCode = aigcTask?.ErrCode || aigcTask?.err_code || aigcTask?.error_code
       const errMsg = aigcTask?.Message || aigcTask?.message || aigcTask?.error_message || aigcTask?.error
@@ -818,8 +825,8 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
         'fullResp': JSON.stringify(resp)?.slice(0, 2000)
       })
       
-      // 如果有错误码或 FileInfos 为空，说明生成失败
-      if (errCode || errMsg || (fileInfos && fileInfos.length === 0)) {
+      // 如果有错误码或 FileInfos 为空，说明生成失败（sora-openai 格式除外，它没有 FileInfos）
+      if (modelCfg.format !== 'sora-openai' && (errCode || errMsg || (fileInfos && fileInfos.length === 0))) {
         const errorDetail = errMsg || errCode || '视频生成完成但未返回文件，可能是内容审核未通过或生成失败'
         console.error('[pollVideoTask] 视频生成失败:', errorDetail)
         throw new Error(errorDetail)
