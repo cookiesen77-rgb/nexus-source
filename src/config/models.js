@@ -291,8 +291,9 @@ export const VIDEO_MODELS = [
     {
         label: 'Sora 2 (OpenAI官方格式) ¥0.37/4s',
         key: 'sora-2',
-        endpoint: '/videos',
-        statusEndpoint: '/v1/video/query',
+        // OpenAI 官方视频格式：POST /v1/videos 创建，GET /v1/videos/{id} 查询
+        endpoint: '/v1/videos',
+        statusEndpoint: (id) => `/v1/videos/${id}`,
         authMode: 'bearer',
         format: 'sora-openai',
         maxImages: 1,

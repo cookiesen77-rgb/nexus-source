@@ -1059,26 +1059,30 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       requestType = 'formdata'
       payload = fd
     } else if (modelCfg.format === 'sora-openai') {
-      // Sora OpenAI 官方格式（JSON 格式）
-      // 参考文档: https://help.allapi.store/
-      // 注意：seconds 必须是字符串 '4', '8', '12'
+      // Sora OpenAI 官方格式（multipart/form-data 格式）
+      // 参考文档: https://help.allapi.store/api-412862113
+      // 端点: POST /v1/videos
+      // 查询: GET /v1/videos/{id}
       const sizeValue = d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
       const secondsValue = Number.isFinite(duration) && duration > 0 ? String(duration) : '4'
       
-      payload = {
-        model: modelCfg.key,
-        prompt: prompt,
-        size: sizeValue,
-        seconds: secondsValue
+      const fd = new FormData()
+      fd.append('model', modelCfg.key)
+      fd.append('prompt', prompt || '')
+      fd.append('size', sizeValue)
+      fd.append('seconds', secondsValue)
+      
+      // 如果有图片，需要转换为 Blob 并添加到 FormData
+      const imageInput = firstFrame || refImages[0] || ''
+      if (imageInput) {
+        const blob = await resolveImageToBlob(imageInput)
+        if (blob) {
+          fd.append('input_reference', blob, 'input.png')
+        }
       }
       
-      // 如果有首帧图片，直接使用 URL（不需要图床）
-      const imageInput = firstFrame || refImages[0]
-      if (imageInput && typeof imageInput === 'string' && imageInput.startsWith('http')) {
-        payload.input_reference = imageInput
-      }
-      
-      requestType = 'json'
+      requestType = 'formdata'
+      payload = fd
     } else if (modelCfg.format === 'kling-video') {
       const hasAnyImage = Boolean(firstFrame || lastFrame || refImages.length > 0)
       const modelName = modelCfg.defaultParams?.model_name || 'kling-v2-6'

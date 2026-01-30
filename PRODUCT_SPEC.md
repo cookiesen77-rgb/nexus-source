@@ -222,7 +222,43 @@ const safeFetch = async (url, options) => {
 
 ### 4.3 模型开发规范（重要）
 
-#### 4.3.1 最小改动原则
+#### 4.3.1 Tauri 优先原则
+
+**所有功能开发和修复都必须以 Tauri 桌面端为核心目标：**
+
+1. **Tauri 是主要平台**
+   - 所有新功能必须在 Tauri 环境下完整实现和测试
+   - Web 版是次要支持平台，功能可以降级但不能崩溃
+   - 任何代码修改都必须考虑 Tauri 环境的兼容性
+
+2. **双平台适配（Windows + macOS）**
+   - 所有功能必须同时支持 Windows 和 macOS
+   - 构建必须包含：Windows x64、macOS Intel、macOS Apple Silicon
+   - 文件路径、系统调用等必须使用跨平台兼容的写法
+
+3. **Tauri 特有功能处理**
+   - 网络请求：使用 `@tauri-apps/plugin-http` 绕过 CORS
+   - 文件操作：使用 `@tauri-apps/plugin-fs` + `plugin-dialog`
+   - 缓存存储：使用 `$APPCACHE` 目录
+   - 自动更新：使用 `@tauri-apps/plugin-updater`
+
+4. **环境检测规范**
+   ```typescript
+   import { isTauri } from '@/lib/tauri'
+   
+   if (isTauri()) {
+     // Tauri 专用逻辑
+   } else {
+     // Web 降级逻辑
+   }
+   ```
+
+5. **测试要求**
+   - 本地修改必须在 Tauri 环境下测试通过（`npm run tauri build`）
+   - 重大功能需在 Windows 和 macOS 上分别测试
+   - GitHub Actions 构建必须三平台全部通过
+
+#### 4.3.2 最小改动原则
 
 **增加新模型时，必须遵循最小改动原则：**
 
@@ -246,7 +282,7 @@ const safeFetch = async (url, options) => {
    - 不要修改其他模型的参数构建逻辑
    - 不要在公共工具类中添加模型特定的逻辑
 
-#### 4.3.2 模型配置结构
+#### 4.3.3 模型配置结构
 
 ```javascript
 {
@@ -263,7 +299,7 @@ const safeFetch = async (url, options) => {
 }
 ```
 
-#### 4.3.3 端点配置规则
+#### 4.3.4 端点配置规则
 
 | 端点类型 | 配置方式 | 示例 |
 |---------|---------|------|
@@ -274,12 +310,12 @@ const safeFetch = async (url, options) => {
 
 ### 4.4 API 请求规范
 
-#### 4.3.1 基础 URL
+#### 4.4.1 基础 URL
 
 - **生产环境**: `https://nexusapi.cn/v1`
 - **认证方式**: Bearer Token（API Key）
 
-#### 4.3.2 请求重试策略
+#### 4.4.2 请求重试策略
 
 ```typescript
 // 可重试错误类型
@@ -296,7 +332,7 @@ const getBackoffMs = (attempt) => {
 }
 ```
 
-#### 4.3.3 视频轮询规范
+#### 4.4.3 视频轮询规范
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
