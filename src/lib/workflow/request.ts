@@ -121,8 +121,20 @@ export const resolveEndpointUrl = (endpoint: string) => {
   }
   
   // 生产环境或 Tauri 环境：拼接完整 URL
+  const path = ep.startsWith('/') ? ep : `/${ep}`
+  
+  // 如果路径已经以 /v1/ 开头，使用 origin 而不是完整的 base URL（避免 /v1/v1/...）
+  if (path.startsWith('/v1/')) {
+    try {
+      const origin = new URL(DEFAULT_API_BASE_URL).origin
+      return `${origin}${path}`
+    } catch {
+      // fallback
+    }
+  }
+  
   const base = DEFAULT_API_BASE_URL.replace(/\/$/, '')
-  return `${base}${ep.startsWith('/') ? ep : `/${ep}`}`
+  return `${base}${path}`
 }
 
 export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMode?: AuthMode; timeoutMs?: number }) => {
