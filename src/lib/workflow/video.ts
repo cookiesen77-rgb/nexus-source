@@ -318,7 +318,8 @@ const pickFirstHttpUrlFromText = (text: string) => {
 const normalizeMediaUrl = (raw: any) => {
   const v = typeof raw === 'string' ? raw.trim() : ''
   if (!v) return ''
-  if (v.startsWith('data:') || v.startsWith('blob:') || isHttpUrl(v)) return v
+  // 支持 data:, blob:, http(s):, 以及相对路径 /v1/...
+  if (v.startsWith('data:') || v.startsWith('blob:') || isHttpUrl(v) || v.startsWith('/v1/')) return v
   const picked = pickFirstHttpUrlFromText(v)
   return picked || ''
 }
