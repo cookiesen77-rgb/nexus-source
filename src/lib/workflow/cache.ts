@@ -38,16 +38,23 @@ export const resolveCachedMediaUrl = async (url: string) => {
   
   // Tauri 环境：使用原生缓存
   if (t.isTauri) {
-    if (!/^https?:\/\//i.test(u)) return { displayUrl: u, localPath: '' }
+    // 如果是相对路径，转换为绝对 URL（Tauri 没有 Vite 代理）
+    let absoluteUrl = u
+    if (u.startsWith('/v1/')) {
+      absoluteUrl = `https://nexusapi.cn${u}`
+      console.log('[resolveCachedMediaUrl] Tauri: 相对路径转换为绝对 URL:', absoluteUrl.slice(0, 80))
+    }
+    if (!/^https?:\/\//i.test(absoluteUrl)) return { displayUrl: absoluteUrl, localPath: '' }
+    
     const token = getApiKey()
-    const path = await tauriInvoke<string>('cache_remote_media', { url: u, authToken: token || null })
-    if (!path) return { displayUrl: u, localPath: '' }
+    const path = await tauriInvoke<string>('cache_remote_media', { url: absoluteUrl, authToken: token || null })
+    if (!path) return { displayUrl: '', localPath: '', error: '缓存媒体失败' }
 
     try {
-      const displayUrl = t.convertFileSrc ? t.convertFileSrc(path) : u
+      const displayUrl = t.convertFileSrc ? t.convertFileSrc(path) : absoluteUrl
       return { displayUrl, localPath: path }
     } catch {
-      return { displayUrl: u, localPath: path }
+      return { displayUrl: absoluteUrl, localPath: path }
     }
   }
   

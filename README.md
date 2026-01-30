@@ -9,14 +9,14 @@
 
 ## 📥 下载安装
 
-**最新版本: v0.0.51**
+**最新版本: v0.0.55**
 
 | 平台 | 下载链接 |
 |------|---------|
-| **macOS (Apple Silicon)** | [Nexus_0.0.51_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_aarch64.dmg) |
-| **macOS (Intel)** | [Nexus_0.0.51_x64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_x64.dmg) |
-| **Windows (安装包)** | [Nexus_0.0.51_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_x64-setup.exe) |
-| **Windows (MSI)** | [Nexus_0.0.51_x64-setup.msi](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_x64-setup.msi) |
+| **macOS (Apple Silicon)** | [Nexus_0.0.55_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_aarch64.dmg) |
+| **macOS (Intel)** | [Nexus_0.0.55_x64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_x64.dmg) |
+| **Windows (安装包)** | [Nexus_0.0.55_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_x64-setup.exe) |
+| **Windows (MSI)** | [Nexus_0.0.55_x64-setup.msi](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_x64-setup.msi) |
 
 > 所有版本下载: [Releases](https://github.com/cookiesen77-rgb/nexus-source/releases)
 
@@ -43,6 +43,14 @@
 - 🌓 **深色/浅色主题** - 支持主题切换，保护眼睛
 - 💾 **本地项目存储** - 项目数据本地持久化，支持多项目管理
 - ↩️ **撤销/重做** - 完整的操作历史记录
+
+### v0.0.55 新增
+
+- 修复 Sora 2 OpenAI 官方格式视频生成和下载
+- 修复视频状态查询端点路径问题
+- 优化 Web 环境下需要鉴权的视频下载（自动转换为 blob URL）
+- 优化 Tauri 环境下视频缓存机制
+- 修复全局错误处理，避免不必要的弹窗干扰
 
 ### v0.0.51 新增
 
