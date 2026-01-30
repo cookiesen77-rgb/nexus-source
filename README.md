@@ -9,16 +9,16 @@
 
 ## 📥 下载安装
 
-**最新版本: v0.0.55**
+**最新版本: v0.0.57**
 
 | 平台 | 下载链接 |
 |------|---------|
-| **macOS (Apple Silicon)** | [Nexus_0.0.55_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_aarch64.dmg) |
-| **macOS (Intel)** | [Nexus_0.0.55_x64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_x64.dmg) |
-| **Windows (安装包)** | [Nexus_0.0.55_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_x64-setup.exe) |
-| **Windows (MSI)** | [Nexus_0.0.55_x64-setup.msi](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.55/Nexus_0.0.55_x64-setup.msi) |
+| **macOS (Apple Silicon)** | [Nexus_0.0.57_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_aarch64.dmg) |
+| **macOS (Intel)** | [Nexus_0.0.57_x64.dmg](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_x64.dmg) |
+| **Windows (安装包)** | [Nexus_0.0.57_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_x64-setup.exe) |
+| **Windows (MSI)** | [Nexus_0.0.57_x64_en-US.msi](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_x64_en-US.msi) |
 
-> 所有版本下载: [Releases](https://github.com/cookiesen77-rgb/nexus-source/releases)
+> 所有版本下载: [Releases](https://github.com/cookiesen77-rgb/nexus-releases/releases)
 
 ## 📸 截图
 
