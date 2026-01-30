@@ -43,6 +43,7 @@ interface VideoConfigNodeData {
   ratio?: string
   dur?: number
   size?: string
+  loopCount?: number  // 循环生成次数，默认 1
 }
 
 export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data, selected }: NodeProps) {
@@ -52,6 +53,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
   const [ratio, setRatio] = useState(nodeData?.ratio || '16:9')
   const [duration, setDuration] = useState(nodeData?.dur || 5)
   const [size, setSize] = useState(nodeData?.size || '')
+  const [loopCount, setLoopCount] = useState(nodeData?.loopCount || 1) // 循环次数，默认 1
   const [loading, setLoading] = useState(false)
   
   const updateTimerRef = useRef<number>(0)
@@ -159,7 +161,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
   const handleGenerate = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
     
-    console.log('[VideoConfigNode] handleGenerate 被调用, nodeId:', id, 'model:', model, 'ratio:', ratio, 'duration:', duration, 'size:', size)
+    console.log('[VideoConfigNode] handleGenerate 被调用, nodeId:', id, 'model:', model, 'ratio:', ratio, 'duration:', duration, 'size:', size, 'loopCount:', loopCount)
     
     const status = getConnectionStatus()
     console.log('[VideoConfigNode] 连接状态:', status)
@@ -176,12 +178,25 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     try {
       // 生成前强制同步当前 UI 选择到 store（用于持久化）
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current)
-      useGraphStore.getState().updateNode(id, { data: { model, ratio, dur: duration, size } } as any)
+      useGraphStore.getState().updateNode(id, { data: { model, ratio, dur: duration, size, loopCount } } as any)
       
-      // 直接传递参数到生成函数，彻底避免异步同步问题
-      await generateVideoFromConfigNode(id, { model, ratio, duration, size })
+      // 循环生成（每次都创建新节点）
+      const actualLoopCount = Math.max(1, Math.min(10, loopCount)) // 限制 1-10 次
+      
+      for (let i = 0; i < actualLoopCount; i++) {
+        if (actualLoopCount > 1) {
+          window.$message?.info?.(`正在生成第 ${i + 1}/${actualLoopCount} 个视频...`)
+        }
+        // 直接传递参数到生成函数，彻底避免异步同步问题
+        await generateVideoFromConfigNode(id, { model, ratio, duration, size })
+      }
+      
       console.log('[VideoConfigNode] 视频生成成功')
-      window.$message?.success?.('视频生成成功')
+      if (actualLoopCount > 1) {
+        window.$message?.success?.(`成功生成 ${actualLoopCount} 个视频`)
+      } else {
+        window.$message?.success?.('视频生成成功')
+      }
     } catch (err: any) {
       console.error('[VideoConfigNode] 生成失败:', err)
       console.error('[VideoConfigNode] 错误详情:', {
@@ -203,7 +218,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     } finally {
       setLoading(false)
     }
-  }, [id, model, ratio, duration, size, getConnectionStatus])
+  }, [id, model, ratio, duration, size, loopCount, getConnectionStatus])
 
   // 更新 store 的辅助函数
   const debouncedUpdateStore = useCallback((updates: Record<string, any>) => {
@@ -329,6 +344,25 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
             >
               {durationOptions.map((opt: any) => (
                 <option key={opt.key} value={opt.key}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* 循环次数 */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--text-secondary)]">循环次数</span>
+            <select
+              value={loopCount}
+              onChange={(e) => {
+                const newCount = parseInt(e.target.value, 10)
+                setLoopCount(newCount)
+                debouncedUpdateStore({ loopCount: newCount })
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="nodrag text-sm bg-transparent border border-[var(--border-color)] rounded px-2 py-1 outline-none"
+            >
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                <option key={n} value={n}>{n} 次</option>
               ))}
             </select>
           </div>

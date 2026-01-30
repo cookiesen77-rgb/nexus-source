@@ -6,6 +6,7 @@ import { resolveCachedImageUrl } from '@/lib/workflow/cache'
 import { saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
 import { requestQueue, type QueueTask } from '@/lib/workflow/requestQueue'
 import { useAssetsStore } from '@/store/assets'
+import { useSettingsStore } from '@/store/settings'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
 // 检测是否在 Tauri 环境中
@@ -232,10 +233,49 @@ export const generateImageFromConfigNode = async (configNodeId: string, override
   let imageNodeId = findConnectedOutputImageNode(configNodeId)
   const nodeX = cfg.x
   const nodeY = cfg.y
-
+  
+  // 获取重新生成模式设置
+  const regenerateMode = useSettingsStore.getState().regenerateMode || 'create'
+  
+  // 记录旧的图片数据（用于保存到历史记录）
+  let oldImageData: any = null
+  
   if (imageNodeId) {
-    // 复用已有的空白图片节点
-    store.updateNode(imageNodeId, { data: { loading: true, error: '' } } as any)
+    const existingNode = store.nodes.find(n => n.id === imageNodeId)
+    if (existingNode?.data?.url) {
+      oldImageData = { ...existingNode.data }
+    }
+    
+    if (regenerateMode === 'replace') {
+      // 替代模式：直接更新现有节点
+      store.updateNode(imageNodeId, { data: { loading: true, error: '' } } as any)
+    } else {
+      // 新建模式：如果已有节点有内容，创建新节点
+      if (oldImageData?.url) {
+        // 将旧数据保存到历史记录
+        if (oldImageData.url) {
+          useAssetsStore.getState().addAsset({
+            type: 'image',
+            src: oldImageData.url,
+            title: oldImageData.label || '图片历史',
+            model: modelKey
+          })
+        }
+        // 创建新节点
+        imageNodeId = store.addNode('image', { x: nodeX + 400, y: nodeY + 50 }, {
+          url: '',
+          loading: true,
+          label: '图像生成结果'
+        })
+        store.addEdge(configNodeId, imageNodeId, {
+          sourceHandle: 'right',
+          targetHandle: 'left'
+        })
+      } else {
+        // 复用已有的空白图片节点
+        store.updateNode(imageNodeId, { data: { loading: true, error: '' } } as any)
+      }
+    }
   } else {
     // 创建新的图片节点（带 loading 状态）
     imageNodeId = store.addNode('image', { x: nodeX + 400, y: nodeY }, {

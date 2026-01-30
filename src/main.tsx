@@ -113,10 +113,36 @@ const notifyGlobalError = (message: string) => {
 }
 
 window.addEventListener('unhandledrejection', (event) => {
-  console.error('Unhandled promise rejection:', (event as any)?.reason)
   const reason = (event as any)?.reason
-  reportFrontendLog('error', reason?.message || String(reason || 'Unhandled rejection'), { stack: reason?.stack })
-  notifyGlobalError('请求发生异常（建议稍后重试或刷新页面）')
+  const message = reason?.message || String(reason || '')
+  
+  // 过滤掉不需要打扰用户的错误
+  const ignoredPatterns = [
+    'updater', 'update', 'plugin-updater', 'pubkey',  // 更新检查
+    'aborted', 'abort', 'cancelled', 'cancel',        // 用户取消
+    'network', 'fetch', 'timeout',                    // 网络错误（已有其他提示）
+    'ResizeObserver',                                 // 浏览器内部错误
+    'extensions',                                     // 浏览器扩展
+  ]
+  
+  const lowerMessage = message.toLowerCase()
+  const shouldIgnore = ignoredPatterns.some(p => lowerMessage.includes(p))
+  
+  if (shouldIgnore) {
+    console.warn('[Ignored Error]', message)
+    return
+  }
+  
+  console.error('Unhandled promise rejection:', reason)
+  reportFrontendLog('error', message || 'Unhandled rejection', { stack: reason?.stack })
+  // 不再显示全局 alert，改为使用 toast 消息（如果可用）
+  try {
+    if (window.$message?.error) {
+      window.$message.error(message || '请求异常')
+    }
+  } catch {
+    // ignore
+  }
 })
 
 window.addEventListener('error', (event) => {

@@ -9,14 +9,14 @@
 
 ## 📥 下载安装
 
-**最新版本: v0.0.50**
+**最新版本: v0.0.51**
 
 | 平台 | 下载链接 |
 |------|---------|
-| **macOS (Apple Silicon)** | [Nexus_0.0.50_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_aarch64.dmg) |
-| **macOS (Intel)** | [Nexus_0.0.50_x64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_x64.dmg) |
-| **Windows (安装包)** | [Nexus_0.0.50_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_x64-setup.exe) |
-| **Windows (MSI)** | [Nexus_0.0.50_x64-setup.msi](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.50/Nexus_0.0.50_x64-setup.msi) |
+| **macOS (Apple Silicon)** | [Nexus_0.0.51_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_aarch64.dmg) |
+| **macOS (Intel)** | [Nexus_0.0.51_x64.dmg](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_x64.dmg) |
+| **Windows (安装包)** | [Nexus_0.0.51_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_x64-setup.exe) |
+| **Windows (MSI)** | [Nexus_0.0.51_x64-setup.msi](https://github.com/cookiesen77-rgb/nexus-source/releases/download/v0.0.51/Nexus_0.0.51_x64-setup.msi) |
 
 > 所有版本下载: [Releases](https://github.com/cookiesen77-rgb/nexus-source/releases)
 
@@ -33,13 +33,25 @@
 
 ## ✨ 特性
 
-- 🎨 **可视化节点编排** - 基于 Vue Flow 的无限画布，支持拖拽、缩放、连接
+- 🎨 **可视化节点编排** - 基于 React Flow 的无限画布，支持拖拽、缩放、连接
 - 🖼️ **文生图工作流** - 支持配置提示词、模型、尺寸等参数生成图片
 - 🎬 **视频生成工作流** - 支持图生视频，可设置首帧/尾帧图片
 - 🤖 **AI 提示词润色** - 一键 AI 优化提示词，提升生成质量
+- 🔄 **循环生成** - 支持批量循环生成图片/视频（1-10 次）
+- 🔁 **重新生成模式** - 可选择新建节点或替换原节点（原内容自动保存到历史）
+- 🧠 **AI 助手模型选择** - 支持切换不同的 AI 模型用于文本润色
 - 🌓 **深色/浅色主题** - 支持主题切换，保护眼睛
 - 💾 **本地项目存储** - 项目数据本地持久化，支持多项目管理
 - ↩️ **撤销/重做** - 完整的操作历史记录
+
+### v0.0.51 新增
+
+- 新增 Sora 2 OpenAI 官方格式视频模型
+- 新增循环生成功能（图片/视频配置节点）
+- 新增 AI 助手模型全局设置
+- 新增重新生成模式设置（替换/新建）
+- 优化全局错误处理，减少不必要的弹窗
+- 修复多个视频生成相关问题
 
 ## 📦 节点类型
 

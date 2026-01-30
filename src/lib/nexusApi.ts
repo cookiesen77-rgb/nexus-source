@@ -524,3 +524,203 @@ ${thinkingResult}
     messages: finalMessages
   }, { maxRetries: 2, signal })
 }
+
+// ==================== AI 助手模型调用 ====================
+
+/**
+ * 过滤思考内容（如 <think>...</think> 或 ```thinking...```）
+ */
+export function filterThinkingContent(text: string): string {
+  if (!text) return ''
+  
+  // 过滤 <think>...</think> 标签
+  let result = text.replace(/<think>[\s\S]*?<\/think>/gi, '')
+  
+  // 过滤 <thinking>...</thinking> 标签
+  result = result.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+  
+  // 过滤 ```thinking...``` 代码块
+  result = result.replace(/```thinking[\s\S]*?```/gi, '')
+  
+  // 过滤以 "思考过程：" 或 "思考：" 开头的段落
+  result = result.replace(/^(思考过程|思考|Thinking|思维链)[:：][\s\S]*?(\n\n|\n(?=[^思\n]))/gim, '')
+  
+  // 清理多余的空行
+  result = result.replace(/\n{3,}/g, '\n\n').trim()
+  
+  return result
+}
+
+/**
+ * 调用 AI 助手模型（支持多种模型类型）
+ * @param modelKey 模型标识符
+ * @param messages 消息列表
+ * @param options 可选参数
+ */
+export async function callAiAssistant(
+  modelKey: string,
+  messages: ChatMessage[],
+  options: { signal?: AbortSignal; filterThinking?: boolean } = {}
+): Promise<string> {
+  const { signal, filterThinking = true } = options
+  const apiKey = getApiKey()
+  
+  if (!apiKey) {
+    throw new Error('未配置 API Key')
+  }
+
+  // 所有模型都通过代理统一使用 OpenAI 兼容格式
+  const endpoint = resolveEndpointUrl('/chat/completions')
+  
+  const fetchOptions: RequestInit = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: modelKey,
+      messages,
+      stream: false
+    })
+  }
+  
+  if (!isTauri && signal) {
+    fetchOptions.signal = signal
+  }
+
+  const response = await safeFetch(endpoint, fetchOptions)
+  
+  if (!response.ok) {
+    let errorText = ''
+    try {
+      errorText = await response.text()
+    } catch {
+      errorText = ''
+    }
+    let errorJson: any = null
+    if (errorText) {
+      try {
+        errorJson = JSON.parse(errorText)
+      } catch {
+        errorJson = null
+      }
+    }
+    const message = errorJson?.error?.message || errorJson?.message || errorText || `Request failed (${response.status})`
+    throw new Error(message)
+  }
+
+  const data = await response.json()
+  let content = data?.choices?.[0]?.message?.content || ''
+  
+  // 过滤思考内容
+  if (filterThinking && content) {
+    content = filterThinkingContent(content)
+  }
+  
+  return content
+}
+
+/**
+ * 流式调用 AI 助手模型
+ */
+export async function* streamAiAssistant(
+  modelKey: string,
+  messages: ChatMessage[],
+  options: { signal?: AbortSignal; filterThinking?: boolean } = {}
+): AsyncGenerator<string> {
+  const { signal, filterThinking = true } = options
+  const apiKey = getApiKey()
+  
+  if (!apiKey) {
+    throw new Error('未配置 API Key')
+  }
+
+  const endpoint = resolveEndpointUrl('/chat/completions')
+  
+  const fetchOptions: RequestInit = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: modelKey,
+      messages,
+      stream: true
+    })
+  }
+  
+  if (!isTauri && signal) {
+    fetchOptions.signal = signal
+  }
+
+  const response = await safeFetch(endpoint, fetchOptions)
+  
+  if (!response.ok) {
+    let errorText = ''
+    try {
+      errorText = await response.text()
+    } catch {
+      errorText = ''
+    }
+    throw new Error(errorText || `Request failed (${response.status})`)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) return
+  
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let fullContent = ''
+  let inThinkingBlock = false
+  
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed || !trimmed.startsWith('data:')) continue
+      const payload = trimmed.slice(5).trim()
+      if (payload === '[DONE]') {
+        // 流结束，如果需要过滤，对完整内容进行处理
+        if (filterThinking && fullContent) {
+          const filtered = filterThinkingContent(fullContent)
+          // 如果过滤后内容不同，说明有思考内容被过滤
+          // 这里我们已经实时过滤了，所以不需要额外处理
+        }
+        return
+      }
+
+      try {
+        const parsed = JSON.parse(payload)
+        const content = parsed.choices?.[0]?.delta?.content
+        if (content) {
+          // 实时检测并过滤思考标签
+          if (filterThinking) {
+            // 检测思考块的开始和结束
+            if (content.includes('<think>') || content.includes('<thinking>')) {
+              inThinkingBlock = true
+            }
+            if (content.includes('</think>') || content.includes('</thinking>')) {
+              inThinkingBlock = false
+              continue // 跳过结束标签
+            }
+            if (inThinkingBlock) {
+              continue // 跳过思考内容
+            }
+          }
+          fullContent += content
+          yield content
+        }
+      } catch {
+        // ignore invalid json
+      }
+    }
+  }
+}

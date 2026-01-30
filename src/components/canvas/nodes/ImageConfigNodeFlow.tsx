@@ -50,6 +50,7 @@ interface ImageConfigNodeData {
   size?: string
   quality?: string
   autoExecute?: boolean
+  loopCount?: number  // 循环生成次数，默认 1
 }
 
 export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data, selected }: NodeProps) {
@@ -60,6 +61,7 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
   
   const [size, setSize] = useState(nodeData?.size || '3:4') // 默认 3:4 竖版
   const [quality, setQuality] = useState(nodeData?.quality || '')
+  const [loopCount, setLoopCount] = useState(nodeData?.loopCount || 1) // 循环次数，默认 1
   const [loading, setLoading] = useState(false)
   const autoExecuteTriggered = useRef(false)
   
@@ -117,7 +119,7 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
   const handleGenerate = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation()
     
-    console.log('[ImageConfigNode] handleGenerate 被调用, nodeId:', id, 'model:', model, 'size:', size, 'quality:', quality)
+    console.log('[ImageConfigNode] handleGenerate 被调用, nodeId:', id, 'model:', model, 'size:', size, 'quality:', quality, 'loopCount:', loopCount)
     
     const status = getConnectionStatus()
     if (status.prompts === 0 && status.images === 0) {
@@ -130,18 +132,31 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
     try {
       // 生成前强制同步当前 UI 选择到 store（用于持久化）
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current)
-      useGraphStore.getState().updateNode(id, { data: { model, size, quality } })
+      useGraphStore.getState().updateNode(id, { data: { model, size, quality, loopCount } })
       
-      // 直接传递参数到生成函数，彻底避免异步同步问题
-      await generateImageFromConfigNode(id, { model, size, quality })
-      window.$message?.success?.('图片生成成功')
+      // 循环生成（每次都创建新节点）
+      const actualLoopCount = Math.max(1, Math.min(10, loopCount)) // 限制 1-10 次
+      
+      for (let i = 0; i < actualLoopCount; i++) {
+        if (actualLoopCount > 1) {
+          window.$message?.info?.(`正在生成第 ${i + 1}/${actualLoopCount} 张图片...`)
+        }
+        // 直接传递参数到生成函数，彻底避免异步同步问题
+        await generateImageFromConfigNode(id, { model, size, quality })
+      }
+      
+      if (actualLoopCount > 1) {
+        window.$message?.success?.(`成功生成 ${actualLoopCount} 张图片`)
+      } else {
+        window.$message?.success?.('图片生成成功')
+      }
     } catch (err: any) {
       window.$message?.error?.(err?.message || '图片生成失败')
       console.error('[ImageConfigNode] 生成失败:', err)
     } finally {
       setLoading(false)
     }
-  }, [id, model, size, quality, getConnectionStatus])
+  }, [id, model, size, quality, loopCount, getConnectionStatus])
 
   // 更新 store 的辅助函数
   const debouncedUpdateStore = useCallback((updates: Record<string, any>) => {
@@ -274,6 +289,25 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
             >
               {sizeOptions.map((opt: any) => (
                 <option key={opt.key} value={opt.key}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* 循环次数 */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[var(--text-secondary)]">循环次数</span>
+            <select
+              value={loopCount}
+              onChange={(e) => {
+                const newCount = parseInt(e.target.value, 10)
+                setLoopCount(newCount)
+                debouncedUpdateStore({ loopCount: newCount })
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="nodrag text-sm bg-transparent border border-[var(--border-color)] rounded px-2 py-1 outline-none"
+            >
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                <option key={n} value={n}>{n} 次</option>
               ))}
             </select>
           </div>

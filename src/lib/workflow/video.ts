@@ -5,6 +5,8 @@ import { getJson, postFormData, postJson } from '@/lib/workflow/request'
 import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
 import { getMedia, getMediaByNodeId, saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
 import { requestQueue, type QueueTask } from '@/lib/workflow/requestQueue'
+import { useSettingsStore } from '@/store/settings'
+import { useAssetsStore } from '@/store/assets'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
 // 检测是否在 Tauri 环境中
@@ -733,11 +735,12 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
     const output = aigcOutput || response?.Output || response?.output || resp?.output || resp?.data?.output || resp?.data || resp
     
     // 状态优先从 Response.Status 或 AigcTask.Status 获取
+    // OpenAI Sora 格式可能使用 state 字段
     const status = String(
-      response?.Status || response?.status ||
+      response?.Status || response?.status || response?.state ||
       aigcTask?.Status || aigcTask?.status ||
-      output?.TaskStatus || output?.task_status || output?.status || 
-      resp?.status || resp?.data?.status || ''
+      output?.TaskStatus || output?.task_status || output?.status || output?.state ||
+      resp?.status || resp?.state || resp?.data?.status || resp?.data?.state || ''
     ).toLowerCase()
     const elapsed = Math.round((i + 1) * interval / 1000)
     lastSuccessStatus = status
@@ -764,7 +767,14 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
       }
     }
     
-    const videoUrl = videoUrlFromFileInfos ||
+    // OpenAI Sora 格式支持：output.video, downloads[0].url 等
+    const outputVideo = output?.video || resp?.output?.video || resp?.data?.output?.video
+    const downloads = resp?.downloads || resp?.data?.downloads || output?.downloads
+    const downloadUrl = Array.isArray(downloads) && downloads.length > 0 
+      ? (downloads[0]?.url || downloads[0]?.video_url || downloads[0]) 
+      : null
+    
+    const videoUrl = videoUrlFromFileInfos || outputVideo || downloadUrl ||
                      aigcOutput?.VideoUrl || aigcOutput?.video_url ||
                      output?.VideoUrl || output?.video_url || output?.ResultUrl || output?.result_url || 
                      response?.VideoUrl || response?.video_url ||
@@ -774,11 +784,8 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
       status,
       hasVideoUrl: !!videoUrl,
       videoUrlPreview: videoUrl?.slice?.(0, 80),
-      responseKeys: Object.keys(response || {}),
-      aigcTaskKeys: Object.keys(aigcTask || {}),
-      aigcOutputKeys: Object.keys(aigcOutput || {}),
-      fileInfosCount: fileInfos?.length || 0,
-      firstFileInfo: fileInfos?.[0] ? Object.keys(fileInfos[0]) : []
+      outputVideo: outputVideo?.slice?.(0, 80),
+      downloadUrl: typeof downloadUrl === 'string' ? downloadUrl?.slice?.(0, 80) : null
     })
 
     // 如果直接有视频 URL，返回
@@ -793,8 +800,11 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
       return direct
     }
 
-    // 如果状态是 finish/completed/success 但没有视频 URL，检查错误信息
-    if (/^(finish|finished|completed|complete|success|done)$/i.test(status) && !videoUrl) {
+    // 如果状态是 finish/completed/success 但没有视频 URL
+    // 也支持 ready 状态（某些 API 使用 ready 表示完成）
+    const isCompleted = /^(finish|finished|completed|complete|success|done|ready|succeeded)$/i.test(status)
+    
+    if (isCompleted && !videoUrl) {
       // 检查 AigcTask 中的错误码和消息
       const errCode = aigcTask?.ErrCode || aigcTask?.err_code || aigcTask?.error_code
       const errMsg = aigcTask?.Message || aigcTask?.message || aigcTask?.error_message || aigcTask?.error
@@ -902,9 +912,50 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
   let videoNodeId = findConnectedOutputVideoNode(configNodeId)
   const nodeX = cfg.x
   const nodeY = cfg.y
+  
+  // 获取重新生成模式设置
+  const regenerateMode = useSettingsStore.getState().regenerateMode || 'create'
+  
+  // 记录旧的视频数据（用于保存到历史记录）
+  let oldVideoData: any = null
 
   if (videoNodeId) {
-    store.updateNode(videoNodeId, { data: { loading: true, error: '' } } as any)
+    const existingNode = store.nodes.find(n => n.id === videoNodeId)
+    if (existingNode?.data?.url) {
+      oldVideoData = { ...existingNode.data }
+    }
+    
+    if (regenerateMode === 'replace') {
+      // 替代模式：直接更新现有节点
+      store.updateNode(videoNodeId, { data: { loading: true, error: '' } } as any)
+    } else {
+      // 新建模式：如果已有节点有内容，创建新节点
+      if (oldVideoData?.url) {
+        // 将旧数据保存到历史记录
+        if (oldVideoData.url) {
+          useAssetsStore.getState().addAsset({
+            type: 'video',
+            src: oldVideoData.url,
+            title: oldVideoData.label || '视频历史',
+            model: modelKey,
+            duration: oldVideoData.duration
+          })
+        }
+        // 创建新节点
+        videoNodeId = store.addNode('video', { x: nodeX + 460, y: nodeY + 50 }, {
+          url: '',
+          loading: true,
+          label: '视频生成结果'
+        })
+        store.addEdge(configNodeId, videoNodeId, {
+          sourceHandle: 'right',
+          targetHandle: 'left'
+        })
+      } else {
+        // 复用已有的空白视频节点
+        store.updateNode(videoNodeId, { data: { loading: true, error: '' } } as any)
+      }
+    }
   } else {
     videoNodeId = store.addNode('video', { x: nodeX + 460, y: nodeY }, {
       url: '',
@@ -984,7 +1035,8 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       fd.append('model', modelCfg.key)
       fd.append('prompt', prompt)
       if (Number.isFinite(duration) && duration > 0) fd.append('seconds', String(duration))
-      const sizeValue = ratio === '9:16' ? '720x1280' : '1280x720'
+      // 优先使用配置中的 size，否则根据 ratio 自动选择
+      const sizeValue = d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
       fd.append('size', sizeValue)
       const watermark = modelCfg.defaultParams?.watermark
       if (typeof watermark === 'boolean') fd.append('watermark', watermark ? 'true' : 'false')
@@ -992,6 +1044,27 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
 
       requestType = 'formdata'
       payload = fd
+    } else if (modelCfg.format === 'sora-openai') {
+      // Sora OpenAI 官方格式（JSON 格式）
+      // 参考文档: https://help.allapi.store/
+      // 注意：seconds 必须是字符串 '4', '8', '12'
+      const sizeValue = d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
+      const secondsValue = Number.isFinite(duration) && duration > 0 ? String(duration) : '4'
+      
+      payload = {
+        model: modelCfg.key,
+        prompt: prompt,
+        size: sizeValue,
+        seconds: secondsValue
+      }
+      
+      // 如果有首帧图片，直接使用 URL（不需要图床）
+      const imageInput = firstFrame || refImages[0]
+      if (imageInput && typeof imageInput === 'string' && imageInput.startsWith('http')) {
+        payload.input_reference = imageInput
+      }
+      
+      requestType = 'json'
     } else if (modelCfg.format === 'kling-video') {
       const hasAnyImage = Boolean(firstFrame || lastFrame || refImages.length > 0)
       const modelName = modelCfg.defaultParams?.model_name || 'kling-v2-6'

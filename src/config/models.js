@@ -16,7 +16,6 @@ const MODEL_ALIASES = {
     // Videos
     'veo3.1-fast': 'veo3.1-4k',
     'veo3.1-pro': 'veo3.1-pro-4k',
-    'sora-2': 'sora-2-all',
     'sora-2-pro': 'sora-2-all',
     // Tencent AIGC Video 兼容旧 key
     'aigc-video-vidu': 'vidu-q2-pro',
@@ -288,6 +287,26 @@ export const VIDEO_MODELS = [
         ratios: ['16:9', '9:16'],
         durs: [{ label: '10 秒', key: 10 }, { label: '15 秒', key: 15 }, { label: '25 秒', key: 25 }],
         defaultParams: { ratio: '9:16', duration: 15, size: 'large', watermark: false, private: false }
+    },
+    {
+        label: 'Sora 2 (OpenAI官方格式) ¥0.37/4s',
+        key: 'sora-2',
+        endpoint: '/videos',
+        statusEndpoint: '/video/query',
+        authMode: 'bearer',
+        format: 'sora-openai',
+        maxImages: 1,
+        sizes: [
+            { label: '720x1280 (竖版)', key: '720x1280' },
+            { label: '1280x720 (横版)', key: '1280x720' }
+        ],
+        ratios: ['16:9', '9:16'],
+        durs: [
+            { label: '4 秒 ¥0.37', key: 4 },
+            { label: '8 秒 ¥0.73', key: 8 },
+            { label: '12 秒 ¥1.10', key: 12 }
+        ],
+        defaultParams: { ratio: '9:16', duration: 4, size: '720x1280' }
     },
     // ========== Vidu 系列 (按秒计费) ==========
     {

@@ -11,8 +11,9 @@ import React, { memo, useState, useCallback, useRef } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Copy, Trash2, ImageIcon, Video, Expand, Loader2 } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
+import { useSettingsStore } from '@/store/settings'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
-import { chatCompletions } from '@/lib/nexusApi'
+import { callAiAssistant } from '@/lib/nexusApi'
 import { 
   inferPolishModeFromText, 
   inferPolishModeFromGraph,
@@ -170,6 +171,9 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
       const store = useGraphStore.getState()
       const { nodes, edges } = store
       
+      // 获取全局 AI 助手模型设置
+      const aiModel = useSettingsStore.getState().aiAssistantModel || 'gpt-5-mini'
+      
       // 1. 推断润色模式
       const modeFromGraph = inferPolishModeFromGraph(id, nodes, edges)
       const mode = modeFromGraph || inferPolishModeFromText(text)
@@ -193,18 +197,16 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
       })
       const systemPrompt = buildPolishSystemPrompt(mode)
       
-      // 5. 调用 AI API
-      const result = await chatCompletions({
-        model: 'gpt-5-mini',
-        messages: [
+      // 5. 调用 AI API（使用全局设置的模型）
+      const polished = await callAiAssistant(
+        aiModel,
+        [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage }
         ],
-        temperature: 0.7,
-        max_tokens: 2000
-      })
+        { filterThinking: true }
+      )
       
-      const polished = result?.choices?.[0]?.message?.content?.trim()
       if (polished) {
         contentRef.current = polished
         setDisplayContent(polished)
@@ -274,24 +276,21 @@ export const TextNodeComponent = memo(function TextNode({ id, data, selected }: 
             placeholder="请输入文本内容..."
             style={{ minHeight: Math.max(60, nodeHeight - 100) }}
           />
-          <button
-            onClick={handlePolish}
-            disabled={!displayContent.trim() || polishing}
-            className="mt-2 px-3 py-1.5 text-xs rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent-color)] hover:text-white border border-[var(--border-color)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-          >
-            {polishing ? (
-              <>
-                <Loader2 size={12} className="animate-spin" />
-                润色中...
-              </>
-            ) : (
-              <>
-                <span>✨</span>
-                AI 润色
-              </>
-            )}
-          </button>
         </div>
+
+        {/* 左下角 AI 润色按钮 */}
+        <button
+          onClick={handlePolish}
+          disabled={!displayContent.trim() || polishing}
+          className="absolute bottom-2 left-2 px-2 py-1 text-xs rounded-md bg-[var(--bg-tertiary)] hover:bg-[var(--accent-color)] hover:text-white border border-[var(--border-color)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+          title="AI 润色"
+        >
+          {polishing ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <span className="text-xs">✨ AI 润色</span>
+          )}
+        </button>
 
         {/* 右下角调整大小手柄 */}
         <div

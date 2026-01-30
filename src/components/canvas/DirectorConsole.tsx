@@ -7,8 +7,10 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { streamChatCompletions, chatCompletions } from '@/api'
+import { streamAiAssistant } from '@/lib/nexusApi'
 import { generateImage } from '@/api/image'
 import { postJson } from '@/lib/workflow/request'
+import { useSettingsStore } from '@/store/settings'
 import {
   X,
   Sparkles,
@@ -66,7 +68,6 @@ interface Props {
 }
 
 const HISTORY_KEY = 'nexus-director-history'
-const DEFAULT_CHAT_MODEL = 'gpt-5-mini'
 
 // 使用配置的图片模型列表
 const imageModelOptions = (IMAGE_MODELS as any[]).map((m: any) => ({
@@ -217,6 +218,9 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
     setPolishedPrompt('')
 
     try {
+      // 获取全局 AI 助手模型设置
+      const aiModel = useSettingsStore.getState().aiAssistantModel || 'gpt-5-mini'
+      
       // 构建消息
       const messages: any[] = [
         { role: 'system', content: currentPreset.systemPrompt || POLISH_SYSTEM_PROMPT }
@@ -255,12 +259,9 @@ Output ONLY the polished prompt. No explanations.`
 
       messages.push({ role: 'user', content: userContent })
 
-      // 调用 AI
+      // 调用 AI（使用全局设置的模型）
       let response = ''
-      for await (const chunk of streamChatCompletions({
-        model: DEFAULT_CHAT_MODEL,
-        messages
-      })) {
+      for await (const chunk of streamAiAssistant(aiModel, messages, { filterThinking: true })) {
         response += chunk
         setPolishedPrompt(response)
       }
@@ -398,6 +399,9 @@ Output ONLY the polished prompt. No explanations.`
     let finalPrompt = ''
 
     try {
+      // 获取全局 AI 助手模型设置
+      const aiModel = useSettingsStore.getState().aiAssistantModel || 'gpt-5-mini'
+      
       // 构建消息
       const messages: any[] = [
         { role: 'system', content: currentPreset.systemPrompt || POLISH_SYSTEM_PROMPT }
@@ -436,11 +440,8 @@ Output ONLY the polished prompt. No explanations.`
 
       messages.push({ role: 'user', content: userContent })
 
-      // 调用 AI 润色
-      for await (const chunk of streamChatCompletions({
-        model: DEFAULT_CHAT_MODEL,
-        messages
-      })) {
+      // 调用 AI 润色（使用全局设置的模型）
+      for await (const chunk of streamAiAssistant(aiModel, messages, { filterThinking: true })) {
         finalPrompt += chunk
         setPolishedPrompt(finalPrompt)
       }

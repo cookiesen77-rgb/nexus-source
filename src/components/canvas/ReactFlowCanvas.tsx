@@ -893,13 +893,24 @@ function ReactFlowCanvasInner({ onContextMenu, onConnectEnd, onFileDrop }: React
   // 处理文件拖放
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     e.dataTransfer.dropEffect = 'copy'
+    console.log('[ReactFlowCanvas] dragOver 事件触发')
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    console.log('[ReactFlowCanvas] drop 事件触发', {
+      files: e.dataTransfer?.files?.length,
+      types: e.dataTransfer?.types
+    })
+    
     const files = Array.from(e.dataTransfer?.files || []).filter((f) => /^(image|audio|video)\//i.test(f.type))
+    console.log('[ReactFlowCanvas] 过滤后的媒体文件数:', files.length)
+    
     if (files.length > 0 && onFileDrop) {
-      e.preventDefault()
+      console.log('[ReactFlowCanvas] 调用 onFileDrop')
       onFileDrop(files, { x: e.clientX, y: e.clientY })
       return
     }
@@ -932,6 +943,11 @@ function ReactFlowCanvasInner({ onContextMenu, onConnectEnd, onFileDrop }: React
       className="w-full h-full"
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      onDragEnter={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        console.log('[ReactFlowCanvas] dragEnter')
+      }}
     >
       <ReactFlow
         nodes={nodes}

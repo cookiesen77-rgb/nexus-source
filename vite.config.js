@@ -2,6 +2,20 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react-swc'
 import path from 'path'
 import https from 'node:https'
+import fs from 'node:fs'
+
+// 读取版本号（优先从 tauri.conf.json，降级到 package.json）
+function getAppVersion() {
+  try {
+    const tauriConfig = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'src-tauri/tauri.conf.json'), 'utf-8'))
+    if (tauriConfig.version) return tauriConfig.version
+  } catch {}
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
+    if (pkg.version) return pkg.version
+  } catch {}
+  return '0.0.0'
+}
 
 // 统一 keep-alive 代理，减少频繁 TLS 握手导致的偶发断连
 const httpsAgent = new https.Agent({
@@ -13,10 +27,14 @@ const httpsAgent = new https.Agent({
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const isDesktop = mode === 'electron' || mode === 'tauri'
+  const appVersion = getAppVersion()
 
   return {
     base: isDesktop ? './' : '/nexus/',
     plugins: [react()],
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'src')

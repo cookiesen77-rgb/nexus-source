@@ -39,10 +39,25 @@ export default function UpdateChecker() {
     console.log('[UpdateChecker] 开始检查更新...')
     console.log('[UpdateChecker] 当前版本:', __APP_VERSION__)
     
+    // 添加 10 秒超时机制
+    let timeoutTriggered = false
+    const timeoutId = setTimeout(() => {
+      timeoutTriggered = true
+      console.warn('[UpdateChecker] 更新检查超时 (10秒)')
+      setStatus('idle')  // 超时后静默返回 idle
+    }, 10000)
+    
     try {
       const { check } = await import('@tauri-apps/plugin-updater')
       console.log('[UpdateChecker] 调用 check()...')
       const update = await check()
+      
+      // 如果已超时，忽略结果
+      if (timeoutTriggered) {
+        console.log('[UpdateChecker] 已超时，忽略检查结果')
+        return
+      }
+      clearTimeout(timeoutId)
       
       console.log('[UpdateChecker] 检查结果:', update ? {
         version: update.version,
@@ -66,14 +81,17 @@ export default function UpdateChecker() {
         setTimeout(() => setStatus('idle'), 3000)
       }
     } catch (err: any) {
+      clearTimeout(timeoutId)
+      if (timeoutTriggered) return
+      
       console.error('[UpdateChecker] 检查更新失败:', err)
       console.error('[UpdateChecker] 错误详情:', {
         message: err?.message,
         name: err?.name,
         stack: err?.stack?.slice(0, 500)
       })
-      setError(err?.message || '检查更新失败')
-      setStatus('error')
+      // 静默处理错误，不影响用户体验
+      setStatus('idle')  // 改为 idle 而非 error，避免打扰用户
     }
   }, [])
 
