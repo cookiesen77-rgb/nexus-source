@@ -123,8 +123,11 @@ export const resolveEndpointUrl = (endpoint: string) => {
   // 生产环境或 Tauri 环境：拼接完整 URL
   const path = ep.startsWith('/') ? ep : `/${ep}`
   
-  // 如果路径已经以 /v1/ 开头，使用 origin 而不是完整的 base URL（避免 /v1/v1/...）
-  if (path.startsWith('/v1/')) {
+  // 不需要添加 /v1 的路径前缀（与 Web 环境保持一致）
+  // 这些路径直接使用 origin，不使用包含 /v1 的 base URL
+  const noV1Prefixes = ['/tencent-vod', '/kling', '/v1beta', '/v1/', '/video/']
+  
+  if (noV1Prefixes.some(p => path.startsWith(p))) {
     try {
       const origin = new URL(DEFAULT_API_BASE_URL).origin
       return `${origin}${path}`

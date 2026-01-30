@@ -2,7 +2,31 @@
  * Video API | 视频生成 API
  */
 
-import { request } from '@/utils'
+import { request, DEFAULT_API_BASE_URL } from '@/utils'
+
+// 不需要 /v1 前缀的路径
+const noV1Prefixes = ['/tencent-vod', '/kling', '/v1beta', '/v1/', '/video/']
+
+// 构建完整 URL（处理特殊前缀）
+const buildUrl = (endpoint) => {
+  if (!endpoint) return ''
+  if (/^https?:\/\//i.test(endpoint)) return endpoint
+  
+  const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
+  
+  // 如果路径以特殊前缀开头，使用 origin 而不是带 /v1 的 base
+  if (noV1Prefixes.some(p => path.startsWith(p))) {
+    try {
+      const origin = new URL(DEFAULT_API_BASE_URL).origin
+      return `${origin}${path}`
+    } catch {
+      // fallback
+    }
+  }
+  
+  // 其他路径使用默认 base URL
+  return endpoint
+}
 
 // 创建视频任务
 export const createVideoTask = (data, options = {}) => {
@@ -13,8 +37,10 @@ export const createVideoTask = (data, options = {}) => {
     ? { 'Content-Type': 'multipart/form-data' }
     : {}
 
+  const url = buildUrl(endpoint)
+
   return request({
-    url: endpoint,
+    url,
     method: 'post',
     data,
     authMode,
@@ -25,9 +51,10 @@ export const createVideoTask = (data, options = {}) => {
 // 查询视频任务状态
 export const getVideoTaskStatus = (taskId, options = {}) => {
   const { statusEndpoint, authMode, params } = options
-  const url = statusEndpoint
+  const rawUrl = statusEndpoint
     ? (typeof statusEndpoint === 'function' ? statusEndpoint(taskId) : statusEndpoint)
     : `/videos/${taskId}`
+  const url = buildUrl(rawUrl)
   const query = { ...(params || {}) }
   if (statusEndpoint && typeof statusEndpoint === 'string' && query.id === undefined) {
     query.id = taskId

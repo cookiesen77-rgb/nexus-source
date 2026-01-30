@@ -273,9 +273,23 @@ const IMAGE_REQUEST_TIMEOUT = 120000
 const buildApiUrl = (endpoint) => {
   if (!endpoint) return ''
   if (/^https?:\/\//i.test(endpoint)) return endpoint
+  
+  const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
+  
+  // 不需要添加 /v1 的路径前缀
+  const noV1Prefixes = ['/tencent-vod', '/kling', '/v1beta', '/v1/', '/video/']
+  if (noV1Prefixes.some(p => path.startsWith(p))) {
+    try {
+      const origin = new URL(DEFAULT_API_BASE_URL).origin
+      return `${origin}${path}`
+    } catch {
+      // fallback
+    }
+  }
+  
   const base = (DEFAULT_API_BASE_URL || '').replace(/\/$/, '')
   if (!base) return endpoint
-  return endpoint.startsWith('/') ? `${base}${endpoint}` : `${base}/${endpoint}`
+  return `${base}${path}`
 }
 
 const fetchJson = async (url, { authMode } = {}) => {
