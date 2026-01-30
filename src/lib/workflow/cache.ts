@@ -4,9 +4,7 @@
  * 根据运行环境自动选择最优缓存实现：
  * - Tauri 环境：使用 Rust 后端进行文件系统缓存
  * - Web 环境：使用 IndexedDB 进行本地缓存
- */
-
-import { getTauri, tauriInvoke } from '@/lib/tauri'
+ */import { getTauri, tauriInvoke } from '@/lib/tauri'
 import { LocalCacheManager, type CacheEntry } from '@/lib/indexedDB'
 
 // 缓存结果类型

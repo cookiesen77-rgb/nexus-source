@@ -544,6 +544,84 @@ const resolveImageToBlob = async (input: string): Promise<Blob | null> => {
 }
 
 /**
+ * 将图片调整为指定尺寸（用于 Sora OpenAI 格式）
+ * Sora API 要求图片尺寸必须与请求的 size 参数完全匹配
+ * @param blob 原始图片 Blob
+ * @param targetSize 目标尺寸，格式为 "WIDTHxHEIGHT"（如 "720x1280"）
+ * @returns 调整后的 Blob
+ */
+const resizeImageBlob = async (blob: Blob, targetSize: string): Promise<Blob> => {
+  // 解析目标尺寸
+  const match = targetSize.match(/^(\d+)x(\d+)$/)
+  if (!match) {
+    console.warn('[resizeImageBlob] 无效的尺寸格式:', targetSize)
+    return blob
+  }
+  const targetWidth = parseInt(match[1], 10)
+  const targetHeight = parseInt(match[2], 10)
+  
+  return new Promise((resolve) => {
+    const img = new Image()
+    const url = URL.createObjectURL(blob)
+    
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      
+      // 创建 canvas 并绘制调整后的图片
+      const canvas = document.createElement('canvas')
+      canvas.width = targetWidth
+      canvas.height = targetHeight
+      const ctx = canvas.getContext('2d')
+      
+      if (!ctx) {
+        console.warn('[resizeImageBlob] 无法获取 canvas context')
+        resolve(blob)
+        return
+      }
+      
+      // 计算裁剪/填充参数以保持宽高比并居中
+      const srcRatio = img.width / img.height
+      const dstRatio = targetWidth / targetHeight
+      
+      let sx = 0, sy = 0, sw = img.width, sh = img.height
+      
+      if (srcRatio > dstRatio) {
+        // 源图更宽，裁剪两侧
+        sw = img.height * dstRatio
+        sx = (img.width - sw) / 2
+      } else if (srcRatio < dstRatio) {
+        // 源图更高，裁剪上下
+        sh = img.width / dstRatio
+        sy = (img.height - sh) / 2
+      }
+      
+      // 使用高质量缩放
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight)
+      
+      canvas.toBlob((resizedBlob) => {
+        if (resizedBlob) {
+          console.log('[resizeImageBlob] 图片已调整尺寸:', img.width, 'x', img.height, '->', targetWidth, 'x', targetHeight)
+          resolve(resizedBlob)
+        } else {
+          console.warn('[resizeImageBlob] canvas.toBlob 失败')
+          resolve(blob)
+        }
+      }, 'image/png', 0.95)
+    }
+    
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      console.warn('[resizeImageBlob] 图片加载失败')
+      resolve(blob)
+    }
+    
+    img.src = url
+  })
+}
+
+/**
  * 获取连接到视频配置节点的输入
  * 与 Vue 版本对齐
  */
@@ -1004,7 +1082,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       if (typeof up === 'boolean') payload.enable_upsample = up
     } else if (modelCfg.format === 'sora-unified') {
       const orientation = ratio === '9:16' ? 'portrait' : 'landscape'
-      const size = d.size || modelCfg.defaultParams?.size || 'large'
+      const size = overrides?.size || d.size || modelCfg.defaultParams?.size || 'large'
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 15)
       payload = {
         model: modelCfg.key,
@@ -1024,7 +1102,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       if (images.length > 0) payload.images = images
       if (ratio) payload.aspect_ratio = ratio
       // 添加必需的 size 参数（默认 1080P）
-      const sizeParam = d.size || modelCfg.defaultParams?.size || '1080P'
+      const sizeParam = overrides?.size || d.size || modelCfg.defaultParams?.size || '1080P'
       payload.size = sizeParam
       if (duration) payload.duration = duration
     } else if (modelCfg.format === 'openai-video') {
@@ -1050,7 +1128,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       fd.append('prompt', prompt)
       if (Number.isFinite(duration) && duration > 0) fd.append('seconds', String(duration))
       // 优先使用配置中的 size，否则根据 ratio 自动选择
-      const sizeValue = d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
+      const sizeValue = overrides?.size || d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
       fd.append('size', sizeValue)
       const watermark = modelCfg.defaultParams?.watermark
       if (typeof watermark === 'boolean') fd.append('watermark', watermark ? 'true' : 'false')
@@ -1063,7 +1141,8 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       // 参考文档: https://help.allapi.store/api-412862113
       // 端点: POST /v1/videos
       // 查询: GET /v1/videos/{id}
-      const sizeValue = d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
+      // 注意：当有图片输入时，图片尺寸必须与 size 参数完全匹配
+      const sizeValue = overrides?.size || d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
       const secondsValue = Number.isFinite(duration) && duration > 0 ? String(duration) : '4'
       
       const fd = new FormData()
@@ -1072,11 +1151,15 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       fd.append('size', sizeValue)
       fd.append('seconds', secondsValue)
       
-      // 如果有图片，需要转换为 Blob 并添加到 FormData
+      // 如果有图片，需要转换为 Blob 并调整尺寸以匹配 size 参数
+      // Sora API 要求: "Inpaint image must match the requested width and height"
       const imageInput = firstFrame || refImages[0] || ''
       if (imageInput) {
-        const blob = await resolveImageToBlob(imageInput)
+        let blob = await resolveImageToBlob(imageInput)
         if (blob) {
+          // 调整图片尺寸以匹配请求的 size 参数
+          console.log('[generateVideo] Sora OpenAI: 调整图片尺寸以匹配 size:', sizeValue)
+          blob = await resizeImageBlob(blob, sizeValue)
           fd.append('input_reference', blob, 'input.png')
         }
       }
@@ -1113,7 +1196,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       // Tencent AIGC Video 格式 (Vidu / Hailuo / Kling)
       // 官方文档：https://help.allapi.store/api-412862124
       const version = modelCfg.defaultParams?.version || ''
-      const size = d.size || modelCfg.defaultParams?.size || '720p'
+      const size = overrides?.size || d.size || modelCfg.defaultParams?.size || '720p'
       const dur = Number(duration) || Number(modelCfg.defaultParams?.duration) || 4
       
       // 解析 model_name 和 model_version
@@ -1224,7 +1307,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
     } else if (modelCfg.format === 'openai-chat-video') {
       // 旧的 Chat Completions 视频格式（兼容性保留）
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 8)
-      const size = d.size || modelCfg.defaultParams?.size || '720p'
+      const size = overrides?.size || d.size || modelCfg.defaultParams?.size || '720p'
       const aspectRatio = ratio || modelCfg.defaultParams?.ratio || '16:9'
       
       let videoPrompt = prompt || ''
