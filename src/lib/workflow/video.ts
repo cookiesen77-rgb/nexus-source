@@ -1391,7 +1391,7 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
     console.log('[generateVideo] 获取到视频 URL:', videoUrl?.slice(0, 100))
 
     // 4. 成功：更新视频节点
-    const cached = await resolveCachedMediaUrl(videoUrl)
+    const cached = await resolveCachedMediaUrl(videoUrl) as { displayUrl: string; localPath: string; error?: string }
     const latestStore = useGraphStore.getState()
     const displayUrl = cached.displayUrl
     
@@ -1399,8 +1399,17 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       videoUrl: videoUrl?.slice(0, 80),
       displayUrl: displayUrl?.slice(0, 80),
       localPath: cached.localPath?.slice(0, 50),
+      error: cached.error,
       videoNodeId
     })
+    
+    // 如果下载失败，抛出错误
+    if (!displayUrl && cached.error) {
+      throw new Error(`视频下载失败: ${cached.error}`)
+    }
+    if (!displayUrl) {
+      throw new Error('视频下载失败：无法获取视频内容')
+    }
     
     // 如果数据是大型数据（base64 或 blob URL），保存到 IndexedDB
     let mediaId: string | undefined
