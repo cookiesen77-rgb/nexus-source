@@ -137,13 +137,18 @@ const getApiKey = () => {
 
 // 将 base64 图片上传到图床，获取公网 URL
 // 腾讯 AIGC API 需要公网可访问的图片 URL
-type ImageHostId = 'yunwu' | 'imageproxy' | 'smms' | 'catbox'
-type UploadImageHostOptions = { hostOrder?: ImageHostId[] }
+const uploadBase64ToImageHost = async (base64Data: string): Promise<string> => {
+  // ⚠️ 仅允许使用云雾官方图床：
+  // - 文档：https://yunwu.apifox.cn/doc-7376047
+  // - API：https://yunwu.apifox.cn/api-356192326
+  console.log('[uploadImage] 开始上传图片到云雾图床..., Tauri 环境:', isTauriEnv)
 
-const uploadBase64ToImageHost = async (base64Data: string, opts?: UploadImageHostOptions): Promise<string> => {
-  console.log('[uploadImage] 开始上传图片到图床..., Tauri 环境:', isTauriEnv)
-  
-  // 将 base64 转换为 Blob/ArrayBuffer
+  const apiKey = getApiKey()
+  if (!apiKey) {
+    throw new Error('缺少 API Key，无法上传到云雾图床。请先在设置中填写 apiKey。')
+  }
+
+  // 将 base64 转换为 Blob
   const base64Content = base64Data.split(',')[1] || base64Data
   const mimeMatch = base64Data.match(/^data:([^;]+);/)
   const mimeType = mimeMatch ? mimeMatch[1] : 'image/png'
@@ -158,178 +163,15 @@ const uploadBase64ToImageHost = async (base64Data: string, opts?: UploadImageHos
   const ext = mimeType.split('/')[1] || 'png'
   const fileName = `image.${ext}`
 
-  const hostOrder: ImageHostId[] =
-    Array.isArray(opts?.hostOrder) && opts!.hostOrder!.length > 0
-      ? (opts!.hostOrder! as ImageHostId[])
-      : (['yunwu', 'imageproxy', 'smms', 'catbox'] as ImageHostId[])
+  const form = new FormData()
+  form.append('file', blob, fileName)
 
-  const errors: Array<{ host: ImageHostId; err: any }> = []
-
-  // ----- Upload attempts (Tauri)
-  let tauriFetchCached: any = null
-  const getTauriFetch = async () => {
-    if (tauriFetchCached) return tauriFetchCached
-    const mod = await import('@tauri-apps/plugin-http')
-    tauriFetchCached = mod.fetch
-    return tauriFetchCached
-  }
-
-  const tauriUploadSingleFile = async (url: string, headers: Record<string, string>, fieldName: string) => {
-    const tauriFetch = await getTauriFetch()
-    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
-    const header = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-    const footer = `\r\n--${boundary}--\r\n`
-    const headerBytes = new TextEncoder().encode(header)
-    const footerBytes = new TextEncoder().encode(footer)
-    const bodyLength = headerBytes.length + byteArray.length + footerBytes.length
-    const body = new Uint8Array(bodyLength)
-    body.set(headerBytes, 0)
-    body.set(byteArray, headerBytes.length)
-    body.set(footerBytes, headerBytes.length + byteArray.length)
-
-    const response = await tauriFetch(url, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        ...headers,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      },
-      body,
-    })
-    return response
-  }
-
-  const tauriUploadCatbox = async () => {
-    const tauriFetch = await getTauriFetch()
-    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
-    const parts = [
-      `--${boundary}\r\nContent-Disposition: form-data; name="reqtype"\r\n\r\nfileupload\r\n`,
-      `--${boundary}\r\nContent-Disposition: form-data; name="fileToUpload"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`,
-    ]
-    const footer = `\r\n--${boundary}--\r\n`
-    const part1Bytes = new TextEncoder().encode(parts[0])
-    const part2Bytes = new TextEncoder().encode(parts[1])
-    const footerBytes = new TextEncoder().encode(footer)
-
-    const bodyLength = part1Bytes.length + part2Bytes.length + byteArray.length + footerBytes.length
-    const body = new Uint8Array(bodyLength)
-    let offset = 0
-    body.set(part1Bytes, offset); offset += part1Bytes.length
-    body.set(part2Bytes, offset); offset += part2Bytes.length
-    body.set(byteArray, offset); offset += byteArray.length
-    body.set(footerBytes, offset)
-
-    const response = await tauriFetch('https://catbox.moe/user/api.php', {
-      method: 'POST',
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      },
-      body,
-    })
-    return response
-  }
-
-  // ----- Upload attempts (Web)
-  const webUploadSingleFile = async (url: string, headers: Record<string, string>, fieldName: string) => {
-    const formData = new FormData()
-    formData.append(fieldName, blob, fileName)
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: formData,
-    })
-    return response
-  }
-
-  const webUploadCatbox = async () => {
-    const formData = new FormData()
-    formData.append('reqtype', 'fileupload')
-    formData.append('fileToUpload', blob, fileName)
-    const response = await fetch('https://catbox.moe/user/api.php', {
-      method: 'POST',
-      body: formData,
-    })
-    return response
-  }
-
-  const parseJsonUrl = async (response: Response) => {
-    const data = (await response.json()) as any
-    const urlOut = String(data?.url || data?.data?.url || data?.data?.link || '').trim()
-    console.log('[uploadImage] 图床响应:', JSON.stringify(data, null, 2))
-    if (urlOut && /^https?:\/\//i.test(urlOut)) return urlOut
-    throw new Error(String(data?.error || data?.message || '上传失败'))
-  }
-
-  const parseSmmsUrl = async (response: Response) => {
-    const data = (await response.json()) as any
-    console.log('[uploadImage] sm.ms 响应:', JSON.stringify(data, null, 2))
-    if (data?.success && data?.data?.url) return String(data.data.url).trim()
-    if (String(data?.code || '') === 'image_repeated' && data?.images) return String(data.images).trim()
-    throw new Error(String(data?.message || data?.error || 'sm.ms 上传失败'))
-  }
-
-  const parseCatboxUrl = async (response: Response) => {
-    const text = String(await response.text()).trim()
-    console.log('[uploadImage] catbox.moe 响应:', text)
-    if (/^https?:\/\//i.test(text)) return text
-    throw new Error(text || 'catbox 上传失败')
-  }
-
-  for (const host of hostOrder) {
-    try {
-      if (host === 'yunwu') {
-        const apiKey = getApiKey()
-        if (!apiKey) throw new Error('missing apiKey')
-        console.log('[uploadImage] 尝试上传到 yunwu.ai 官方图床...')
-        const res = isTauriEnv
-          ? await tauriUploadSingleFile('https://yunwu.ai/api/upload', { Authorization: `Bearer ${apiKey}` }, 'file')
-          : await webUploadSingleFile('https://yunwu.ai/api/upload', { Authorization: `Bearer ${apiKey}` }, 'file')
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const url = await parseJsonUrl(res as any)
-        console.log('[uploadImage] 上传成功:', url)
-        return url
-      }
-
-      if (host === 'imageproxy') {
-        console.log('[uploadImage] 尝试上传到 imageproxy 图床...')
-        const res = isTauriEnv
-          ? await tauriUploadSingleFile('https://imageproxy.zhongzhuan.chat/api/upload', {}, 'file')
-          : await webUploadSingleFile('https://imageproxy.zhongzhuan.chat/api/upload', {}, 'file')
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const url = await parseJsonUrl(res as any)
-        console.log('[uploadImage] 上传成功:', url)
-        return url
-      }
-
-      if (host === 'smms') {
-        console.log('[uploadImage] 尝试上传到 sm.ms...')
-        const res = isTauriEnv
-          ? await tauriUploadSingleFile('https://sm.ms/api/v2/upload', {}, 'smfile')
-          : await webUploadSingleFile('https://sm.ms/api/v2/upload', {}, 'smfile')
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const url = await parseSmmsUrl(res as any)
-        console.log('[uploadImage] 上传成功:', url)
-        return url
-      }
-
-      if (host === 'catbox') {
-        console.log('[uploadImage] 尝试上传到 catbox.moe...')
-        const res = isTauriEnv ? await tauriUploadCatbox() : await webUploadCatbox()
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const url = await parseCatboxUrl(res as any)
-        console.log('[uploadImage] 上传成功:', url)
-        return url
-      }
-
-      throw new Error(`unknown host: ${String(host)}`)
-    } catch (err: any) {
-      console.warn(`[uploadImage] ${host} 上传失败:`, err)
-      errors.push({ host, err })
-    }
-  }
-
-  const last = errors.length ? errors[errors.length - 1].err : null
-  throw new Error(`图片上传失败，请使用公网可访问的图片 URL。错误: ${String(last?.message || last || '未知错误')}`)
+  // 使用统一的 postFormData（Tauri 下会自动转换成 multipart bytes）
+  const resp = await postFormData<any>('https://imageproxy.zhongzhuan.chat/api/upload', form, { authMode: 'bearer', timeoutMs: 120000 })
+  console.log('[uploadImage] 云雾图床响应:', JSON.stringify(resp, null, 2))
+  const urlOut = String(resp?.url || resp?.data?.url || resp?.data?.link || '').trim()
+  if (urlOut && /^https?:\/\//i.test(urlOut)) return urlOut
+  throw new Error(String(resp?.error || resp?.message || resp?.data?.message || '云雾图床上传失败'))
 }
 
 // 图片压缩工具函数 - 将 base64 图片压缩到指定大小以下
@@ -1566,7 +1408,7 @@ export const generateVideoFromConfigNode = async (
             if (imageUrl.startsWith('data:')) {
               imageUrl = await compressImageBase64(imageUrl, 900 * 1024)
             }
-            imageUrl = await uploadBase64ToImageHost(imageUrl, { hostOrder: ['yunwu', 'smms', 'catbox', 'imageproxy'] })
+            imageUrl = await uploadBase64ToImageHost(imageUrl)
             console.log('[tencent-video] 图片已上传，公网 URL:', imageUrl)
           } catch (uploadErr: any) {
             console.error('[tencent-video] 图片上传失败:', uploadErr)
@@ -1599,7 +1441,7 @@ export const generateVideoFromConfigNode = async (
             if (lastFrameUrl.startsWith('data:')) {
               lastFrameUrl = await compressImageBase64(lastFrameUrl, 900 * 1024)
             }
-            lastFrameUrl = await uploadBase64ToImageHost(lastFrameUrl, { hostOrder: ['yunwu', 'smms', 'catbox', 'imageproxy'] })
+            lastFrameUrl = await uploadBase64ToImageHost(lastFrameUrl)
           } catch (uploadErr: any) {
             throw new Error(`尾帧图片上传失败：${uploadErr?.message || '未知错误'}`)
           }
@@ -1685,8 +1527,10 @@ export const generateVideoFromConfigNode = async (
     })
     console.log('[generateVideo] 完整 payload:', JSON.stringify(payloadDebug, null, 2))
     
-    // 带重试的 API 调用（处理网络抖动）
-    const maxRetries = 3
+    // 带重试的 API 调用（处理网络抖动 / 上游过载）
+    // Grok 在 Tauri 中更容易遇到“官方负载过大”，这里做更温和、更长的重试退避。
+    const isGrokModel = /^grok-video-/i.test(String(modelCfg.key || ''))
+    const maxRetries = (isTauriEnv && isGrokModel) ? 6 : 3
     let lastError: Error | null = null
     let task: any = null
     
@@ -1695,7 +1539,11 @@ export const generateVideoFromConfigNode = async (
         errorStage = 'create'
         if (attempt > 0) {
           console.log(`[generateVideo] 第 ${attempt + 1} 次重试...`)
-          await new Promise(r => setTimeout(r, 1000 * attempt)) // 递增延迟
+          // 递增延迟：Grok + Tauri 采用更长的指数退避
+          const waitMs = (isTauriEnv && isGrokModel)
+            ? Math.min(20000, 2500 * Math.pow(2, Math.max(0, attempt - 1))) // 2.5s, 5s, 10s, 20s...
+            : (1000 * attempt)
+          await new Promise(r => setTimeout(r, waitMs))
         }
         
         task = requestType === 'formdata'
@@ -1705,16 +1553,19 @@ export const generateVideoFromConfigNode = async (
         break // 成功则跳出重试循环
       } catch (err: any) {
         lastError = err
-        const isNetworkError = err?.message?.includes('Failed to fetch') || 
-                               err?.message?.includes('NetworkError') ||
-                               err?.message?.includes('ERR_')
+        const errMsg = String(err?.message || err || '')
+        const isNetworkError = /Failed to fetch|NetworkError|ERR_/i.test(errMsg)
+        const isOverloadError =
+          isTauriEnv &&
+          isGrokModel &&
+          /负载过大|server busy|overload|Service Unavailable|HTTP 503|Too Many Requests|rate limit|temporarily unavailable|try again later/i.test(errMsg)
         
         // 非网络错误或已达最大重试次数，直接抛出
-        if (!isNetworkError || attempt === maxRetries - 1) {
+        if ((!isNetworkError && !isOverloadError) || attempt === maxRetries - 1) {
           throw err
         }
         
-        console.warn(`[generateVideo] 网络错误，准备重试:`, err?.message)
+        console.warn(`[generateVideo] ${isOverloadError ? '上游过载' : '网络'}错误，准备重试:`, errMsg)
       }
     }
     
@@ -1810,9 +1661,9 @@ export const generateVideoFromConfigNode = async (
           /\bErrCode\b.*70000/i.test(msg) ||
           /retrieved from the external network/i.test(msg)
 
-        // Tencent AIGC：若提示 ImageURL 外网不可达，尝试更换图床重试一次
+        // Tencent AIGC：若提示 ImageURL 外网不可达，尝试重新上传到云雾图床并重试一次
         if (isTencent && looksLikeImageUrlNotReachable) {
-          console.warn('[generateVideo] Tencent Video ImageURL 外网不可达，尝试更换图床重试一次...')
+          console.warn('[generateVideo] Tencent Video ImageURL 外网不可达，尝试重新上传到云雾图床并重试一次...')
           const firstInput = String(firstFrame || refImages[0] || '').trim()
           if (!firstInput) throw pollErr
 
@@ -1843,13 +1694,13 @@ export const generateVideoFromConfigNode = async (
             )
           }
 
-          const retryFirstUrl = await uploadBase64ToImageHost(firstUploadable, { hostOrder: ['smms', 'catbox', 'yunwu', 'imageproxy'] })
+          const retryFirstUrl = await uploadBase64ToImageHost(firstUploadable)
 
           let retryLastUrl = ''
           if (lastFrame) {
             const lastUploadable = await ensureUploadable(lastFrame)
             if (lastUploadable) {
-              retryLastUrl = await uploadBase64ToImageHost(lastUploadable, { hostOrder: ['smms', 'catbox', 'yunwu', 'imageproxy'] })
+              retryLastUrl = await uploadBase64ToImageHost(lastUploadable)
             }
           }
 

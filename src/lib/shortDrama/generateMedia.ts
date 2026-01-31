@@ -1,11 +1,126 @@
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import * as modelsConfig from '@/config/models'
 import { resolveCachedImageUrl, resolveCachedMediaUrl } from '@/lib/workflow/cache'
-import { getJson, postJson } from '@/lib/workflow/request'
+import { getJson, postFormData, postJson } from '@/lib/workflow/request'
 
 const normalizeText = (text: unknown) => String(text || '').replace(/\r\n/g, '\n').trim()
 const toDataUrl = (b64: string, mime = 'image/png') => `data:${mime};base64,${b64}`
 const isHttpUrl = (v: string) => /^https?:\/\//i.test(v)
+const isDataUrl = (v: string) => /^data:image\/[a-z0-9.+-]+;base64,/i.test(String(v || '').trim())
+const isBase64Like = (v: string) => /^[A-Za-z0-9+/=]+$/.test(String(v || '').trim())
+
+const getApiKey = () => {
+  try {
+    return localStorage.getItem('apiKey') || ''
+  } catch {
+    return ''
+  }
+}
+
+const compressImageBase64 = async (base64Data: string, maxSizeBytes: number = 900 * 1024): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('无法创建 canvas context'))
+        return
+      }
+
+      let { width, height } = img
+      let result = base64Data
+
+      // 如果图片本身就很小，直接返回
+      const comma = base64Data.indexOf(',')
+      const currentSize = comma >= 0 ? Math.ceil((base64Data.length - (comma + 1)) * 0.75) : Math.ceil(base64Data.length * 0.75)
+      if (currentSize <= maxSizeBytes) {
+        resolve(base64Data)
+        return
+      }
+
+      // 计算需要缩小的比例
+      const sizeRatio = Math.sqrt(maxSizeBytes / currentSize)
+      if (sizeRatio < 1) {
+        width = Math.floor(width * Math.max(sizeRatio, 0.5))
+        height = Math.floor(height * Math.max(sizeRatio, 0.5))
+      }
+
+      // 限制最大尺寸
+      const maxDim = 1920
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height)
+        width = Math.floor(width * scale)
+        height = Math.floor(height * scale)
+      }
+
+      canvas.width = width
+      canvas.height = height
+      ctx.drawImage(img, 0, 0, width, height)
+
+      // 逐步降低质量直到满足大小要求
+      for (let q = 0.85; q >= 0.3; q -= 0.1) {
+        result = canvas.toDataURL('image/jpeg', q)
+        const c = result.indexOf(',')
+        const size = c >= 0 ? Math.ceil((result.length - (c + 1)) * 0.75) : Math.ceil(result.length * 0.75)
+        if (size <= maxSizeBytes) {
+          resolve(result)
+          return
+        }
+      }
+
+      // 如果还是太大，进一步缩小尺寸
+      width = Math.floor(width * 0.7)
+      height = Math.floor(height * 0.7)
+      canvas.width = width
+      canvas.height = height
+      ctx.drawImage(img, 0, 0, width, height)
+      result = canvas.toDataURL('image/jpeg', 0.6)
+      resolve(result)
+    }
+    img.onerror = () => reject(new Error('图片加载失败'))
+    img.src = base64Data
+  })
+}
+
+const uploadImageToYunwu = async (dataUrlOrBase64: string): Promise<string> => {
+  // ⚠️ 仅允许使用云雾官方图床：
+  // - 文档：https://yunwu.apifox.cn/doc-7376047
+  // - API：https://yunwu.apifox.cn/api-356192326
+  const apiKey = getApiKey()
+  if (!apiKey) throw new Error('缺少 API Key，无法上传到云雾图床。请先在设置中填写 apiKey。')
+
+  let dataUrl = String(dataUrlOrBase64 || '').trim()
+  if (!dataUrl) throw new Error('空图片数据')
+  if (isBase64Like(dataUrl) && !dataUrl.startsWith('data:')) {
+    dataUrl = `data:image/png;base64,${dataUrl}`
+  }
+  if (!dataUrl.startsWith('data:')) {
+    throw new Error('云雾图床上传仅支持 dataURL/base64 输入')
+  }
+
+  const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/)
+  if (!m) throw new Error('图片 dataURL 解析失败')
+  const mimeType = String(m[1] || 'image/png')
+  const base64Content = String(m[2] || '')
+  const byteCharacters = atob(base64Content)
+  const byteNumbers = new Array(byteCharacters.length)
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i)
+  }
+  const byteArray = new Uint8Array(byteNumbers)
+  const blob = new Blob([byteArray], { type: mimeType })
+
+  const ext = mimeType.split('/')[1] || 'png'
+  const fileName = `image.${ext}`
+  const form = new FormData()
+  form.append('file', blob, fileName)
+
+  const resp = await postFormData<any>('https://imageproxy.zhongzhuan.chat/api/upload', form, { authMode: 'bearer', timeoutMs: 120000 })
+  const urlOut = String(resp?.url || resp?.data?.url || resp?.data?.link || '').trim()
+  if (urlOut && /^https?:\/\//i.test(urlOut)) return urlOut
+  throw new Error(String(resp?.error || resp?.message || resp?.data?.message || '云雾图床上传失败'))
+}
 
 const pickFirstHttpUrlFromText = (text: string) => {
   const t = String(text || '').trim()
@@ -443,9 +558,51 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
   } else if (modelCfg.format === 'unified-video') {
     const requiresImages = typeof modelCfg.requiresImages === 'boolean' ? modelCfg.requiresImages : false
     const imagesMustBeHttp = typeof modelCfg.imagesMustBeHttp === 'boolean' ? modelCfg.imagesMustBeHttp : false
-    const imagesForPayload = imagesMustBeHttp ? images.filter((u) => /^https?:\/\//i.test(String(u || ''))) : images
+    const maxImages = Number(modelCfg.maxImages || 3)
+
+    let imagesForPayload: string[] = images
+    if (imagesMustBeHttp) {
+      const cache = new Map<string, string>()
+      const out: string[] = []
+      for (const raw of images) {
+        if (out.length >= maxImages) break
+        const v0 = String(raw || '').trim()
+        if (!v0) continue
+        if (v0.startsWith('blob:')) {
+          throw new Error('该视频模型不支持 blob 图片，请使用上传/生成后的图片（可转为公网 URL）')
+        }
+        if (isHttpUrl(v0)) {
+          out.push(v0)
+          continue
+        }
+        const cached = cache.get(v0)
+        if (cached) {
+          // 保留顺序与重复（首/尾同图时仍传两张）
+          out.push(cached)
+          continue
+        }
+        if (isDataUrl(v0)) {
+          const compressed = await compressImageBase64(v0, 900 * 1024)
+          const uploaded = await uploadImageToYunwu(compressed)
+          cache.set(v0, uploaded)
+          out.push(uploaded)
+          continue
+        }
+        if (isBase64Like(v0)) {
+          const dataUrl = `data:image/png;base64,${v0}`
+          const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+          const uploaded = await uploadImageToYunwu(compressed)
+          cache.set(v0, uploaded)
+          out.push(uploaded)
+          continue
+        }
+        throw new Error('该视频模型需要公网可访问的图片 URL（http/https）或 dataURL 图片作为垫图。')
+      }
+      imagesForPayload = out
+    }
+
     if (imagesMustBeHttp && images.length > 0 && imagesForPayload.length === 0) {
-      throw new Error('该视频模型仅支持使用 HTTP 图片链接作为垫图（不支持 dataURL/本地图片）。建议：先用可访问的图片 URL 作为首帧/参考图。')
+      throw new Error('该视频模型需要垫图，但未找到可用的图片（请提供首帧/尾帧/参考图）。')
     }
     if (requiresImages && imagesForPayload.length === 0) {
       throw new Error('该视频模型需要垫图（请提供至少 1 张参考图/首帧）')
@@ -455,8 +612,8 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
       prompt,
       aspect_ratio: ratio || modelCfg.defaultParams?.ratio || '1:1',
       size: size || modelCfg.defaultParams?.size || '720P',
-      images: imagesForPayload.slice(0, Number(modelCfg.maxImages || 3)),
     }
+    if (imagesForPayload.length > 0) payload.images = imagesForPayload.slice(0, maxImages)
     const supportsDuration = typeof modelCfg.supportsDuration === 'boolean' ? modelCfg.supportsDuration : true
     if (supportsDuration && Number.isFinite(duration) && duration > 0) {
       payload.duration = duration
@@ -490,7 +647,31 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
     throw new Error(`工作台暂不支持该视频模型格式：${String(modelCfg.format || '')}`)
   }
 
-  const task = await postJson<any>(endpointOverride, payload, { authMode: modelCfg.authMode, timeoutMs: 240000 })
+  // Grok 在 Tauri 中更容易遇到“官方负载过大”，这里做更温和、更长的重试退避
+  const isGrokModel = /^grok-video-/i.test(String(modelCfg.key || ''))
+  const maxCreateAttempts = (isTauri && isGrokModel) ? 6 : 1
+  let task: any = null
+  let lastCreateErr: any = null
+  for (let attempt = 0; attempt < maxCreateAttempts; attempt++) {
+    try {
+      if (attempt > 0) {
+        const waitMs = Math.min(20000, 2500 * Math.pow(2, Math.max(0, attempt - 1)))
+        console.warn(`[shortDramaVideo] Grok 上游过载/抖动，准备第 ${attempt + 1} 次重试...`, { waitMs })
+        await new Promise((r) => setTimeout(r, waitMs))
+      }
+      task = await postJson<any>(endpointOverride, payload, { authMode: modelCfg.authMode, timeoutMs: 240000 })
+      break
+    } catch (e: any) {
+      lastCreateErr = e
+      const msg = String(e?.message || e || '')
+      const isOverload =
+        /负载过大|server busy|overload|Service Unavailable|HTTP 503|Too Many Requests|rate limit|temporarily unavailable|try again later/i.test(msg)
+      if (!(isTauri && isGrokModel && isOverload) || attempt === maxCreateAttempts - 1) {
+        throw e
+      }
+    }
+  }
+  if (!task) throw lastCreateErr || new Error('视频创建失败')
 
   const id =
     task?.id ||
