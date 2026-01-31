@@ -96,6 +96,7 @@ jobs:
       - name: Generate latest.json for auto-updater
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          REPO="${{ github.repository }}"
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           cat > latest.json << EOF
           {
@@ -104,13 +105,13 @@ jobs:
             "pub_date": "${PUB_DATE}",
             "platforms": {
               "darwin-x86_64": {
-                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_x64.dmg"
+                "url": "https://github.com/${REPO}/releases/download/v${VERSION}/Nexus_${VERSION}_x64.dmg"
               },
               "darwin-aarch64": {
-                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_aarch64.dmg"
+                "url": "https://github.com/${REPO}/releases/download/v${VERSION}/Nexus_${VERSION}_aarch64.dmg"
               },
               "windows-x86_64": {
-                "url": "https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v${VERSION}/Nexus_${VERSION}_x64-setup.exe"
+                "url": "https://github.com/${REPO}/releases/download/v${VERSION}/Nexus_${VERSION}_x64-setup.exe"
               }
             }
           }
@@ -120,7 +121,6 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          repository: cookiesen77-rgb/nexus-releases
           tag_name: v${{ steps.version.outputs.version }}
           name: Nexus v${{ steps.version.outputs.version }}
           body: |
@@ -133,6 +133,10 @@ jobs:
             - **macOS Apple Silicon**: `Nexus_${{ steps.version.outputs.version }}_aarch64.dmg`
             - **Windows**: `Nexus_${{ steps.version.outputs.version }}_x64-setup.exe` / `.msi`
             
+            ### 本次更新（重点）
+            - 仅使用云雾官方图床（imageproxy）上传垫图
+            - Grok 在 Tauri 下遇到“官方负载过大”时增加退避重试
+            
             ### 获取 API Key
             访问 [nexusapi.cn](https://nexusapi.cn/) 获取 API Key
           files: |
@@ -141,4 +145,4 @@ jobs:
             artifacts/**/*.msi
             latest.json
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}

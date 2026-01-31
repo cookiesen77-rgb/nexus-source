@@ -9,16 +9,9 @@
 
 ## 📥 下载安装
 
-**最新版本: v0.0.57**
+请前往本仓库的 Releases 下载对应平台的安装包（macOS / Windows）：
 
-| 平台 | 下载链接 |
-|------|---------|
-| **macOS (Apple Silicon)** | [Nexus_0.0.57_aarch64.dmg](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_aarch64.dmg) |
-| **macOS (Intel)** | [Nexus_0.0.57_x64.dmg](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_x64.dmg) |
-| **Windows (安装包)** | [Nexus_0.0.57_x64-setup.exe](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_x64-setup.exe) |
-| **Windows (MSI)** | [Nexus_0.0.57_x64_en-US.msi](https://github.com/cookiesen77-rgb/nexus-releases/releases/download/v0.0.57/Nexus_0.0.57_x64_en-US.msi) |
-
-> 所有版本下载: [Releases](https://github.com/cookiesen77-rgb/nexus-releases/releases)
+- Releases: https://github.com/cookiesen77-rgb/nexus-source/releases
 
 ## 📸 截图
 
