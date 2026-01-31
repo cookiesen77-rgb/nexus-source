@@ -1,6 +1,7 @@
 import { useGraphStore } from '@/graph/store'
 import type { GraphNode } from '@/graph/types'
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from '@/config/models'
+import * as modelsConfig from '@/config/models'
 import { getJson, postFormData, postJson } from '@/lib/workflow/request'
 import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
 import { getMedia, getMediaByNodeId, saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
@@ -23,8 +24,28 @@ export interface VideoGenerationOverrides {
   size?: string
 }
 
-// 正在运行的视频任务 Map：nodeId -> { cancelled: boolean }
-const runningTasks = new Map<string, { cancelled: boolean }>()
+export type GenerateVideoFromConfigNodeOptions = {
+  /**
+   * 指定输出视频节点 ID（用于 loopCount 并发批量生成，避免并发抢占同一输出节点）
+   */
+  outputNodeId?: string
+  /**
+   * 是否自动选中输出节点（默认 true）
+   * - 批量并发时建议关闭，避免并发任务互相抢焦点
+   */
+  selectOutput?: boolean
+  /**
+   * 是否写回配置节点 executed/outputNodeId（默认 true）
+   * - 批量并发时建议关闭，由批量调度方统一在结束后写回
+   */
+  markConfigExecuted?: boolean
+}
+
+type RunningTaskState = { cancelled: boolean; activeCount: number }
+
+// 正在运行的视频任务 Map：configNodeId -> { cancelled, activeCount }
+// 说明：loopCount 并发时，同一个 configNodeId 会有多个并发任务，因此需要引用计数，避免提前 delete 导致取消失效。
+const runningTasks = new Map<string, RunningTaskState>()
 
 // 全局取消标记 - 页面卸载时设为 true
 let globalCancelled = false
@@ -67,12 +88,59 @@ const normalizeText = (text: unknown) => String(text || '').replace(/\r\n/g, '\n
 
 const isHttpUrl = (v: string) => /^https?:\/\//i.test(v)
 
+/**
+ * Build ordered video images:
+ * - keep first/last even if duplicated
+ * - dedupe refs (and avoid duplicating first/last)
+ * - enforce maxImages
+ */
+const buildOrderedVideoImages = (args: {
+  firstFrame: string
+  lastFrame: string
+  refImages: string[]
+  maxImages: number
+}) => {
+  const max = Number.isFinite(args.maxImages) && args.maxImages > 0 ? Math.floor(args.maxImages) : 2
+  const first = String(args.firstFrame || '').trim()
+  const last = String(args.lastFrame || '').trim()
+  const refs = Array.isArray(args.refImages) ? args.refImages : []
+
+  const out: string[] = []
+  if (first) out.push(first)
+  if (out.length < max && last) out.push(last)
+
+  const seen = new Set<string>()
+  for (const v of out) {
+    if (v) seen.add(v)
+  }
+  for (const r of refs) {
+    if (out.length >= max) break
+    const v = String(r || '').trim()
+    if (!v) continue
+    if (seen.has(v)) continue
+    out.push(v)
+    seen.add(v)
+  }
+  return out
+}
+
 // 检测 Tauri 环境
 const isTauriEnv = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
+const getApiKey = () => {
+  try {
+    return localStorage.getItem('apiKey') || ''
+  } catch {
+    return ''
+  }
+}
+
 // 将 base64 图片上传到图床，获取公网 URL
 // 腾讯 AIGC API 需要公网可访问的图片 URL
-const uploadBase64ToImageHost = async (base64Data: string): Promise<string> => {
+type ImageHostId = 'yunwu' | 'imageproxy' | 'smms' | 'catbox'
+type UploadImageHostOptions = { hostOrder?: ImageHostId[] }
+
+const uploadBase64ToImageHost = async (base64Data: string, opts?: UploadImageHostOptions): Promise<string> => {
   console.log('[uploadImage] 开始上传图片到图床..., Tauri 环境:', isTauriEnv)
   
   // 将 base64 转换为 Blob/ArrayBuffer
@@ -86,154 +154,182 @@ const uploadBase64ToImageHost = async (base64Data: string): Promise<string> => {
   }
   const byteArray = new Uint8Array(byteNumbers)
   const blob = new Blob([byteArray], { type: mimeType })
-  
-  // Tauri 环境：使用原生 HTTP 请求绕过 CORS，优先使用 sm.ms
-  if (isTauriEnv) {
-    try {
-      console.log('[uploadImage] Tauri 环境，使用原生 HTTP 上传到 sm.ms...')
-      const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
-      
-      // 构建 multipart/form-data
-      const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
-      const ext = mimeType.split('/')[1] || 'png'
-      const fileName = `image.${ext}`
-      
-      // 手动构建 multipart body
-      const header = `--${boundary}\r\nContent-Disposition: form-data; name="smfile"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-      const footer = `\r\n--${boundary}--\r\n`
-      
-      const headerBytes = new TextEncoder().encode(header)
-      const footerBytes = new TextEncoder().encode(footer)
-      
-      const bodyLength = headerBytes.length + byteArray.length + footerBytes.length
-      const body = new Uint8Array(bodyLength)
-      body.set(headerBytes, 0)
-      body.set(byteArray, headerBytes.length)
-      body.set(footerBytes, headerBytes.length + byteArray.length)
-      
-      const response = await tauriFetch('https://sm.ms/api/v2/upload', {
-        method: 'POST',
-        headers: {
-          'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        },
-        body: body
-      })
-      
-      const data = await response.json() as any
-      console.log('[uploadImage] sm.ms 响应:', JSON.stringify(data, null, 2))
-      
-      // sm.ms 返回格式: { success: true, data: { url: "https://..." } }
-      // 或已存在时: { success: false, code: "image_repeated", images: "https://..." }
-      if (data.success && data.data?.url) {
-        console.log('[uploadImage] sm.ms 上传成功:', data.data.url)
-        return data.data.url
-      }
-      if (data.code === 'image_repeated' && data.images) {
-        console.log('[uploadImage] sm.ms 图片已存在:', data.images)
-        return data.images
-      }
-      throw new Error(data.message || 'sm.ms 上传失败')
-    } catch (smErr: any) {
-      console.warn('[uploadImage] sm.ms 上传失败，尝试 catbox.moe:', smErr)
-      
-      // 备用：catbox.moe
-      try {
-        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
-        
-        const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
-        const ext = mimeType.split('/')[1] || 'png'
-        const fileName = `image.${ext}`
-        
-        const parts = [
-          `--${boundary}\r\nContent-Disposition: form-data; name="reqtype"\r\n\r\nfileupload\r\n`,
-          `--${boundary}\r\nContent-Disposition: form-data; name="fileToUpload"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-        ]
-        const footer = `\r\n--${boundary}--\r\n`
-        
-        const part1Bytes = new TextEncoder().encode(parts[0])
-        const part2Bytes = new TextEncoder().encode(parts[1])
-        const footerBytes = new TextEncoder().encode(footer)
-        
-        const bodyLength = part1Bytes.length + part2Bytes.length + byteArray.length + footerBytes.length
-        const body = new Uint8Array(bodyLength)
-        let offset = 0
-        body.set(part1Bytes, offset); offset += part1Bytes.length
-        body.set(part2Bytes, offset); offset += part2Bytes.length
-        body.set(byteArray, offset); offset += byteArray.length
-        body.set(footerBytes, offset)
-        
-        const response = await tauriFetch('https://catbox.moe/user/api.php', {
-          method: 'POST',
-          headers: {
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
-          },
-          body: body
-        })
-        
-        const text = await response.text()
-        console.log('[uploadImage] catbox.moe 响应:', text)
-        
-        if (text.startsWith('https://')) {
-          console.log('[uploadImage] catbox.moe 上传成功:', text.trim())
-          return text.trim()
-        }
-        throw new Error(text)
-      } catch (catboxErr) {
-        console.warn('[uploadImage] catbox.moe 也失败:', catboxErr)
-        throw smErr // 抛出原始 sm.ms 错误
-      }
-    }
+
+  const ext = mimeType.split('/')[1] || 'png'
+  const fileName = `image.${ext}`
+
+  const hostOrder: ImageHostId[] =
+    Array.isArray(opts?.hostOrder) && opts!.hostOrder!.length > 0
+      ? (opts!.hostOrder! as ImageHostId[])
+      : (['yunwu', 'imageproxy', 'smms', 'catbox'] as ImageHostId[])
+
+  const errors: Array<{ host: ImageHostId; err: any }> = []
+
+  // ----- Upload attempts (Tauri)
+  let tauriFetchCached: any = null
+  const getTauriFetch = async () => {
+    if (tauriFetchCached) return tauriFetchCached
+    const mod = await import('@tauri-apps/plugin-http')
+    tauriFetchCached = mod.fetch
+    return tauriFetchCached
   }
-  
-  // Web 环境：使用 allapi 图床（可能有 CORS 限制）
-  // 文档: https://help.allapi.store/doc-8123330
-  const imageHosts = [
-    {
-      name: 'allapi 官方图床',
-      url: 'https://imageproxy.zhongzhuan.chat/api/upload',
-      buildFormData: () => {
-        const formData = new FormData()
-        const ext = mimeType.split('/')[1] || 'png'
-        formData.append('file', blob, `image.${ext}`)
-        return formData
+
+  const tauriUploadSingleFile = async (url: string, headers: Record<string, string>, fieldName: string) => {
+    const tauriFetch = await getTauriFetch()
+    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
+    const header = `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
+    const footer = `\r\n--${boundary}--\r\n`
+    const headerBytes = new TextEncoder().encode(header)
+    const footerBytes = new TextEncoder().encode(footer)
+    const bodyLength = headerBytes.length + byteArray.length + footerBytes.length
+    const body = new Uint8Array(bodyLength)
+    body.set(headerBytes, 0)
+    body.set(byteArray, headerBytes.length)
+    body.set(footerBytes, headerBytes.length + byteArray.length)
+
+    const response = await tauriFetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        ...headers,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
       },
-      parseResponse: async (response: Response) => {
-        const data = await response.json()
-        console.log('[uploadImage] allapi 图床响应:', JSON.stringify(data, null, 2))
-        if (data.url) {
-          console.log('[uploadImage] 返回的图片 URL:', data.url)
-          return data.url
-        }
-        throw new Error(data.error || '上传失败')
-      }
-    }
-  ]
-  
-  let lastError: any = null
-  for (const host of imageHosts) {
+      body,
+    })
+    return response
+  }
+
+  const tauriUploadCatbox = async () => {
+    const tauriFetch = await getTauriFetch()
+    const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2)
+    const parts = [
+      `--${boundary}\r\nContent-Disposition: form-data; name="reqtype"\r\n\r\nfileupload\r\n`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="fileToUpload"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`,
+    ]
+    const footer = `\r\n--${boundary}--\r\n`
+    const part1Bytes = new TextEncoder().encode(parts[0])
+    const part2Bytes = new TextEncoder().encode(parts[1])
+    const footerBytes = new TextEncoder().encode(footer)
+
+    const bodyLength = part1Bytes.length + part2Bytes.length + byteArray.length + footerBytes.length
+    const body = new Uint8Array(bodyLength)
+    let offset = 0
+    body.set(part1Bytes, offset); offset += part1Bytes.length
+    body.set(part2Bytes, offset); offset += part2Bytes.length
+    body.set(byteArray, offset); offset += byteArray.length
+    body.set(footerBytes, offset)
+
+    const response = await tauriFetch('https://catbox.moe/user/api.php', {
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+    })
+    return response
+  }
+
+  // ----- Upload attempts (Web)
+  const webUploadSingleFile = async (url: string, headers: Record<string, string>, fieldName: string) => {
+    const formData = new FormData()
+    formData.append(fieldName, blob, fileName)
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: formData,
+    })
+    return response
+  }
+
+  const webUploadCatbox = async () => {
+    const formData = new FormData()
+    formData.append('reqtype', 'fileupload')
+    formData.append('fileToUpload', blob, fileName)
+    const response = await fetch('https://catbox.moe/user/api.php', {
+      method: 'POST',
+      body: formData,
+    })
+    return response
+  }
+
+  const parseJsonUrl = async (response: Response) => {
+    const data = (await response.json()) as any
+    const urlOut = String(data?.url || data?.data?.url || data?.data?.link || '').trim()
+    console.log('[uploadImage] 图床响应:', JSON.stringify(data, null, 2))
+    if (urlOut && /^https?:\/\//i.test(urlOut)) return urlOut
+    throw new Error(String(data?.error || data?.message || '上传失败'))
+  }
+
+  const parseSmmsUrl = async (response: Response) => {
+    const data = (await response.json()) as any
+    console.log('[uploadImage] sm.ms 响应:', JSON.stringify(data, null, 2))
+    if (data?.success && data?.data?.url) return String(data.data.url).trim()
+    if (String(data?.code || '') === 'image_repeated' && data?.images) return String(data.images).trim()
+    throw new Error(String(data?.message || data?.error || 'sm.ms 上传失败'))
+  }
+
+  const parseCatboxUrl = async (response: Response) => {
+    const text = String(await response.text()).trim()
+    console.log('[uploadImage] catbox.moe 响应:', text)
+    if (/^https?:\/\//i.test(text)) return text
+    throw new Error(text || 'catbox 上传失败')
+  }
+
+  for (const host of hostOrder) {
     try {
-      console.log(`[uploadImage] 尝试上传到 ${host.name}...`)
-      const formData = host.buildFormData()
-      
-      const response = await fetch(host.url, {
-        method: 'POST',
-        body: formData
-      })
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
+      if (host === 'yunwu') {
+        const apiKey = getApiKey()
+        if (!apiKey) throw new Error('missing apiKey')
+        console.log('[uploadImage] 尝试上传到 yunwu.ai 官方图床...')
+        const res = isTauriEnv
+          ? await tauriUploadSingleFile('https://yunwu.ai/api/upload', { Authorization: `Bearer ${apiKey}` }, 'file')
+          : await webUploadSingleFile('https://yunwu.ai/api/upload', { Authorization: `Bearer ${apiKey}` }, 'file')
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const url = await parseJsonUrl(res as any)
+        console.log('[uploadImage] 上传成功:', url)
+        return url
       }
-      
-      const url = await host.parseResponse(response)
-      console.log(`[uploadImage] 上传成功: ${url}`)
-      return url
-    } catch (err) {
-      console.warn(`[uploadImage] ${host.name} 上传失败:`, err)
-      lastError = err
+
+      if (host === 'imageproxy') {
+        console.log('[uploadImage] 尝试上传到 imageproxy 图床...')
+        const res = isTauriEnv
+          ? await tauriUploadSingleFile('https://imageproxy.zhongzhuan.chat/api/upload', {}, 'file')
+          : await webUploadSingleFile('https://imageproxy.zhongzhuan.chat/api/upload', {}, 'file')
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const url = await parseJsonUrl(res as any)
+        console.log('[uploadImage] 上传成功:', url)
+        return url
+      }
+
+      if (host === 'smms') {
+        console.log('[uploadImage] 尝试上传到 sm.ms...')
+        const res = isTauriEnv
+          ? await tauriUploadSingleFile('https://sm.ms/api/v2/upload', {}, 'smfile')
+          : await webUploadSingleFile('https://sm.ms/api/v2/upload', {}, 'smfile')
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const url = await parseSmmsUrl(res as any)
+        console.log('[uploadImage] 上传成功:', url)
+        return url
+      }
+
+      if (host === 'catbox') {
+        console.log('[uploadImage] 尝试上传到 catbox.moe...')
+        const res = isTauriEnv ? await tauriUploadCatbox() : await webUploadCatbox()
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const url = await parseCatboxUrl(res as any)
+        console.log('[uploadImage] 上传成功:', url)
+        return url
+      }
+
+      throw new Error(`unknown host: ${String(host)}`)
+    } catch (err: any) {
+      console.warn(`[uploadImage] ${host} 上传失败:`, err)
+      errors.push({ host, err })
     }
   }
-  
-  throw new Error(`图片上传失败，请使用公网可访问的图片 URL。错误: ${lastError?.message || '未知错误'}`)
+
+  const last = errors.length ? errors[errors.length - 1].err : null
+  throw new Error(`图片上传失败，请使用公网可访问的图片 URL。错误: ${String(last?.message || last || '未知错误')}`)
 }
 
 // 图片压缩工具函数 - 将 base64 图片压缩到指定大小以下
@@ -920,8 +1016,50 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
 
     // 检查失败状态 (支持多种格式: failed, FAILED, fail, error, FAIL)
     if (/^(failed|fail|error)$/i.test(status)) {
-      const rawErr = resp?.error?.message || resp?.message || resp?.data?.error?.message || '视频生成失败'
-      console.error('[pollVideoTask] 视频生成失败:', rawErr)
+      const response0 = resp?.Response || resp?.response || resp
+      const errorCandidates: Array<unknown> = [
+        resp?.error?.message,
+        resp?.error?.msg,
+        resp?.error_message,
+        resp?.errorMessage,
+        resp?.message,
+        resp?.msg,
+        // grok unified format often uses `error` as string
+        typeof resp?.error === 'string' ? resp.error : '',
+        typeof resp?.data?.error === 'string' ? resp.data.error : '',
+        resp?.data?.error?.message,
+        resp?.data?.message,
+        response0?.message,
+        response0?.msg,
+        typeof response0?.error === 'string' ? response0.error : '',
+        response0?.error?.message,
+        aigcTask?.Message,
+        aigcTask?.message,
+        aigcTask?.error_message,
+        aigcTask?.error,
+      ]
+      const rawErr =
+        errorCandidates
+          .map((x) => (typeof x === 'string' ? x.trim() : ''))
+          .find((s) => s) || '视频生成失败'
+
+      const traceId =
+        (resp?.trace_id || resp?.traceId || resp?.TraceId || response0?.trace_id || response0?.traceId || response0?.TraceId) ?? ''
+      const debug = {
+        model: String(modelCfg?.key || ''),
+        format: String(modelCfg?.format || ''),
+        id,
+        status,
+        traceId: traceId ? String(traceId) : '',
+        respKeys: Object.keys(resp || {}),
+      }
+      console.error('[pollVideoTask] 视频生成失败:', rawErr, debug)
+      try {
+        const snippet = JSON.stringify(resp)?.slice(0, 2000)
+        if (snippet) console.warn('[pollVideoTask] failed 响应片段:', snippet)
+      } catch {
+        // ignore
+      }
       
       // 友好化常见错误消息
       let friendlyMsg = rawErr
@@ -937,7 +1075,8 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
         friendlyMsg = '视频生成失败：API 配额不足，请检查账户余额'
       }
       
-      throw new Error(friendlyMsg)
+      const extra = traceId ? `（trace_id: ${String(traceId)}）` : ''
+      throw new Error(`${friendlyMsg}${extra}`)
     }
 
     await new Promise((r) => setTimeout(r, interval))
@@ -950,11 +1089,24 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
   throw new Error(`视频生成超时（${Math.round(maxAttempts * interval / 60000)} 分钟）。${timeoutInfo}。请检查后端服务状态或稍后重试。`)
 }
 
-export const generateVideoFromConfigNode = async (configNodeId: string, overrides?: VideoGenerationOverrides) => {
+export const generateVideoFromConfigNode = async (
+  configNodeId: string,
+  overrides?: VideoGenerationOverrides,
+  options?: GenerateVideoFromConfigNodeOptions
+) => {
   console.log('[generateVideo] 开始生成视频, configNodeId:', configNodeId, 'overrides:', overrides)
   
-  // 注册任务，以便可以被取消
-  runningTasks.set(configNodeId, { cancelled: false })
+  const selectOutput = options?.selectOutput !== false
+  const markConfigExecuted = options?.markConfigExecuted !== false
+  const forcedOutputId = String(options?.outputNodeId || '').trim()
+  
+  // 注册任务，以便可以被取消（支持同一 configNodeId 并发）
+  const existingTask = runningTasks.get(configNodeId)
+  if (existingTask) {
+    existingTask.activeCount = (existingTask.activeCount || 0) + 1
+  } else {
+    runningTasks.set(configNodeId, { cancelled: false, activeCount: 1 })
+  }
   
   const store = useGraphStore.getState()
   const cfg = store.nodes.find((n) => n.id === configNodeId)
@@ -981,8 +1133,13 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
 
   // 优先使用 overrides 参数，解决 UI 选择与实际调用不一致的问题
   const modelKey = String(overrides?.model || d.model || DEFAULT_VIDEO_MODEL)
-  const modelCfg: any = (VIDEO_MODELS as any[]).find((m) => m.key === modelKey) || (VIDEO_MODELS as any[])[0]
-  console.log('[generateVideo] 模型配置:', { modelKey, modelCfg, fromOverrides: !!overrides?.model })
+  // 兼容旧 key（MODEL_ALIASES），避免保存过的项目在升级后找不到模型
+  const resolved: any = (modelsConfig as any)?.getModelByName?.(modelKey) || null
+  const modelCfg: any =
+    (resolved && String(resolved?.format || '').includes('video') ? resolved : null) ||
+    (VIDEO_MODELS as any[]).find((m) => m.key === modelKey) ||
+    (VIDEO_MODELS as any[])[0]
+  console.log('[generateVideo] 模型配置:', { modelKey, resolvedKey: String(modelCfg?.key || ''), modelCfg, fromOverrides: !!overrides?.model })
   if (!modelCfg) throw new Error('未找到模型配置')
 
   // 优先使用 overrides 参数
@@ -997,67 +1154,90 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
   }
   const duration = Number(overrides?.duration ?? d.duration ?? d.dur ?? modelCfg.defaultParams?.duration ?? 0)
   console.log('[generateVideo] Duration 来源追踪:', durationSources, '最终 duration:', duration)
-  const imagesAll = [firstFrame, lastFrame, ...refImages].filter(Boolean)
-  const images = Array.from(new Set(imagesAll)).slice(0, Number(modelCfg.maxImages || 2))
+  const images = buildOrderedVideoImages({
+    firstFrame,
+    lastFrame,
+    refImages,
+    maxImages: Number(modelCfg.maxImages || 2),
+  })
 
   // 2. 先创建/复用视频节点（显示 loading 状态）
-  let videoNodeId = findConnectedOutputVideoNode(configNodeId)
+  let videoNodeId = forcedOutputId || findConnectedOutputVideoNode(configNodeId)
   const nodeX = cfg.x
   const nodeY = cfg.y
   
-  // 获取重新生成模式设置
-  const regenerateMode = useSettingsStore.getState().regenerateMode || 'create'
-  
-  // 记录旧的视频数据（用于保存到历史记录）
-  let oldVideoData: any = null
-
-  if (videoNodeId) {
-    const existingNode = store.nodes.find(n => n.id === videoNodeId)
-    if (existingNode?.data?.url) {
-      oldVideoData = { ...existingNode.data }
-    }
-    
-    if (regenerateMode === 'replace') {
-      // 替代模式：直接更新现有节点
-      store.updateNode(videoNodeId, { data: { loading: true, error: '' } } as any)
+  let forceOutput = false
+  if (forcedOutputId) {
+    const forcedNode = store.nodes.find((n) => n.id === forcedOutputId)
+    if (forcedNode?.type === 'video') {
+      forceOutput = true
+      // 强制使用指定输出节点
+      store.updateNode(forcedOutputId, { data: { loading: true, error: '' } } as any)
     } else {
-      // 新建模式：如果已有节点有内容，创建新节点
-      if (oldVideoData?.url) {
-        // 将旧数据保存到历史记录
-        if (oldVideoData.url) {
-          useAssetsStore.getState().addAsset({
-            type: 'video',
-            src: oldVideoData.url,
-            title: oldVideoData.label || '视频历史',
-            model: modelKey,
-            duration: oldVideoData.duration
-          })
-        }
-        // 创建新节点
-        videoNodeId = store.addNode('video', { x: nodeX + 460, y: nodeY + 50 }, {
-          url: '',
-          loading: true,
-          label: '视频生成结果'
-        })
-        store.addEdge(configNodeId, videoNodeId, {
-          sourceHandle: 'right',
-          targetHandle: 'left'
-        })
-      } else {
-        // 复用已有的空白视频节点
-        store.updateNode(videoNodeId, { data: { loading: true, error: '' } } as any)
-      }
+      console.warn('[generateVideo] 指定 outputNodeId 无效，回退到默认创建/复用:', forcedOutputId, forcedNode?.type)
+      videoNodeId = findConnectedOutputVideoNode(configNodeId)
     }
-  } else {
-    videoNodeId = store.addNode('video', { x: nodeX + 460, y: nodeY }, {
-      url: '',
-      loading: true,
-      label: '视频生成结果'
-    })
-    store.addEdge(configNodeId, videoNodeId, {
-      sourceHandle: 'right',
-      targetHandle: 'left'
-    })
+  }
+
+  if (!forceOutput) {
+    // 获取重新生成模式设置
+    const regenerateMode = useSettingsStore.getState().regenerateMode || 'create'
+    
+    // 记录旧的视频数据（用于保存到历史记录）
+    let oldVideoData: any = null
+
+    if (videoNodeId) {
+      const existingNode = store.nodes.find(n => n.id === videoNodeId)
+      if (existingNode?.data?.url) {
+        oldVideoData = { ...existingNode.data }
+      }
+      
+      if (regenerateMode === 'replace') {
+        // 替代模式：直接更新现有节点
+        store.updateNode(videoNodeId, { data: { loading: true, error: '' } } as any)
+      } else {
+        // 新建模式：如果已有节点有内容，创建新节点
+        if (oldVideoData?.url) {
+          // 将旧数据保存到历史记录
+          if (oldVideoData.url) {
+            useAssetsStore.getState().addAsset({
+              type: 'video',
+              src: oldVideoData.url,
+              title: oldVideoData.label || '视频历史',
+              model: modelKey,
+              duration: oldVideoData.duration
+            })
+          }
+          // 创建新节点
+          videoNodeId = store.addNode('video', { x: nodeX + 460, y: nodeY + 50 }, {
+            url: '',
+            loading: true,
+            label: '视频生成结果'
+          })
+          store.addEdge(configNodeId, videoNodeId, {
+            sourceHandle: 'right',
+            targetHandle: 'left'
+          })
+        } else {
+          // 复用已有的空白视频节点
+          store.updateNode(videoNodeId, { data: { loading: true, error: '' } } as any)
+        }
+      }
+    } else {
+      videoNodeId = store.addNode('video', { x: nodeX + 460, y: nodeY }, {
+        url: '',
+        loading: true,
+        label: '视频生成结果'
+      })
+      store.addEdge(configNodeId, videoNodeId, {
+        sourceHandle: 'right',
+        targetHandle: 'left'
+      })
+    }
+  }
+
+  if (!videoNodeId) {
+    throw new Error('视频输出节点创建失败')
   }
 
   // 3. 调用 API 生成视频
@@ -1098,13 +1278,123 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       if (typeof priv === 'boolean') payload.private = priv
     } else if (modelCfg.format === 'unified-video') {
       // 即梦视频统一格式：需要 size 参数（官方文档要求）
+      // 也兼容 Grok 视频统一格式（/v1/video/create）
       payload = { model: modelCfg.key, prompt }
-      if (images.length > 0) payload.images = images
+      const requiresImages = typeof modelCfg.requiresImages === 'boolean' ? modelCfg.requiresImages : false
+      const imagesMustBeHttp = typeof modelCfg.imagesMustBeHttp === 'boolean' ? modelCfg.imagesMustBeHttp : false
+      let imagesForPayload: string[] = images
+      if (imagesMustBeHttp) {
+        const storeNow = useGraphStore.getState()
+        const byId2 = new Map(storeNow.nodes.map((n) => [n.id, n]))
+        const connectedEdges2 = storeNow.edges.filter((e) => e.target === configNodeId)
+
+        const firstNodes: GraphNode[] = []
+        const lastNodes: GraphNode[] = []
+        const refNodes: GraphNode[] = []
+        for (const edge of connectedEdges2) {
+          const n = byId2.get(edge.source)
+          if (!n || n.type !== 'image') continue
+          const roleRaw = String((edge.data as any)?.imageRole || '').trim()
+          if (roleRaw === 'last_frame_image') lastNodes.push(n)
+          else if (roleRaw === 'input_reference') refNodes.push(n)
+          else firstNodes.push(n)
+        }
+
+        const maxImages = Number(modelCfg.maxImages || 2)
+        const out: string[] = []
+        const resolvedByNodeId = new Map<string, string>()
+
+        const isPrivateNetUrl = (u: string) =>
+          /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/i.test(u)
+
+        const resolvePublicUrlForNode = async (n: GraphNode) => {
+          const nd: any = n?.data || {}
+
+          // 1) Prefer real remote URL if exists (avoid local cache / intranet URLs)
+          const candidates = [
+            nd.sourceUrl,
+            nd.sourceURL,
+            nd.originalUrl,
+            nd.remoteUrl,
+            nd.displayUrl,
+            nd.url,
+          ]
+            .map((x) => (typeof x === 'string' ? x.trim() : ''))
+            .filter(Boolean)
+
+          const remote = candidates.find((u) => isHttpUrl(u) && !isPrivateNetUrl(u))
+          if (remote) return remote
+
+          // 2) If only intranet HTTP URL exists, fail fast with a clear message.
+          const intranet = candidates.find((u) => isHttpUrl(u) && isPrivateNetUrl(u))
+          if (intranet) {
+            throw new Error('该视频模型不支持内网/本地图片链接（localhost/127/192.168/10/172.16-31）。请使用公网可访问的图片 URL，或改用云端生成图片（会带 sourceUrl）。')
+          }
+
+          // 3) Convert local data to a public URL via image host upload.
+          const localReadable = await resolveReadableImageFromNode(n)
+          if (localReadable.startsWith('blob:')) {
+            throw new Error('该视频模型不支持 blob 图片，请使用上传/生成后的图片（可转成公网 URL）')
+          }
+          if (isDataUrl(localReadable)) {
+            const compressed = await compressImageBase64(localReadable, 900 * 1024)
+            return await uploadBase64ToImageHost(compressed)
+          }
+          if (isBase64Like(localReadable)) {
+            return await uploadBase64ToImageHost(localReadable)
+          }
+
+          throw new Error('该视频模型需要公网可访问的图片 URL（http/https）作为垫图。当前连接的图片无法转换，请更换为可访问链接的图片。')
+        }
+
+        const resolveForNode = async (n: GraphNode) => {
+          const key = String(n?.id || '').trim()
+          if (key && resolvedByNodeId.has(key)) return resolvedByNodeId.get(key) || ''
+          const u = await resolvePublicUrlForNode(n)
+          if (key) resolvedByNodeId.set(key, u)
+          return u
+        }
+
+        const firstNode = firstNodes[0] || null
+        const lastNode = lastNodes[0] || null
+        const refCandidates = [...refNodes, ...firstNodes.slice(1), ...lastNodes.slice(1)]
+
+        // first / last can be duplicated (keep both positions if maxImages allows)
+        if (firstNode && out.length < maxImages) {
+          out.push(await resolveForNode(firstNode))
+        }
+        if (lastNode && out.length < maxImages) {
+          out.push(await resolveForNode(lastNode))
+        }
+
+        // refs: dedupe against first/last and among themselves
+        const seenRefs = new Set<string>()
+        for (const u of out) {
+          const v = String(u || '').trim()
+          if (v) seenRefs.add(v)
+        }
+        for (const n of refCandidates) {
+          if (out.length >= maxImages) break
+          const u = String(await resolveForNode(n) || '').trim()
+          if (!u) continue
+          if (seenRefs.has(u)) continue
+          out.push(u)
+          seenRefs.add(u)
+        }
+
+        imagesForPayload = out.filter(Boolean).slice(0, maxImages)
+      }
+
+      if (requiresImages && imagesForPayload.length === 0) {
+        throw new Error('该视频模型需要垫图（请连接首帧/尾帧/参考图至少 1 张）')
+      }
+      if (imagesForPayload.length > 0) payload.images = imagesForPayload
       if (ratio) payload.aspect_ratio = ratio
       // 添加必需的 size 参数（默认 1080P）
       const sizeParam = overrides?.size || d.size || modelCfg.defaultParams?.size || '1080P'
       payload.size = sizeParam
-      if (duration) payload.duration = duration
+      const supportsDuration = typeof modelCfg.supportsDuration === 'boolean' ? modelCfg.supportsDuration : true
+      if (supportsDuration && duration) payload.duration = duration
     } else if (modelCfg.format === 'openai-video') {
       const inputNode = findPreferredOpenAiInputImageNode(configNodeId)
       let inputCandidate = firstFrame || refImages[0] || ''
@@ -1175,14 +1465,47 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : '10'
 
       if (hasAnyImage) {
-        const image = firstFrame || refImages[0] || ''
+        let image = firstFrame || refImages[0] || ''
         if (!image) throw new Error('Kling 图生视频需要首帧/参考图（请连接图片节点）')
+
+        // Kling 图生视频：尽量使用公网 URL（避免 base64 过大/不可访问导致失败）
+        if (image.startsWith('data:') || isBase64Like(image)) {
+          console.log('[kling-video] 检测到 base64 首帧，自动上传到图床...')
+          try {
+            if (image.startsWith('data:')) {
+              image = await compressImageBase64(image, 900 * 1024)
+            }
+            image = await uploadBase64ToImageHost(image)
+          } catch (uploadErr: any) {
+            throw new Error(`首帧图片上传失败：${uploadErr?.message || '未知错误'}`)
+          }
+        }
+        if (image.startsWith('blob:')) {
+          throw new Error('Kling 图生视频不支持 blob 图片，请使用上传/生成后的图片（可转成公网 URL）')
+        }
+
+        let tail = lastFrame || ''
+        if (tail && (tail.startsWith('data:') || isBase64Like(tail))) {
+          console.log('[kling-video] 检测到 base64 尾帧，自动上传到图床...')
+          try {
+            if (tail.startsWith('data:')) {
+              tail = await compressImageBase64(tail, 900 * 1024)
+            }
+            tail = await uploadBase64ToImageHost(tail)
+          } catch (uploadErr: any) {
+            throw new Error(`尾帧图片上传失败：${uploadErr?.message || '未知错误'}`)
+          }
+        }
+        if (tail.startsWith('blob:')) {
+          throw new Error('Kling 图生视频不支持 blob 尾帧图片，请使用上传/生成后的图片（可转成公网 URL）')
+        }
+
         endpointOverride = modelCfg.endpointImage || endpointOverride
         statusEndpointOverride = modelCfg.statusEndpointImage || statusEndpointOverride
         payload = {
           model_name: modelName,
           image,
-          image_tail: lastFrame || '',
+          image_tail: tail,
           mode,
           duration: durValue,  // 字符串类型
           sound
@@ -1237,10 +1560,13 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
         
         // 腾讯 AIGC API 只支持公网可访问的 HTTP(S) URL
         // 如果是 base64 或 blob，自动上传到图床获取公网 URL
-        if (imageUrl.startsWith('data:')) {
+        if (imageUrl.startsWith('data:') || isBase64Like(imageUrl)) {
           console.log('[tencent-video] 检测到 base64 图片，自动上传到图床...')
           try {
-            imageUrl = await uploadBase64ToImageHost(imageUrl)
+            if (imageUrl.startsWith('data:')) {
+              imageUrl = await compressImageBase64(imageUrl, 900 * 1024)
+            }
+            imageUrl = await uploadBase64ToImageHost(imageUrl, { hostOrder: ['yunwu', 'smms', 'catbox', 'imageproxy'] })
             console.log('[tencent-video] 图片已上传，公网 URL:', imageUrl)
           } catch (uploadErr: any) {
             console.error('[tencent-video] 图片上传失败:', uploadErr)
@@ -1267,10 +1593,13 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       if (lastFrame) {
         let lastFrameUrl = lastFrame
         // 如果是 base64，自动上传到图床
-        if (lastFrameUrl.startsWith('data:')) {
+        if (lastFrameUrl.startsWith('data:') || isBase64Like(lastFrameUrl)) {
           console.log('[tencent-video] 检测到 base64 尾帧图片，自动上传到图床...')
           try {
-            lastFrameUrl = await uploadBase64ToImageHost(lastFrameUrl)
+            if (lastFrameUrl.startsWith('data:')) {
+              lastFrameUrl = await compressImageBase64(lastFrameUrl, 900 * 1024)
+            }
+            lastFrameUrl = await uploadBase64ToImageHost(lastFrameUrl, { hostOrder: ['yunwu', 'smms', 'catbox', 'imageproxy'] })
           } catch (uploadErr: any) {
             throw new Error(`尾帧图片上传失败：${uploadErr?.message || '未知错误'}`)
           }
@@ -1469,8 +1798,101 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       const id = task?.id || task?.task_id || task?.taskId || task?.data?.id || task?.data?.task_id || task?.data?.taskId
       if (!id) throw new Error('视频返回异常：未获取到任务 ID')
       errorStage = 'poll'
-      const polled = await pollVideoTask(String(id), { ...modelCfg, statusEndpoint: statusEndpointOverride }, configNodeId, videoNodeId)
-      videoUrl = normalizeMediaUrl(polled)
+      try {
+        const polled = await pollVideoTask(String(id), { ...modelCfg, statusEndpoint: statusEndpointOverride }, configNodeId, videoNodeId)
+        videoUrl = normalizeMediaUrl(polled)
+      } catch (pollErr: any) {
+        const msg = String(pollErr?.message || pollErr || '')
+        const isTencent = modelCfg.format === 'tencent-video'
+        const looksLikeImageUrlNotReachable =
+          /ImageURL.*external network/i.test(msg) ||
+          /InvalidParameterValue/i.test(msg) ||
+          /\bErrCode\b.*70000/i.test(msg) ||
+          /retrieved from the external network/i.test(msg)
+
+        // Tencent AIGC：若提示 ImageURL 外网不可达，尝试更换图床重试一次
+        if (isTencent && looksLikeImageUrlNotReachable) {
+          console.warn('[generateVideo] Tencent Video ImageURL 外网不可达，尝试更换图床重试一次...')
+          const firstInput = String(firstFrame || refImages[0] || '').trim()
+          if (!firstInput) throw pollErr
+
+          const ensureUploadable = async (input: string) => {
+            const v = String(input || '').trim()
+            if (!v) return ''
+            if (v.startsWith('data:')) return await compressImageBase64(v, 900 * 1024)
+            if (isBase64Like(v)) return v
+            // 兜底：若是 http(s)，在 Tauri 环境尝试下载再转成 dataURL 以便重传
+            if (isHttpUrl(v) && isTauriEnv) {
+              const b = await resolveImageToBlob(v)
+              if (!b) return ''
+              const dataUrl = await new Promise<string>((resolve) => {
+                const reader = new FileReader()
+                reader.onload = () => resolve(String(reader.result || ''))
+                reader.onerror = () => resolve('')
+                reader.readAsDataURL(b)
+              })
+              if (dataUrl) return await compressImageBase64(dataUrl, 900 * 1024)
+            }
+            return ''
+          }
+
+          const firstUploadable = await ensureUploadable(firstInput)
+          if (!firstUploadable) {
+            throw new Error(
+              `视频生成失败：上游提示首帧 ImageURL 无法外网访问，且当前首帧无法自动重传（可能是跨域/无本地数据）。请改用“上传/本地图片（dataURL）”作为首帧，或更换可被外网访问的图床域名。原始错误：${msg}`
+            )
+          }
+
+          const retryFirstUrl = await uploadBase64ToImageHost(firstUploadable, { hostOrder: ['smms', 'catbox', 'yunwu', 'imageproxy'] })
+
+          let retryLastUrl = ''
+          if (lastFrame) {
+            const lastUploadable = await ensureUploadable(lastFrame)
+            if (lastUploadable) {
+              retryLastUrl = await uploadBase64ToImageHost(lastUploadable, { hostOrder: ['smms', 'catbox', 'yunwu', 'imageproxy'] })
+            }
+          }
+
+          const retryPayload: any = { ...(payload as any) }
+          const existingFileInfos = Array.isArray(retryPayload.file_infos) ? retryPayload.file_infos : []
+          if (existingFileInfos.length > 0) {
+            retryPayload.file_infos = [...existingFileInfos]
+            retryPayload.file_infos[0] = { ...(retryPayload.file_infos[0] || {}), type: 'Url', url: retryFirstUrl }
+          } else {
+            retryPayload.file_infos = [{ type: 'Url', url: retryFirstUrl }]
+          }
+          if (retryLastUrl) retryPayload.last_frame_url = retryLastUrl
+
+          console.log('[generateVideo] Tencent Video 重试 create payload（仅展示关键字段）:', {
+            file_infos_0: retryPayload?.file_infos?.[0],
+            last_frame_url: retryPayload?.last_frame_url,
+          })
+
+          // 重新创建任务
+          const retryTask: any = await postJson<any>(endpointOverride, retryPayload, { authMode: modelCfg.authMode, timeoutMs: 240000 })
+          const retryTaskId =
+            retryTask?.Response?.TaskId ||
+            retryTask?.TaskId ||
+            retryTask?.task_id ||
+            retryTask?.taskId ||
+            retryTask?.data?.task_id ||
+            retryTask?.data?.taskId
+          const retryId =
+            retryTask?.id ||
+            retryTaskId ||
+            retryTask?.task_id ||
+            retryTask?.taskId ||
+            retryTask?.data?.id ||
+            retryTask?.data?.task_id ||
+            retryTask?.data?.taskId
+          if (!retryId) throw new Error('重试创建任务失败：未获取到任务 ID')
+
+          const polled2 = await pollVideoTask(String(retryId), { ...modelCfg, statusEndpoint: statusEndpointOverride }, configNodeId, videoNodeId)
+          videoUrl = normalizeMediaUrl(polled2)
+        } else {
+          throw pollErr
+        }
+      }
     }
 
     if (!videoUrl) {
@@ -1569,8 +1991,12 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
       console.warn('[generateVideo] 触发刷新事件失败:', e)
     }
 
-    latestStore.setSelected(videoNodeId)
-    latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: videoNodeId } } as any)
+    if (selectOutput) {
+      latestStore.setSelected(videoNodeId)
+    }
+    if (markConfigExecuted) {
+      latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: videoNodeId } } as any)
+    }
     errorStage = 'finalize'
 
   } catch (err: any) {
@@ -1594,8 +2020,16 @@ export const generateVideoFromConfigNode = async (configNodeId: string, override
     throw err
   } finally {
     // 清理任务注册
-    runningTasks.delete(configNodeId)
-    console.log('[generateVideo] 任务已清理:', configNodeId)
+    const task = runningTasks.get(configNodeId)
+    if (task) {
+      task.activeCount = (task.activeCount || 1) - 1
+      if (task.activeCount <= 0) {
+        runningTasks.delete(configNodeId)
+        console.log('[generateVideo] 任务已清理:', configNodeId)
+      } else {
+        console.log('[generateVideo] 并发任务仍在运行，暂不清理:', { configNodeId, activeCount: task.activeCount })
+      }
+    }
   }
 }
 

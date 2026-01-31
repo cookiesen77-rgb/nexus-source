@@ -1,5 +1,5 @@
 import React from 'react'
-import { Brush, Hand, LayoutGrid, Link2, MousePointer, Music, Plus, Video, BookOpen, Undo2, Redo2, ScanSearch, Save } from 'lucide-react'
+import { Brush, Film, Hand, LayoutGrid, Link2, MousePointer, Music, Plus, Video, BookOpen, Undo2, Redo2, ScanSearch, Save } from 'lucide-react'
 
 export type CanvasTool = 'select' | 'pan' | 'connect'
 
@@ -9,6 +9,7 @@ type Props = {
   onChangeTool: (tool: CanvasTool) => void
   onToggleNodeMenu: () => void
   onOpenWorkflow?: () => void
+  onOpenShortDrama?: () => void
   onOpenDirector?: () => void
   onOpenSketch?: () => void
   onOpenAudio?: () => void
@@ -60,6 +61,7 @@ export default function CanvasSidebar({
   onChangeTool,
   onToggleNodeMenu,
   onOpenWorkflow,
+  onOpenShortDrama,
   onOpenDirector,
   onOpenSketch,
   onOpenAudio,
@@ -90,6 +92,13 @@ export default function CanvasSidebar({
         onClick={() => onOpenWorkflow?.()}
       >
         <LayoutGrid className="h-5 w-5" />
+      </IconButton>
+
+      <IconButton
+        title="短剧制作"
+        onClick={() => onOpenShortDrama?.()}
+      >
+        <Film className="h-5 w-5" />
       </IconButton>
 
       <IconButton

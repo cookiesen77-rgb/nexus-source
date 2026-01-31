@@ -15,6 +15,7 @@ import {
   Loader2
 } from 'lucide-react'
 import ImageEditModal from './ImageEditModal'
+import GridCropModal, { type CropAreaPx } from './GridCropModal'
 import {
   changePose,
   changeAngle,
@@ -57,6 +58,8 @@ const TOOLS: ToolButton[] = [
 export default memo(function ImageEditToolbar({ nodeId, imageUrl, visible, onBusyChange, onHoverChange }: Props) {
   const [modalOpen, setModalOpen] = useState(false)
   const [currentAction, setCurrentAction] = useState<EditAction | null>(null)
+  const [gridCropOpen, setGridCropOpen] = useState(false)
+  const [gridCropSize, setGridCropSize] = useState<2 | 3>(3)
   const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState('')
 
@@ -65,15 +68,23 @@ export default memo(function ImageEditToolbar({ nodeId, imageUrl, visible, onBus
       setCurrentAction(tool.key)
       setModalOpen(true)
     } else {
-      // 直接执行（四宫格、九宫格、扩图）
+      // 四/九宫格：先弹窗选择裁剪区域（自由比例，可任意拉伸）
+      if (tool.key === 'grid4' || tool.key === 'grid9') {
+        setCurrentAction(tool.key)
+        setGridCropSize(tool.key === 'grid4' ? 2 : 3)
+        setGridCropOpen(true)
+        return
+      }
+      // 直接执行（扩图）
       executeAction(tool.key, '')
     }
   }, [])
 
-  const executeAction = useCallback(async (action: EditAction, userInput: string) => {
+  const executeAction = useCallback(async (action: EditAction, userInput: string, cropArea?: CropAreaPx) => {
     setLoading(true)
     setProgress('准备中...')
     setModalOpen(false)
+    setGridCropOpen(false)
     onBusyChange?.(true)
     
     try {
@@ -106,11 +117,11 @@ export default memo(function ImageEditToolbar({ nodeId, imageUrl, visible, onBus
           window.$message?.success?.('擦除完成')
           break
         case 'grid4':
-          await cropFourGrid(options)
+          await cropFourGrid({ ...(options as any), cropArea })
           window.$message?.success?.('四宫格裁剪完成')
           break
         case 'grid9':
-          await cropNineGrid(options)
+          await cropNineGrid({ ...(options as any), cropArea })
           window.$message?.success?.('九宫格裁剪完成')
           break
       }
@@ -131,8 +142,19 @@ export default memo(function ImageEditToolbar({ nodeId, imageUrl, visible, onBus
     }
   }, [currentAction, executeAction])
 
+  const handleGridCropConfirm = useCallback((crop: CropAreaPx) => {
+    if (!currentAction) return
+    if (currentAction !== 'grid4' && currentAction !== 'grid9') return
+    executeAction(currentAction, '', crop)
+  }, [currentAction, executeAction])
+
   const handleModalClose = useCallback(() => {
     setModalOpen(false)
+    setCurrentAction(null)
+  }, [])
+
+  const handleGridCropClose = useCallback(() => {
+    setGridCropOpen(false)
     setCurrentAction(null)
   }, [])
 
@@ -186,6 +208,17 @@ export default memo(function ImageEditToolbar({ nodeId, imageUrl, visible, onBus
           placeholder={currentTool.placeholder || ''}
           onConfirm={handleModalConfirm}
           onClose={handleModalClose}
+        />
+      )}
+
+      {/* 四/九宫格裁剪弹窗 */}
+      {gridCropOpen && currentAction && (currentAction === 'grid4' || currentAction === 'grid9') && (
+        <GridCropModal
+          open={gridCropOpen}
+          imageUrl={imageUrl}
+          gridSize={gridCropSize}
+          onClose={handleGridCropClose}
+          onConfirm={handleGridCropConfirm}
         />
       )}
     </>

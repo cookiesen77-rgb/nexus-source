@@ -41,6 +41,7 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
   const [showActions, setShowActions] = useState(false)
   const [videoError, setVideoError] = useState('')
   const [previewModalOpen, setPreviewModalOpen] = useState(false)
+  const [corsMode, setCorsMode] = useState<'anonymous' | 'none'>('anonymous')
   const videoRef = useRef<HTMLVideoElement>(null)
   const persistAttemptedRef = useRef<string>('')
   
@@ -51,6 +52,12 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
   })
 
   const displayUrl = nodeData?.url || ''
+
+  // URL 变化时：清理错误并重置 CORS 策略（先尝试 anonymous，失败再降级）
+  useEffect(() => {
+    setVideoError('')
+    setCorsMode('anonymous')
+  }, [displayUrl])
 
   // 如果没有 url，尝试从 IndexedDB 或 sourceUrl 恢复
   // 使用 ref 防止重复尝试
@@ -410,8 +417,15 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
   }, [id])
 
   const handleVideoError = useCallback(() => {
+    const url = String(displayUrl || '').trim()
+    // 远程视频在部分域名下不支持 CORS，带 crossOrigin 可能直接失败；
+    // 这里自动降级重试一次（去掉 crossOrigin），尽量保证可播放。
+    if (corsMode === 'anonymous' && /^https?:\/\//i.test(url)) {
+      setCorsMode('none')
+      return
+    }
     setVideoError('视频加载失败')
-  }, [])
+  }, [corsMode, displayUrl])
 
   return (
     // ref 用于懒加载检测
@@ -487,10 +501,11 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
           {(inView || displayUrl) && !nodeData?.loading && !nodeData?.error && !videoError && displayUrl && (
             <div className="aspect-video rounded-lg overflow-hidden bg-black">
               <video
+                key={`${displayUrl}|${corsMode}`}
                 ref={videoRef}
                 src={displayUrl}
                 controls
-                crossOrigin="anonymous"
+                crossOrigin={corsMode === 'anonymous' ? 'anonymous' : undefined}
                 playsInline
                 preload="metadata"
                 className="w-full h-full object-contain nodrag"

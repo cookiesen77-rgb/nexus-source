@@ -8,7 +8,7 @@ import { IMAGE_MODELS } from '@/config/models'
 import { postJson } from '@/lib/workflow/request'
 import { saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
 import { polishEditPrompt, describeImage, type EditType } from './prompts'
-import { cropToFourGrid, cropToNineGrid, calculateNodePosition, type GridCropResult } from './gridCrop'
+import { cropToFourGrid, cropToNineGrid, calculateNodePosition, type GridCropAreaPx, type GridCropResult } from './gridCrop'
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
 // 检测 Tauri 环境
@@ -290,7 +290,8 @@ export async function cropFourGrid(options: Omit<EditOptions, 'userInput'>): Pro
   const { sourceNodeId, sourceImageUrl, onProgress } = options
   
   onProgress?.('正在裁剪图片...')
-  const results = await cropToFourGrid(sourceImageUrl)
+  const cropArea = (options as any)?.cropArea as GridCropAreaPx | undefined
+  const results = await cropToFourGrid(sourceImageUrl, cropArea)
   
   onProgress?.('正在保存结果...')
   const store = useGraphStore.getState()
@@ -337,7 +338,8 @@ export async function cropNineGrid(options: Omit<EditOptions, 'userInput'>): Pro
   const { sourceNodeId, sourceImageUrl, onProgress } = options
   
   onProgress?.('正在裁剪图片...')
-  const results = await cropToNineGrid(sourceImageUrl)
+  const cropArea = (options as any)?.cropArea as GridCropAreaPx | undefined
+  const results = await cropToNineGrid(sourceImageUrl, cropArea)
   
   onProgress?.('正在保存结果...')
   const store = useGraphStore.getState()

@@ -1,0 +1,1969 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { CHAT_MODELS, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
+import * as modelsConfig from '@/config/models'
+import { useAssetsStore } from '@/store/assets'
+import { getMedia, saveMedia } from '@/lib/mediaStorage'
+import { generateShortDramaImage, generateShortDramaVideo } from '@/lib/shortDrama/generateMedia'
+import { buildEffectiveStyle, getShortDramaStylePresetById, SHORT_DRAMA_STYLE_PRESETS } from '@/lib/shortDrama/stylePresets'
+import {
+  appendVariantToSlot,
+  removeVariantFromSlot,
+  setSlotSelectionLocked,
+  setSlotSelectedVariant,
+  updateVariantInSlot,
+} from '@/lib/shortDrama/draftOps'
+import { createEmptyImageSlot, createEmptyShot } from '@/lib/shortDrama/draftStorage'
+import { getShortDramaTaskQueue } from '@/lib/shortDrama/taskQueue'
+import ShortDramaMediaPickerModal, { type ShortDramaPickedImage } from '@/components/shortDrama/ShortDramaMediaPickerModal'
+import type { ShortDramaDraftV2, ShortDramaMediaSlot, ShortDramaMediaVariant } from '@/lib/shortDrama/types'
+import type { ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
+import { cn } from '@/lib/utils'
+import { Check, Image as ImageIcon, Loader2, Plus, Trash2, Upload, Video as VideoIcon } from 'lucide-react'
+
+interface Props {
+  projectId: string
+  draft: ShortDramaDraftV2
+  setDraft: React.Dispatch<React.SetStateAction<ShortDramaDraftV2>>
+  prefs: ShortDramaStudioPrefsV1
+  setPrefs: React.Dispatch<React.SetStateAction<ShortDramaStudioPrefsV1>>
+}
+
+const SUPPORTED_VIDEO_FORMATS = new Set<string>(['sora-unified', 'veo-unified', 'kling-video', 'unified-video'])
+
+const makeId = () => globalThis.crypto?.randomUUID?.() || `sd_${Date.now()}_${Math.random().toString(16).slice(2)}`
+
+const readFileAsDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error || new Error('读取失败'))
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.readAsDataURL(file)
+  })
+
+const getModelLabel = (m: any) => String(m?.label || m?.key || '')
+
+const getImageModels = () =>
+  (IMAGE_MODELS as any[]).map((m) => ({ key: String(m?.key || ''), label: getModelLabel(m) })).filter((m) => m.key)
+
+const getChatModels = () =>
+  (CHAT_MODELS as any[]).map((m) => ({ key: String(m?.key || ''), label: getModelLabel(m) })).filter((m) => m.key)
+
+const getSupportedVideoModels = () =>
+  (VIDEO_MODELS as any[])
+    .filter((m) => SUPPORTED_VIDEO_FORMATS.has(String(m?.format || '')))
+    .map((m) => ({ key: String(m?.key || ''), label: getModelLabel(m) }))
+    .filter((m) => m.key)
+
+const clampInt = (v: unknown, min: number, max: number, fallback: number) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(n)))
+}
+
+function useMediaPreview(mediaId?: string) {
+  const [url, setUrl] = useState<string>('')
+  useEffect(() => {
+    if (!mediaId) {
+      setUrl('')
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rec = await getMedia(mediaId)
+        if (cancelled) return
+        setUrl(String(rec?.data || ''))
+      } catch {
+        if (cancelled) return
+        setUrl('')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [mediaId])
+  return url
+}
+
+function VariantThumb({ variant, className }: { variant: ShortDramaMediaVariant; className?: string }) {
+  const fromMedia = useMediaPreview(variant.mediaId)
+  const url = String(variant.displayUrl || fromMedia || variant.sourceUrl || '').trim()
+  if (!url) {
+    return <div className={cn('flex h-16 w-16 items-center justify-center rounded-lg bg-black/10 text-xs text-[var(--text-secondary)]', className)}>空</div>
+  }
+  if (variant.kind === 'video') {
+    return (
+      <video
+        src={url}
+        className={cn('h-16 w-16 rounded-lg bg-black/10 object-cover', className)}
+        muted
+        playsInline
+      />
+    )
+  }
+  return <img src={url} className={cn('h-16 w-16 rounded-lg bg-black/10 object-cover', className)} alt="variant" />
+}
+
+function SlotVersions({
+  slot,
+  onAdopt,
+  onRemove,
+  disabled,
+}: {
+  slot: ShortDramaMediaSlot
+  onAdopt: (variantId: string) => void
+  onRemove: (variantId: string) => void
+  disabled?: boolean
+}) {
+  if (!slot.variants || slot.variants.length === 0) {
+    return <div className="text-xs text-[var(--text-secondary)]">暂无版本</div>
+  }
+  return (
+    <div className="space-y-2">
+      {slot.variants
+        .slice()
+        .reverse()
+        .map((v) => {
+          const adopted = slot.selectedVariantId === v.id
+          return (
+            <div key={v.id} className="flex items-center gap-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-2">
+              <VariantThumb variant={v} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <div className="truncate text-xs font-medium text-[var(--text-primary)]">
+                    {v.status === 'running' ? '生成中…' : v.status === 'error' ? '失败' : '成功'}
+                  </div>
+                  {v.status === 'error' ? <div className="truncate text-xs text-red-500">{String(v.error || '')}</div> : null}
+                </div>
+                <div className="mt-1 text-[11px] text-[var(--text-secondary)]">
+                  {new Date(v.createdAt || Date.now()).toLocaleString()} · {String(v.modelKey || '').slice(0, 24)}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" disabled={disabled || adopted || v.status !== 'success'} onClick={() => onAdopt(v.id)}>
+                  <Check className="mr-1 h-4 w-4" />
+                  采用
+                </Button>
+                <Button size="sm" variant="ghost" disabled={disabled || v.status === 'running'} onClick={() => onRemove(v.id)} className="text-red-500">
+                  <Trash2 className="mr-1 h-4 w-4" />
+                  删除
+                </Button>
+              </div>
+            </div>
+          )
+        })}
+    </div>
+  )
+}
+
+export default function ShortDramaStudioManualView({ projectId, draft, setDraft, prefs, setPrefs }: Props) {
+  const navigate = useNavigate()
+  const [busySlotIds, setBusySlotIds] = useState<Record<string, boolean>>({})
+  const busySlotsRef = useRef(busySlotIds)
+  busySlotsRef.current = busySlotIds
+
+  const queue = useMemo(() => getShortDramaTaskQueue(projectId), [projectId])
+
+  // Apply concurrency limits from prefs
+  useEffect(() => {
+    queue.setLimits({
+      imageConcurrency: prefs.imageConcurrency,
+      videoConcurrency: prefs.videoConcurrency,
+      analysisConcurrency: 1,
+    })
+  }, [queue, prefs.imageConcurrency, prefs.videoConcurrency])
+
+  type PickerTarget =
+    | { kind: 'character_refs'; characterId: string }
+    | { kind: 'scene_refs'; sceneId: string }
+    | { kind: 'slot_variants'; slotId: string; label?: string }
+
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerInitialTab, setPickerInitialTab] = useState<'history' | 'canvas'>('history')
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null)
+  const pickerTargetRef = useRef<PickerTarget | null>(null)
+  pickerTargetRef.current = pickerTarget
+
+  const imageModels = useMemo(() => getImageModels(), [])
+  const chatModels = useMemo(() => getChatModels(), [])
+  const videoModels = useMemo(() => getSupportedVideoModels(), [])
+
+  const imageModelCfg = useMemo(() => {
+    const key = String(draft.models.imageModelKey || DEFAULT_IMAGE_MODEL)
+    return (IMAGE_MODELS as any[]).find((m) => String(m?.key || '') === key) || (IMAGE_MODELS as any[])[0] || null
+  }, [draft.models.imageModelKey])
+
+  const videoModelCfg = useMemo(() => {
+    const key = String(draft.models.videoModelKey || DEFAULT_VIDEO_MODEL)
+    const resolved: any = (modelsConfig as any)?.getModelByName?.(key) || null
+    if (resolved && String(resolved?.format || '').includes('video')) return resolved
+    return (VIDEO_MODELS as any[]).find((m) => String(m?.key || '') === key) || null
+  }, [draft.models.videoModelKey])
+
+  const patchDraft = useCallback((patch: Partial<ShortDramaDraftV2>) => {
+    setDraft((prev) => ({ ...prev, ...patch, updatedAt: Date.now() }))
+  }, [setDraft])
+
+  const patchStyle = useCallback(
+    (patch: Partial<ShortDramaDraftV2['style']>) => {
+      setDraft((prev) => ({ ...prev, style: { ...prev.style, ...patch }, updatedAt: Date.now() }))
+    },
+    [setDraft]
+  )
+
+  const patchModels = useCallback(
+    (patch: Partial<ShortDramaDraftV2['models']>) => {
+      setDraft((prev) => ({ ...prev, models: { ...prev.models, ...patch }, updatedAt: Date.now() }))
+    },
+    [setDraft]
+  )
+
+  const addCharacter = useCallback(() => {
+    setDraft((prev) => ({
+      ...prev,
+      characters: [
+        ...prev.characters,
+        {
+          id: makeId(),
+          name: `角色 ${prev.characters.length + 1}`,
+          description: '',
+          sheet: createEmptyImageSlot('角色设定图'),
+          refs: [createEmptyImageSlot('参考图 1')],
+          primaryRefSlotId: undefined,
+        },
+      ],
+      updatedAt: Date.now(),
+    }))
+  }, [setDraft])
+
+  const removeCharacter = useCallback(
+    (characterId: string) => {
+      setDraft((prev) => ({
+        ...prev,
+        characters: prev.characters.filter((c) => c.id !== characterId),
+        // Also remove from shots
+        shots: prev.shots.map((s) => ({ ...s, characterIds: s.characterIds.filter((id) => id !== characterId) })),
+        updatedAt: Date.now(),
+      }))
+    },
+    [setDraft]
+  )
+
+  const updateCharacter = useCallback(
+    (characterId: string, patch: Partial<ShortDramaDraftV2['characters'][number]>) => {
+      setDraft((prev) => ({
+        ...prev,
+        characters: prev.characters.map((c) => (c.id === characterId ? ({ ...c, ...patch } as any) : c)),
+        updatedAt: Date.now(),
+      }))
+    },
+    [setDraft]
+  )
+
+  const addScene = useCallback(() => {
+    setDraft((prev) => ({
+      ...prev,
+      scenes: [
+        ...prev.scenes,
+        {
+          id: makeId(),
+          name: `场景 ${prev.scenes.length + 1}`,
+          description: '',
+          ref: createEmptyImageSlot('场景参考'),
+          refs: [],
+        },
+      ],
+      updatedAt: Date.now(),
+    }))
+  }, [setDraft])
+
+  const removeScene = useCallback(
+    (sceneId: string) => {
+      setDraft((prev) => ({
+        ...prev,
+        scenes: prev.scenes.filter((s) => s.id !== sceneId),
+        shots: prev.shots.map((sh) => (sh.sceneId === sceneId ? { ...sh, sceneId: undefined } : sh)),
+        updatedAt: Date.now(),
+      }))
+    },
+    [setDraft]
+  )
+
+  const updateScene = useCallback(
+    (sceneId: string, patch: Partial<ShortDramaDraftV2['scenes'][number]>) => {
+      setDraft((prev) => ({
+        ...prev,
+        scenes: prev.scenes.map((s) => (s.id === sceneId ? ({ ...s, ...patch } as any) : s)),
+        updatedAt: Date.now(),
+      }))
+    },
+    [setDraft]
+  )
+
+  const addShot = useCallback(() => {
+    setDraft((prev) => ({
+      ...prev,
+      shots: [...prev.shots, createEmptyShot(`镜头 ${prev.shots.length + 1}`)],
+      updatedAt: Date.now(),
+    }))
+  }, [setDraft])
+
+  const removeShot = useCallback(
+    (shotId: string) => {
+      setDraft((prev) => ({ ...prev, shots: prev.shots.filter((s) => s.id !== shotId), updatedAt: Date.now() }))
+    },
+    [setDraft]
+  )
+
+  const updateShot = useCallback(
+    (shotId: string, patch: Partial<ShortDramaDraftV2['shots'][number]>) => {
+      setDraft((prev) => ({
+        ...prev,
+        shots: prev.shots.map((s) => (s.id === shotId ? ({ ...s, ...patch } as any) : s)),
+        updatedAt: Date.now(),
+      }))
+    },
+    [setDraft]
+  )
+
+  const setSlotBusy = useCallback((slotId: string, busy: boolean) => {
+    setBusySlotIds((prev) => ({ ...prev, [slotId]: busy }))
+  }, [])
+
+  const resolveVariantInput = useCallback(async (variant: ShortDramaMediaVariant | undefined): Promise<string> => {
+    if (!variant) return ''
+    const s = String(variant.sourceUrl || '').trim()
+    if (s && /^https?:\/\//i.test(s)) return s
+    if (variant.mediaId) {
+      try {
+        const rec = await getMedia(variant.mediaId)
+        const dataUrl = String(rec?.data || '').trim()
+        if (dataUrl) return dataUrl
+      } catch {
+        // ignore
+      }
+    }
+    const d = String(variant.displayUrl || '').trim()
+    return d
+  }, [])
+
+  const getSelectedVariant = useCallback((slot: ShortDramaMediaSlot) => {
+    const id = slot.selectedVariantId
+    return (slot.variants || []).find((v) => v.id === id) || null
+  }, [])
+
+  const collectRefImagesForShot = useCallback(
+    async (shotId: string, role: 'start' | 'end') => {
+      const shot = draft.shots.find((s) => s.id === shotId)
+      if (!shot) return []
+
+      const refInputs: string[] = []
+
+      // Scene refs (primary + extra)
+      if (shot.sceneId) {
+        const scene = draft.scenes.find((s) => s.id === shot.sceneId)
+        const slots: ShortDramaMediaSlot[] = []
+        if (scene?.ref) slots.push(scene.ref)
+        if (Array.isArray(scene?.refs) && scene.refs.length > 0) slots.push(...scene.refs)
+        for (const slot of slots) {
+          const v = getSelectedVariant(slot)
+          const input = await resolveVariantInput(v || undefined)
+          if (input) refInputs.push(input)
+        }
+      }
+
+      // Character refs: sheet + (primary first) + other refs
+      for (const cid of shot.characterIds || []) {
+        const c = draft.characters.find((x) => x.id === cid)
+        if (!c) continue
+
+        // 1) Sheet (if any)
+        const sheetV = c.sheet ? getSelectedVariant(c.sheet) : null
+        const sheetInput = await resolveVariantInput(sheetV || undefined)
+        if (sheetInput) refInputs.push(sheetInput)
+
+        // 2) Refs
+        const allRefSlots = Array.isArray(c.refs) ? c.refs.slice() : []
+        const primary = c.primaryRefSlotId ? allRefSlots.find((r) => r.id === c.primaryRefSlotId) : null
+        const ordered = primary ? [primary, ...allRefSlots.filter((r) => r.id !== primary.id)] : allRefSlots
+        for (const slot of ordered) {
+          const v = getSelectedVariant(slot)
+          const input = await resolveVariantInput(v || undefined)
+          if (input) refInputs.push(input)
+        }
+      }
+
+      // End frame can use start frame as extra ref (helps identity continuity)
+      if (role === 'end') {
+        const startV = getSelectedVariant(shot.frames.start.slot)
+        const input = await resolveVariantInput(startV || undefined)
+        if (input) refInputs.unshift(input)
+      }
+
+      return Array.from(new Set(refInputs)).filter(Boolean)
+    },
+    [draft, getSelectedVariant, resolveVariantInput]
+  )
+
+  const buildFramePrompt = useCallback(
+    (shotId: string, role: 'start' | 'end') => {
+      const shot = draft.shots.find((s) => s.id === shotId)
+      if (!shot) return ''
+      const frame = role === 'start' ? shot.frames.start : shot.frames.end
+
+      const parts: string[] = []
+      const logline = String(draft.logline || '').trim()
+      const style = buildEffectiveStyle(draft.style)
+      const preset = getShortDramaStylePresetById(draft.style.presetId)
+
+      if (draft.title) parts.push(`短剧标题：${draft.title}`)
+      if (logline) parts.push(`短剧梗概：\n${logline}`)
+
+      parts.push(`风格预设：${preset.name}\n${preset.description}`)
+      if (style.styleText) parts.push(`统一画风/镜头语言（必须严格遵守）：\n${style.styleText}`)
+      if (style.negativeText) parts.push(`全局负面约束（严格避免）：\n${style.negativeText}`)
+
+      if (shot.sceneId) {
+        const scene = draft.scenes.find((s) => s.id === shot.sceneId)
+        const sceneText = String(scene?.description || '').trim()
+        if (scene?.name || sceneText) parts.push(`场景：${String(scene?.name || '').trim()}\n${sceneText}`)
+      }
+
+      const chars = (shot.characterIds || [])
+        .map((id) => draft.characters.find((c) => c.id === id))
+        .filter(Boolean) as any[]
+      if (chars.length > 0) {
+        const charBlock = chars
+          .map((c) => `- ${String(c.name || '').trim()}\n${String(c.description || '').trim()}`.trim())
+          .join('\n\n')
+        parts.push(`出镜角色设定（保持同一张脸/发型/服装/体型的一致性）：\n${charBlock}`)
+      }
+
+      const beat = String(shot.beat || '').trim()
+      if (beat) parts.push(`本镜头意图/节拍：\n${beat}`)
+
+      const prompt = String(frame.prompt || '').trim()
+      if (prompt) parts.push(prompt)
+
+      return parts.join('\n\n').trim()
+    },
+    [draft]
+  )
+
+  const collectRefImagesForCharacter = useCallback(
+    async (characterId: string) => {
+      const c = draft.characters.find((x) => x.id === characterId)
+      if (!c) return []
+      const inputs: string[] = []
+      for (const slot of c.refs || []) {
+        const v = getSelectedVariant(slot)
+        const input = await resolveVariantInput(v || undefined)
+        if (input) inputs.push(input)
+      }
+      return Array.from(new Set(inputs)).filter(Boolean)
+    },
+    [draft.characters, getSelectedVariant, resolveVariantInput]
+  )
+
+  const buildCharacterSheetPrompt = useCallback(
+    (characterId: string) => {
+      const c = draft.characters.find((x) => x.id === characterId)
+      if (!c) return ''
+
+      const parts: string[] = []
+      const logline = String(draft.logline || '').trim()
+      const style = buildEffectiveStyle(draft.style)
+      const preset = getShortDramaStylePresetById(draft.style.presetId)
+
+      if (draft.title) parts.push(`短剧标题：${draft.title}`)
+      if (logline) parts.push(`短剧梗概：\n${logline}`)
+
+      parts.push(`风格预设：${preset.name}\n${preset.description}`)
+      if (style.styleText) parts.push(`统一画风/镜头语言（必须严格遵守）：\n${style.styleText}`)
+      if (style.negativeText) parts.push(`全局负面约束（严格避免）：\n${style.negativeText}`)
+
+      parts.push(`角色：${String(c.name || '').trim()}`)
+      const desc = String(c.description || '').trim()
+      if (desc) parts.push(`角色设定（必须保持一致性）：\n${desc}`)
+
+      parts.push(
+        [
+          '请生成「单张」角色设定图（character sheet），不要输出解释文字。',
+          '同一张图中包含：正面全身、侧面全身、背面全身，以及至少 6 种表情（中性/开心/愤怒/悲伤/惊讶/害怕）。',
+          '要求：同一个角色（同一张脸/发型/服装/体型），干净背景，构图清晰；不要文字标签、不要水印。',
+        ].join('\n')
+      )
+
+      return parts.join('\n\n').trim()
+    },
+    [draft]
+  )
+
+  const runGenerateCharacterSheet = useCallback(
+    async (characterId: string) => {
+      const c = draft.characters.find((x) => x.id === characterId)
+      if (!c) return
+      const slotId = c.sheet.id
+      if (busySlotsRef.current[slotId]) return
+
+      const prompt = buildCharacterSheetPrompt(characterId)
+      if (!prompt) {
+        window.$message?.error?.('请先填写角色设定')
+        return
+      }
+
+      const running: ShortDramaMediaVariant = {
+        id: makeId(),
+        kind: 'image',
+        status: 'running',
+        createdAt: Date.now(),
+        createdBy: 'manual',
+        modelKey: draft.models.imageModelKey,
+        promptSnapshot: prompt,
+        styleSnapshot: { ...draft.style },
+      }
+
+      setSlotBusy(slotId, true)
+      setDraft((prev) => appendVariantToSlot(prev, slotId, running))
+      try {
+        const refImages = await collectRefImagesForCharacter(characterId)
+        const task = queue.enqueue('image', slotId, async () => {
+          return await generateShortDramaImage({
+            modelKey: draft.models.imageModelKey,
+            prompt,
+            size: draft.models.imageSize,
+            quality: draft.models.imageQuality,
+            refImages,
+          })
+        })
+        const result = await task.promise
+
+        const displayUrl = String(result.displayUrl || '').trim()
+        const sourceUrl = String(result.imageUrl || '').trim()
+        let mediaId: string | undefined
+        if (displayUrl.startsWith('data:')) {
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:character:${characterId}:sheet:${running.id}`,
+            projectId,
+            type: 'image',
+            data: displayUrl,
+            sourceUrl: sourceUrl && sourceUrl !== displayUrl ? sourceUrl : undefined,
+            model: draft.models.imageModelKey,
+          })
+        }
+
+        setDraft((prev) =>
+          updateVariantInSlot(prev, slotId, running.id, {
+            status: 'success',
+            sourceUrl: sourceUrl || undefined,
+            displayUrl: mediaId ? '' : displayUrl || undefined,
+            localPath: result.localPath || '',
+            mediaId,
+          })
+        )
+        window.$message?.success?.('角色设定图已生成（新增版本）')
+      } catch (err: any) {
+        const msg = err instanceof Error ? err.message : String(err || '生成失败')
+        setDraft((prev) => updateVariantInSlot(prev, slotId, running.id, { status: 'error', error: msg }))
+        window.$message?.error?.(msg)
+      } finally {
+        setSlotBusy(slotId, false)
+      }
+    },
+    [draft, projectId, buildCharacterSheetPrompt, collectRefImagesForCharacter, queue, setDraft, setSlotBusy]
+  )
+
+  const runGenerateFrameImage = useCallback(
+    async (shotId: string, role: 'start' | 'end') => {
+      const shot = draft.shots.find((s) => s.id === shotId)
+      if (!shot) return
+      const slot = role === 'start' ? shot.frames.start.slot : shot.frames.end.slot
+      const slotId = slot.id
+      if (busySlotsRef.current[slotId]) return
+
+      const prompt = buildFramePrompt(shotId, role)
+      if (!prompt) {
+        window.$message?.error?.('请先填写该帧的画面提示词')
+        return
+      }
+
+      const running: ShortDramaMediaVariant = {
+        id: makeId(),
+        kind: 'image',
+        status: 'running',
+        createdAt: Date.now(),
+        createdBy: 'manual',
+        modelKey: draft.models.imageModelKey,
+        promptSnapshot: prompt,
+        styleSnapshot: { ...draft.style },
+      }
+
+      setSlotBusy(slotId, true)
+      setDraft((prev) => appendVariantToSlot(prev, slotId, running))
+      try {
+        const refImages = await collectRefImagesForShot(shotId, role)
+        const task = queue.enqueue('image', slotId, async () => {
+          return await generateShortDramaImage({
+            modelKey: draft.models.imageModelKey,
+            prompt,
+            size: draft.models.imageSize,
+            quality: draft.models.imageQuality,
+            refImages,
+          })
+        })
+        const result = await task.promise
+
+        // Always persist generated data urls into IndexedDB to avoid bloating localStorage.
+        const displayUrl = String(result.displayUrl || '').trim()
+        const sourceUrl = String(result.imageUrl || '').trim()
+        let mediaId: string | undefined
+        if (displayUrl.startsWith('data:')) {
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:slot:${slotId}:variant:${running.id}`,
+            projectId,
+            type: 'image',
+            data: displayUrl,
+            sourceUrl: sourceUrl && sourceUrl !== displayUrl ? sourceUrl : undefined,
+            model: draft.models.imageModelKey,
+          })
+        }
+
+        setDraft((prev) =>
+          updateVariantInSlot(prev, slotId, running.id, {
+            status: 'success',
+            sourceUrl: sourceUrl || undefined,
+            displayUrl: mediaId ? '' : displayUrl || undefined,
+            localPath: result.localPath || '',
+            mediaId,
+          })
+        )
+
+        useAssetsStore.getState().addAsset({
+          type: 'image',
+          src: mediaId ? displayUrl : displayUrl,
+          title: `${shot.title || '镜头'} · ${role === 'start' ? '首帧' : '尾帧'}`.slice(0, 80),
+          model: draft.models.imageModelKey,
+        })
+
+        window.$message?.success?.(`${role === 'start' ? '首帧' : '尾帧'}已生成（新增版本）`)
+      } catch (err: any) {
+        const msg = err instanceof Error ? err.message : String(err || '生成失败')
+        setDraft((prev) => updateVariantInSlot(prev, slotId, running.id, { status: 'error', error: msg }))
+        window.$message?.error?.(msg)
+      } finally {
+        setSlotBusy(slotId, false)
+      }
+    },
+    [
+      draft,
+      projectId,
+      buildFramePrompt,
+      collectRefImagesForShot,
+      queue,
+      setDraft,
+      setSlotBusy,
+    ]
+  )
+
+  const runGenerateShotVideo = useCallback(
+    async (shotId: string) => {
+      const shot = draft.shots.find((s) => s.id === shotId)
+      if (!shot) return
+      const slotId = shot.video.id
+      if (busySlotsRef.current[slotId]) return
+
+      const videoPrompt = String(shot.videoPrompt || '').trim() || String(shot.frames.start.prompt || '').trim()
+      const prompt = videoPrompt ? buildFramePrompt(shotId, 'start').split('\n\n').slice(0, 3).join('\n\n') + `\n\n视频描述：\n${videoPrompt}` : ''
+      if (!prompt) {
+        window.$message?.error?.('请先填写视频提示词（或首帧提示词）')
+        return
+      }
+
+      const startV = getSelectedVariant(shot.frames.start.slot)
+      const endV = getSelectedVariant(shot.frames.end.slot)
+      const startInput = await resolveVariantInput(startV || undefined)
+      const endInput = await resolveVariantInput(endV || undefined)
+
+      if (!startInput) {
+        window.$message?.warning?.('未检测到首帧，将按纯文生视频执行（若模型支持）')
+      }
+
+      const running: ShortDramaMediaVariant = {
+        id: makeId(),
+        kind: 'video',
+        status: 'running',
+        createdAt: Date.now(),
+        createdBy: 'manual',
+        modelKey: draft.models.videoModelKey,
+        promptSnapshot: prompt,
+        styleSnapshot: { ...draft.style },
+      }
+
+      setSlotBusy(slotId, true)
+      setDraft((prev) => appendVariantToSlot(prev, slotId, running))
+      try {
+        const images = [startInput, endInput].filter(Boolean)
+        const task = queue.enqueue('video', slotId, async () => {
+          return await generateShortDramaVideo({
+            modelKey: draft.models.videoModelKey,
+            prompt,
+            ratio: draft.models.videoRatio,
+            duration: draft.models.videoDuration,
+            size: draft.models.videoSize,
+            images,
+            lastFrame: endInput || '',
+          })
+        })
+        const result = await task.promise
+
+        setDraft((prev) =>
+          updateVariantInSlot(prev, slotId, running.id, {
+            status: 'success',
+            taskId: result.taskId,
+            sourceUrl: result.videoUrl,
+            displayUrl: result.displayUrl,
+            localPath: result.localPath || '',
+          })
+        )
+
+        useAssetsStore.getState().addAsset({
+          type: 'video',
+          src: result.displayUrl,
+          title: `${shot.title || '镜头'} · 视频`.slice(0, 80),
+          model: draft.models.videoModelKey,
+        })
+
+        window.$message?.success?.('视频已生成（新增版本）')
+      } catch (err: any) {
+        const msg = err instanceof Error ? err.message : String(err || '生成失败')
+        setDraft((prev) => updateVariantInSlot(prev, slotId, running.id, { status: 'error', error: msg }))
+        window.$message?.error?.(msg)
+      } finally {
+        setSlotBusy(slotId, false)
+      }
+    },
+    [draft, buildFramePrompt, getSelectedVariant, resolveVariantInput, queue, setDraft, setSlotBusy]
+  )
+
+  const uploadToImageSlot = useCallback(
+    async (slotId: string, file: File) => {
+      if (!file || !String(file.type || '').startsWith('image/')) {
+        window.$message?.error?.('请选择图片文件')
+        return
+      }
+      const dataUrl = await readFileAsDataUrl(file)
+      const mediaId = await saveMedia({
+        nodeId: `short_drama:${projectId}:slot:${slotId}:upload:${Date.now()}`,
+        projectId,
+        type: 'image',
+        data: dataUrl,
+      })
+      const v: ShortDramaMediaVariant = {
+        id: makeId(),
+        kind: 'image',
+        status: 'success',
+        createdAt: Date.now(),
+        createdBy: 'manual',
+        modelKey: 'upload',
+        mediaId,
+      }
+      setDraft((prev) => appendVariantToSlot(prev, slotId, v))
+      window.$message?.success?.('已添加为新版本')
+    },
+    [projectId, setDraft]
+  )
+
+  const variantFromPicked = useCallback(
+    async (slotId: string, picked: ShortDramaPickedImage): Promise<ShortDramaMediaVariant> => {
+      const variantId = makeId()
+      const label = String(picked.label || '').trim()
+      const src0 = String(picked.sourceUrl || '').trim()
+      const display0 = String(picked.displayUrl || '').trim()
+      let sourceUrl = src0 && /^https?:\/\//i.test(src0) ? src0 : ''
+      let displayUrl = display0
+      let mediaId = String(picked.mediaId || '').trim()
+
+      // If we have a large inline dataURL and no mediaId, persist it.
+      const isDataUrl = displayUrl.startsWith('data:')
+      const isHugeInline = isDataUrl || (!sourceUrl && displayUrl && displayUrl.length > 50000)
+      if (!mediaId && isHugeInline) {
+        try {
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:slot:${slotId}:picked:${picked.origin}:${picked.id}:${variantId}`,
+            projectId,
+            type: 'image',
+            data: displayUrl,
+            sourceUrl: sourceUrl || undefined,
+            model: `pick:${picked.origin}`,
+          })
+          if (mediaId) displayUrl = ''
+        } catch {
+          // ignore
+        }
+      }
+
+      // Canvas/history http url could be stored as sourceUrl only.
+      if (!sourceUrl && /^https?:\/\//i.test(displayUrl)) {
+        sourceUrl = displayUrl
+        displayUrl = ''
+      }
+
+      return {
+        id: variantId,
+        kind: 'image',
+        status: 'success',
+        createdAt: Date.now(),
+        createdBy: 'manual',
+        modelKey: `pick:${picked.origin}`,
+        promptSnapshot: label ? `picked:${label}` : undefined,
+        sourceUrl: sourceUrl || undefined,
+        displayUrl: displayUrl || undefined,
+        mediaId: mediaId || undefined,
+      }
+    },
+    [projectId]
+  )
+
+  const handlePickedImages = useCallback(
+    async (items: ShortDramaPickedImage[]) => {
+      const target = pickerTargetRef.current
+      if (!target) return
+      if (!Array.isArray(items) || items.length === 0) return
+
+      if (target.kind === 'character_refs') {
+        const slots: ShortDramaMediaSlot[] = []
+        const baseCount = (draft.characters.find((c) => c.id === target.characterId)?.refs || []).length
+        for (const it of items) {
+          const label = String(it.label || '').trim() || `参考图 ${baseCount + slots.length + 1}`
+          const slot = createEmptyImageSlot(label)
+          const v = await variantFromPicked(slot.id, it)
+          slot.variants = [v]
+          slot.selectedVariantId = v.id
+          slot.selectionLockedByUser = false
+          slots.push(slot)
+        }
+        setDraft((prev) => ({
+          ...prev,
+          characters: prev.characters.map((c) => {
+            if (c.id !== target.characterId) return c
+            const nextRefs = [...(c.refs || []), ...slots]
+            const primaryRefSlotId = c.primaryRefSlotId || nextRefs[0]?.id
+            return { ...c, refs: nextRefs, primaryRefSlotId }
+          }),
+          updatedAt: Date.now(),
+        }))
+        window.$message?.success?.(`已添加 ${slots.length} 张参考图`)
+        return
+      }
+
+      if (target.kind === 'scene_refs') {
+        const slots: ShortDramaMediaSlot[] = []
+        for (const it of items) {
+          const label = String(it.label || '').trim() || `参考图 ${slots.length + 1}`
+          const slot = createEmptyImageSlot(label)
+          const v = await variantFromPicked(slot.id, it)
+          slot.variants = [v]
+          slot.selectedVariantId = v.id
+          slot.selectionLockedByUser = false
+          slots.push(slot)
+        }
+        setDraft((prev) => ({
+          ...prev,
+          scenes: prev.scenes.map((s) => {
+            if (s.id !== target.sceneId) return s
+            return { ...s, refs: [...(s.refs || []), ...slots] }
+          }),
+          updatedAt: Date.now(),
+        }))
+        window.$message?.success?.(`已添加 ${slots.length} 张场景参考`)
+        return
+      }
+
+      if (target.kind === 'slot_variants') {
+        const slotId = target.slotId
+        const variants: ShortDramaMediaVariant[] = []
+        for (const it of items) {
+          variants.push(await variantFromPicked(slotId, it))
+        }
+        setDraft((prev) => {
+          let cur = prev
+          for (const v of variants) cur = appendVariantToSlot(cur, slotId, v)
+          return { ...cur, updatedAt: Date.now() }
+        })
+        window.$message?.success?.(`已添加 ${variants.length} 个版本`)
+      }
+    },
+    [appendVariantToSlot, createEmptyImageSlot, draft.characters, setDraft, variantFromPicked]
+  )
+
+  const removeVariant = useCallback(
+    (slotId: string, variantId: string) => {
+      setDraft((prev) => removeVariantFromSlot(prev, slotId, variantId))
+    },
+    [setDraft]
+  )
+
+  const adoptVariant = useCallback(
+    (slotId: string, variantId: string) => {
+      setDraft((prev) => setSlotSelectedVariant(prev, slotId, variantId))
+    },
+    [setDraft]
+  )
+
+  const imageConcurrency = prefs.imageConcurrency
+  const videoConcurrency = prefs.videoConcurrency
+
+  return (
+    <>
+      <div className="flex h-full min-h-0 flex-col gap-4 lg:flex-row">
+        {/* Left column (30%): top settings + bottom character/scene */}
+        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-[0_0_30%] lg:min-w-[360px] lg:max-w-[520px]">
+          <div className="flex min-h-0 flex-[0_0_42%] flex-col">
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">项目 / 风格 / 模型</div>
+            </div>
+            <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
+              {/* Left: meta + style + models */}
+              <div className="space-y-4">
+        <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="text-sm font-semibold text-[var(--text-primary)]">项目信息</div>
+          <div className="mt-3 space-y-3">
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">标题</label>
+              <input
+                value={draft.title}
+                onChange={(e) => patchDraft({ title: e.target.value })}
+                className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                placeholder="例如：失恋后我成了霸总…"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">一句话梗概</label>
+              <textarea
+                value={draft.logline}
+                onChange={(e) => patchDraft({ logline: e.target.value })}
+                className="min-h-[80px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                placeholder="主冲突 + 目标 + 反转…"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">剧本（可选）</label>
+              <textarea
+                value={draft.script.text}
+                onChange={(e) => patchDraft({ script: { ...draft.script, text: e.target.value } })}
+                className="min-h-[110px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                placeholder="粘贴/导入剧本文本（自动模式会基于此拆分镜头）"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-[var(--text-primary)]">画风与统一要求</div>
+            <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={!!draft.style.locked}
+                onChange={(e) => patchStyle({ locked: e.target.checked })}
+              />
+              锁定（AI 不可改）
+            </label>
+          </div>
+          <div className="mt-3 space-y-3">
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">预设</label>
+              <select
+                value={draft.style.presetId}
+                onChange={(e) => patchStyle({ presetId: e.target.value })}
+                className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+              >
+                {SHORT_DRAMA_STYLE_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <div className="text-xs text-[var(--text-secondary)]">{getShortDramaStylePresetById(draft.style.presetId).description}</div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">补充/覆盖（可选）</label>
+              <textarea
+                value={draft.style.customText}
+                onChange={(e) => patchStyle({ customText: e.target.value })}
+                className="min-h-[90px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                placeholder="例如：固定服装、固定发型、固定色板、固定镜头焦段…"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">全局负面（可选）</label>
+              <textarea
+                value={draft.style.negativeText}
+                onChange={(e) => patchStyle({ negativeText: e.target.value })}
+                className="min-h-[70px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                placeholder="例如：禁止字幕/水印、禁止换装、禁止换脸…"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="text-sm font-semibold text-[var(--text-primary)]">模型设置</div>
+          <div className="mt-3 space-y-3">
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">分析/拆分模型（自动模式使用）</label>
+              <select
+                value={draft.models.analysisModelKey || DEFAULT_CHAT_MODEL}
+                onChange={(e) => patchModels({ analysisModelKey: e.target.value })}
+                className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+              >
+                {chatModels.map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="h-px w-full bg-[var(--border-color)]" />
+
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">图片模型</label>
+              <select
+                value={draft.models.imageModelKey || DEFAULT_IMAGE_MODEL}
+                onChange={(e) => patchModels({ imageModelKey: e.target.value })}
+                className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+              >
+                {imageModels.map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {Array.isArray(imageModelCfg?.sizes) && imageModelCfg.sizes.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">图片比例/尺寸</label>
+                <select
+                  value={draft.models.imageSize || ''}
+                  onChange={(e) => patchModels({ imageSize: e.target.value || undefined })}
+                  className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                >
+                  <option value="">默认</option>
+                  {(imageModelCfg.sizes as any[]).map((s) => (
+                    <option key={String(s)} value={String(s)}>
+                      {String(s)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {Array.isArray(imageModelCfg?.qualities) && imageModelCfg.qualities.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">图片画质</label>
+                <select
+                  value={draft.models.imageQuality || ''}
+                  onChange={(e) => patchModels({ imageQuality: e.target.value || undefined })}
+                  className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                >
+                  <option value="">默认</option>
+                  {(imageModelCfg.qualities as any[]).map((q: any) => (
+                    <option key={String(q?.key || q)} value={String(q?.key || q)}>
+                      {String(q?.label || q?.key || q)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="h-px w-full bg-[var(--border-color)]" />
+
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频模型（工作台支持）</label>
+              <select
+                value={draft.models.videoModelKey || DEFAULT_VIDEO_MODEL}
+                onChange={(e) => patchModels({ videoModelKey: e.target.value })}
+                className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+              >
+                {videoModels.map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              <div className="text-xs text-[var(--text-secondary)]">当前仅支持：Sora（unified）、Veo（unified）、Grok（unified）、Kling（video）。</div>
+            </div>
+
+            {Array.isArray(videoModelCfg?.ratios) && videoModelCfg.ratios.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频比例</label>
+                <select
+                  value={draft.models.videoRatio || ''}
+                  onChange={(e) => patchModels({ videoRatio: e.target.value || undefined })}
+                  className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                >
+                  <option value="">默认</option>
+                  {(videoModelCfg.ratios as any[]).map((r) => (
+                    <option key={String(r)} value={String(r)}>
+                      {String(r)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {Array.isArray(videoModelCfg?.durs) && videoModelCfg.durs.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频时长</label>
+                <select
+                  value={draft.models.videoDuration ? String(draft.models.videoDuration) : ''}
+                  onChange={(e) => patchModels({ videoDuration: e.target.value ? Number(e.target.value) : undefined })}
+                  className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                >
+                  <option value="">默认</option>
+                  {(videoModelCfg.durs as any[]).map((d: any) => (
+                    <option key={String(d?.key || d)} value={String(d?.key || d)}>
+                      {String(d?.label || d?.key || d)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {Array.isArray(videoModelCfg?.sizes) && videoModelCfg.sizes.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频尺寸</label>
+                <select
+                  value={draft.models.videoSize || ''}
+                  onChange={(e) => patchModels({ videoSize: e.target.value || undefined })}
+                  className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                >
+                  <option value="">默认</option>
+                  {(videoModelCfg.sizes as any[]).map((s: any) => (
+                    <option key={String(s?.key || s)} value={String(s?.key || s)}>
+                      {String(s?.label || s?.key || s)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="text-sm font-semibold text-[var(--text-primary)]">并发设置</div>
+          <div className="mt-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-[var(--text-secondary)]">图片并发</div>
+              <input
+                type="number"
+                min={1}
+                max={6}
+                value={imageConcurrency}
+                onChange={(e) => setPrefs((p) => ({ ...p, imageConcurrency: clampInt(e.target.value, 1, 6, 3) }))}
+                className="w-20 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-2 py-1 text-sm text-[var(--text-primary)]"
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-[var(--text-secondary)]">视频并发</div>
+              <input
+                type="number"
+                min={1}
+                max={3}
+                value={videoConcurrency}
+                onChange={(e) => setPrefs((p) => ({ ...p, videoConcurrency: clampInt(e.target.value, 1, 3, 1) }))}
+                className="w-20 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-2 py-1 text-sm text-[var(--text-primary)]"
+              />
+            </div>
+            <div className="text-xs text-[var(--text-secondary)]">并发已生效（自动/手动通用）。</div>
+          </div>
+        </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">角色 / 场景</div>
+            </div>
+            <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
+              <div className="space-y-4">
+        <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-[var(--text-primary)]">角色库</div>
+            <Button size="sm" onClick={addCharacter} className="gap-1">
+              <Plus className="h-4 w-4" />
+              添加角色
+            </Button>
+          </div>
+          <div className="mt-3 space-y-3">
+            {draft.characters.length === 0 ? (
+              <div className="text-sm text-[var(--text-secondary)]">暂无角色。建议先添加并绑定参考图，以保证人物一致性。</div>
+            ) : null}
+
+            {draft.characters.map((c) => {
+              return (
+                <div key={c.id} className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={c.name}
+                      onChange={(e) => updateCharacter(c.id, { name: e.target.value })}
+                      className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      placeholder="角色名"
+                    />
+                    <Button size="sm" variant="ghost" className="text-red-500" onClick={() => removeCharacter(c.id)} title="删除角色">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="mt-2">
+                    <textarea
+                      value={c.description}
+                      onChange={(e) => updateCharacter(c.id, { description: e.target.value })}
+                      className="min-h-[70px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      placeholder="外观、服装、性格、发型、固定细节（必须不变）…"
+                    />
+                  </div>
+
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold text-[var(--text-primary)]">角色设定图（单张多角度）</div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            id={`upload-sheet-${c.id}`}
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files || [])
+                              if (files.length === 0) return
+                              void (async () => {
+                                for (const f of files) {
+                                  await uploadToImageSlot(c.sheet.id, f)
+                                }
+                              })()
+                              e.currentTarget.value = ''
+                            }}
+                          />
+                          <Button size="sm" variant="ghost" type="button" onClick={() => document.getElementById(`upload-sheet-${c.id}`)?.click()}>
+                            <Upload className="mr-1 h-4 w-4" />
+                            上传
+                          </Button>
+                          <Button size="sm" variant="ghost" disabled={!!busySlotsRef.current[c.sheet.id]} onClick={() => void runGenerateCharacterSheet(c.id)}>
+                            {!!busySlotsRef.current[c.sheet.id] ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ImageIcon className="mr-1 h-4 w-4" />}
+                            生成
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="mt-2">
+                        <SlotVersions
+                          slot={c.sheet}
+                          onAdopt={(vid) => adoptVariant(c.sheet.id, vid)}
+                          onRemove={(vid) => removeVariant(c.sheet.id, vid)}
+                          disabled={!!busySlotsRef.current[c.sheet.id]}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold text-[var(--text-primary)]">参考图（可多张）</div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            type="button"
+                            onClick={() => {
+                              setPickerTarget({ kind: 'character_refs', characterId: c.id })
+                              setPickerInitialTab('history')
+                              setPickerOpen(true)
+                            }}
+                          >
+                            从历史添加
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            type="button"
+                            onClick={() => {
+                              setPickerTarget({ kind: 'character_refs', characterId: c.id })
+                              setPickerInitialTab('canvas')
+                              setPickerOpen(true)
+                            }}
+                          >
+                            从画布添加
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            className="gap-1"
+                            onClick={() => updateCharacter(c.id, { refs: [...c.refs, createEmptyImageSlot(`参考图 ${c.refs.length + 1}`)] })}
+                          >
+                            <Plus className="h-4 w-4" />
+                            新增槽位
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 space-y-2">
+                        {(c.refs || []).map((slot, slotIdx) => {
+                          const isPrimary = c.primaryRefSlotId ? c.primaryRefSlotId === slot.id : slotIdx === 0
+                          const slotLabel = String(slot.label || `参考图 ${slotIdx + 1}`)
+                          return (
+                            <div key={slot.id} className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-xs font-medium text-[var(--text-primary)]">
+                                  {slotLabel}
+                                  {isPrimary ? <span className="ml-2 text-[var(--accent-color)]">主参考</span> : null}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={slotIdx === 0}
+                                    onClick={() => {
+                                      const refs = (c.refs || []).slice()
+                                      const tmp = refs[slotIdx - 1]
+                                      refs[slotIdx - 1] = refs[slotIdx]
+                                      refs[slotIdx] = tmp
+                                      updateCharacter(c.id, { refs })
+                                    }}
+                                  >
+                                    上移
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={slotIdx === (c.refs || []).length - 1}
+                                    onClick={() => {
+                                      const refs = (c.refs || []).slice()
+                                      const tmp = refs[slotIdx + 1]
+                                      refs[slotIdx + 1] = refs[slotIdx]
+                                      refs[slotIdx] = tmp
+                                      updateCharacter(c.id, { refs })
+                                    }}
+                                  >
+                                    下移
+                                  </Button>
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    multiple
+                                    className="hidden"
+                                    id={`upload-charref-slot-${slot.id}`}
+                                    onChange={(e) => {
+                                      const files = Array.from(e.target.files || [])
+                                      if (files.length === 0) return
+                                      void (async () => {
+                                        for (const f of files) {
+                                          await uploadToImageSlot(slot.id, f)
+                                        }
+                                      })()
+                                      e.currentTarget.value = ''
+                                    }}
+                                  />
+                                  <Button size="sm" variant="ghost" type="button" onClick={() => document.getElementById(`upload-charref-slot-${slot.id}`)?.click()}>
+                                    <Upload className="mr-1 h-4 w-4" />
+                                    上传
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={isPrimary}
+                                    onClick={() => updateCharacter(c.id, { primaryRefSlotId: slot.id })}
+                                  >
+                                    设为主参考
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="text-red-500"
+                                    disabled={(c.refs || []).length <= 1}
+                                    onClick={() => {
+                                      const nextRefs = (c.refs || []).filter((r) => r.id !== slot.id)
+                                      const nextPrimary = c.primaryRefSlotId === slot.id ? undefined : c.primaryRefSlotId
+                                      updateCharacter(c.id, { refs: nextRefs, primaryRefSlotId: nextPrimary })
+                                    }}
+                                  >
+                                    移除槽位
+                                  </Button>
+                                </div>
+                              </div>
+                              <div className="mt-2">
+                                <SlotVersions
+                                  slot={slot}
+                                  onAdopt={(vid) => adoptVariant(slot.id, vid)}
+                                  onRemove={(vid) => removeVariant(slot.id, vid)}
+                                  disabled={!!busySlotsRef.current[slot.id]}
+                                />
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-[var(--text-primary)]">场景库</div>
+            <Button size="sm" onClick={addScene} className="gap-1">
+              <Plus className="h-4 w-4" />
+              添加场景
+            </Button>
+          </div>
+          <div className="mt-3 space-y-3">
+            {draft.scenes.length === 0 ? <div className="text-sm text-[var(--text-secondary)]">暂无场景。建议创建并绑定场景参考，避免每镜头“换景”。</div> : null}
+            {draft.scenes.map((s) => {
+              const slot = s.ref
+              const selected = (slot.variants || []).find((v) => v.id === slot.selectedVariantId) || null
+              return (
+                <div key={s.id} className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={s.name}
+                      onChange={(e) => updateScene(s.id, { name: e.target.value })}
+                      className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      placeholder="场景名"
+                    />
+                    <Button size="sm" variant="ghost" className="text-red-500" onClick={() => removeScene(s.id)} title="删除场景">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="mt-2">
+                    <textarea
+                      value={s.description}
+                      onChange={(e) => updateScene(s.id, { description: e.target.value })}
+                      className="min-h-[60px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      placeholder="场景固定元素（建筑/陈设/时间/天气/色调/镜头一致性）…"
+                    />
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold text-[var(--text-primary)]">主参考图</div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            id={`upload-scene-${s.id}`}
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files || [])
+                              if (files.length === 0) return
+                              void (async () => {
+                                for (const f of files) {
+                                  await uploadToImageSlot(slot.id, f)
+                                }
+                              })()
+                              e.currentTarget.value = ''
+                            }}
+                          />
+                          <Button size="sm" variant="secondary" type="button" onClick={() => document.getElementById(`upload-scene-${s.id}`)?.click()}>
+                            <Upload className="mr-1 h-4 w-4" />
+                            上传
+                          </Button>
+                        </div>
+                      </div>
+                      {selected ? (
+                        <div className="mt-2">
+                          <VariantThumb variant={selected} className="h-24 w-full" />
+                        </div>
+                      ) : null}
+                      <div className="mt-2">
+                        <SlotVersions
+                          slot={slot}
+                          onAdopt={(vid) => adoptVariant(slot.id, vid)}
+                          onRemove={(vid) => removeVariant(slot.id, vid)}
+                          disabled={!!busySlotsRef.current[slot.id]}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold text-[var(--text-primary)]">额外参考（可多张）</div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            type="button"
+                            onClick={() => {
+                              setPickerTarget({ kind: 'scene_refs', sceneId: s.id })
+                              setPickerInitialTab('history')
+                              setPickerOpen(true)
+                            }}
+                          >
+                            从历史添加
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            type="button"
+                            onClick={() => {
+                              setPickerTarget({ kind: 'scene_refs', sceneId: s.id })
+                              setPickerInitialTab('canvas')
+                              setPickerOpen(true)
+                            }}
+                          >
+                            从画布添加
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            className="gap-1"
+                            onClick={() => updateScene(s.id, { refs: [...(s.refs || []), createEmptyImageSlot(`参考图 ${(s.refs || []).length + 1}`)] })}
+                          >
+                            <Plus className="h-4 w-4" />
+                            新增槽位
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-2 space-y-2">
+                        {(s.refs || []).length === 0 ? (
+                          <div className="text-xs text-[var(--text-secondary)]">暂无额外参考</div>
+                        ) : null}
+
+                        {(s.refs || []).map((refSlot, i) => (
+                          <div key={refSlot.id} className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs font-medium text-[var(--text-primary)]">{String(refSlot.label || `参考图 ${i + 1}`)}</div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={i === 0}
+                                  onClick={() => {
+                                    const refs = (s.refs || []).slice()
+                                    const tmp = refs[i - 1]
+                                    refs[i - 1] = refs[i]
+                                    refs[i] = tmp
+                                    updateScene(s.id, { refs })
+                                  }}
+                                >
+                                  上移
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={i === (s.refs || []).length - 1}
+                                  onClick={() => {
+                                    const refs = (s.refs || []).slice()
+                                    const tmp = refs[i + 1]
+                                    refs[i + 1] = refs[i]
+                                    refs[i] = tmp
+                                    updateScene(s.id, { refs })
+                                  }}
+                                >
+                                  下移
+                                </Button>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  className="hidden"
+                                  id={`upload-scene-ref-slot-${refSlot.id}`}
+                                  onChange={(e) => {
+                                    const files = Array.from(e.target.files || [])
+                                    if (files.length === 0) return
+                                    void (async () => {
+                                      for (const f of files) {
+                                        await uploadToImageSlot(refSlot.id, f)
+                                      }
+                                    })()
+                                    e.currentTarget.value = ''
+                                  }}
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  type="button"
+                                  onClick={() => document.getElementById(`upload-scene-ref-slot-${refSlot.id}`)?.click()}
+                                >
+                                  <Upload className="mr-1 h-4 w-4" />
+                                  上传
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-red-500"
+                                  onClick={() => updateScene(s.id, { refs: (s.refs || []).filter((x) => x.id !== refSlot.id) })}
+                                >
+                                  移除槽位
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="mt-2">
+                              <SlotVersions
+                                slot={refSlot}
+                                onAdopt={(vid) => adoptVariant(refSlot.id, vid)}
+                                onRemove={(vid) => removeVariant(refSlot.id, vid)}
+                                disabled={!!busySlotsRef.current[refSlot.id]}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right column (70%): shots */}
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold text-[var(--text-primary)]">镜头列表</div>
+            <div className="text-xs text-[var(--text-secondary)]">推荐流程：先生成首帧/尾帧满意后，再生成视频（新增版本不覆盖）。</div>
+          </div>
+          <Button onClick={addShot} className="gap-1">
+            <Plus className="h-4 w-4" />
+            添加镜头
+          </Button>
+        </div>
+
+        {draft.shots.length === 0 ? (
+          <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-6 text-sm text-[var(--text-secondary)]">
+            还没有镜头。点击右上角“添加镜头”开始。
+          </div>
+        ) : null}
+
+        <div className="space-y-4">
+          {draft.shots.map((shot, idx) => {
+            const startSlot = shot.frames.start.slot
+            const endSlot = shot.frames.end.slot
+            const videoSlot = shot.video
+
+            const startSelected = (startSlot.variants || []).find((v) => v.id === startSlot.selectedVariantId) || null
+            const endSelected = (endSlot.variants || []).find((v) => v.id === endSlot.selectedVariantId) || null
+            const videoSelected = (videoSlot.variants || []).find((v) => v.id === videoSlot.selectedVariantId) || null
+
+            const startBusy = !!busySlotIds[startSlot.id]
+            const endBusy = !!busySlotIds[endSlot.id]
+            const videoBusy = !!busySlotIds[videoSlot.id]
+
+            return (
+              <div key={shot.id} className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+                <div className="flex items-center gap-2">
+                  <input
+                    value={shot.title}
+                    onChange={(e) => updateShot(shot.id, { title: e.target.value })}
+                    className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                    placeholder={`镜头 ${idx + 1}`}
+                  />
+                  <Button size="sm" variant="ghost" className="text-red-500" onClick={() => removeShot(shot.id)} title="删除镜头">
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">场景</label>
+                    <select
+                      value={shot.sceneId || ''}
+                      onChange={(e) => updateShot(shot.id, { sceneId: e.target.value || undefined })}
+                      className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                    >
+                      <option value="">（不指定）</option>
+                      {draft.scenes.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">出镜角色</label>
+                    <div className="flex flex-wrap gap-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                      {draft.characters.length === 0 ? (
+                        <div className="text-xs text-[var(--text-secondary)]">暂无角色</div>
+                      ) : (
+                        draft.characters.map((c) => {
+                          const checked = shot.characterIds.includes(c.id)
+                          return (
+                            <label key={c.id} className="flex items-center gap-1 text-xs text-[var(--text-secondary)]">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const next = e.target.checked
+                                    ? Array.from(new Set([...shot.characterIds, c.id]))
+                                    : shot.characterIds.filter((id) => id !== c.id)
+                                  updateShot(shot.id, { characterIds: next })
+                                }}
+                              />
+                              {c.name}
+                            </label>
+                          )
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">首帧提示词</label>
+                    <textarea
+                      value={shot.frames.start.prompt}
+                      onChange={(e) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          shots: prev.shots.map((s) =>
+                            s.id === shot.id ? { ...s, frames: { ...s.frames, start: { ...s.frames.start, prompt: e.target.value } } } : s
+                          ),
+                          updatedAt: Date.now(),
+                        }))
+                      }
+                      className="min-h-[110px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      placeholder="描述首帧画面：人物动作、表情、构图、镜头、光线…"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">尾帧提示词</label>
+                    <textarea
+                      value={shot.frames.end.prompt}
+                      onChange={(e) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          shots: prev.shots.map((s) =>
+                            s.id === shot.id ? { ...s, frames: { ...s.frames, end: { ...s.frames.end, prompt: e.target.value } } } : s
+                          ),
+                          updatedAt: Date.now(),
+                        }))
+                      }
+                      className="min-h-[110px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      placeholder="描述尾帧画面：最终姿态/走位/镜头结束构图…"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold text-[var(--text-primary)]">首帧版本</div>
+                      <div className="flex items-center gap-2">
+                        <label className="mr-1 flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                          <input
+                            type="checkbox"
+                            checked={!!startSlot.selectionLockedByUser}
+                            onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, startSlot.id, e.target.checked))}
+                          />
+                          锁定采用
+                        </label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          id={`upload-start-${shot.id}`}
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || [])
+                            if (files.length === 0) return
+                            void (async () => {
+                              for (const f of files) {
+                                await uploadToImageSlot(startSlot.id, f)
+                              }
+                            })()
+                            e.currentTarget.value = ''
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="gap-1"
+                          type="button"
+                          onClick={() => document.getElementById(`upload-start-${shot.id}`)?.click()}
+                        >
+                          <Upload className="h-4 w-4" />
+                          上传
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="gap-1"
+                          disabled={startBusy}
+                          onClick={() => void runGenerateFrameImage(shot.id, 'start')}
+                        >
+                          {startBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
+                          再生成
+                        </Button>
+                      </div>
+                    </div>
+                    {startSelected ? (
+                      <div className="mt-2">
+                        <VariantThumb variant={startSelected} className="h-28 w-full" />
+                      </div>
+                    ) : null}
+                    <div className="mt-2">
+                      <SlotVersions
+                        slot={startSlot}
+                        onAdopt={(vid) => adoptVariant(startSlot.id, vid)}
+                        onRemove={(vid) => removeVariant(startSlot.id, vid)}
+                        disabled={startBusy}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold text-[var(--text-primary)]">尾帧版本</div>
+                      <div className="flex items-center gap-2">
+                        <label className="mr-1 flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                          <input
+                            type="checkbox"
+                            checked={!!endSlot.selectionLockedByUser}
+                            onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, endSlot.id, e.target.checked))}
+                          />
+                          锁定采用
+                        </label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          id={`upload-end-${shot.id}`}
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || [])
+                            if (files.length === 0) return
+                            void (async () => {
+                              for (const f of files) {
+                                await uploadToImageSlot(endSlot.id, f)
+                              }
+                            })()
+                            e.currentTarget.value = ''
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="gap-1"
+                          type="button"
+                          onClick={() => document.getElementById(`upload-end-${shot.id}`)?.click()}
+                        >
+                          <Upload className="h-4 w-4" />
+                          上传
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="gap-1"
+                          disabled={endBusy}
+                          onClick={() => void runGenerateFrameImage(shot.id, 'end')}
+                        >
+                          {endBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
+                          再生成
+                        </Button>
+                      </div>
+                    </div>
+                    {endSelected ? (
+                      <div className="mt-2">
+                        <VariantThumb variant={endSelected} className="h-28 w-full" />
+                      </div>
+                    ) : null}
+                    <div className="mt-2">
+                      <SlotVersions
+                        slot={endSlot}
+                        onAdopt={(vid) => adoptVariant(endSlot.id, vid)}
+                        onRemove={(vid) => removeVariant(endSlot.id, vid)}
+                        disabled={endBusy}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-semibold text-[var(--text-primary)]">视频版本</div>
+                    <div className="flex items-center gap-2">
+                      <label className="mr-1 flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                        <input
+                          type="checkbox"
+                          checked={!!videoSlot.selectionLockedByUser}
+                          onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, videoSlot.id, e.target.checked))}
+                        />
+                        锁定采用
+                      </label>
+                      <Button size="sm" variant="secondary" className="gap-1" disabled={videoBusy} onClick={() => void runGenerateShotVideo(shot.id)}>
+                        {videoBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <VideoIcon className="h-4 w-4" />}
+                        生成视频（新增版本）
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!videoSelected || videoSelected.status !== 'success'}
+                        onClick={() => navigate(`/edit/${projectId}?shotId=${shot.id}&videoVariantId=${videoSelected?.id || ''}`)}
+                      >
+                        进入剪辑台
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频提示词（可选）</label>
+                    <textarea
+                      value={shot.videoPrompt}
+                      onChange={(e) => updateShot(shot.id, { videoPrompt: e.target.value })}
+                      className="min-h-[70px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      placeholder="描述运镜与动作；为空则复用首帧提示词"
+                    />
+                  </div>
+                  {videoSelected ? (
+                    <div className="mt-2">
+                      <VariantThumb variant={videoSelected} className="h-40 w-full" />
+                    </div>
+                  ) : null}
+                  <div className="mt-2">
+                    <SlotVersions
+                      slot={videoSlot}
+                      onAdopt={(vid) => adoptVariant(videoSlot.id, vid)}
+                      onRemove={(vid) => removeVariant(videoSlot.id, vid)}
+                      disabled={videoBusy}
+                    />
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      </div>
+
+      <ShortDramaMediaPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        title={
+          pickerTarget?.kind === 'character_refs'
+            ? '选择图片添加到角色参考'
+            : pickerTarget?.kind === 'scene_refs'
+              ? '选择图片添加到场景参考'
+              : '选择图片'
+        }
+        initialTab={pickerInitialTab}
+        multiple
+        onConfirm={(items) => {
+          void handlePickedImages(items)
+        }}
+      />
+    </>
+  )
+}
+

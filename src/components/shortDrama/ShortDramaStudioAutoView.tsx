@@ -1,0 +1,933 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import { importShortDramaScriptFile } from '@/lib/shortDrama/scriptImport'
+import { analyzeShortDramaScriptToDraftV2 } from '@/lib/shortDrama/ai'
+import { getShortDramaTaskQueue } from '@/lib/shortDrama/taskQueue'
+import { buildEffectiveStyle, getShortDramaStylePresetById } from '@/lib/shortDrama/stylePresets'
+import { generateShortDramaImage, generateShortDramaVideo } from '@/lib/shortDrama/generateMedia'
+import { appendVariantToSlot, removeVariantFromSlot, setSlotSelectionLocked, setSlotSelectedVariant, updateVariantInSlot } from '@/lib/shortDrama/draftOps'
+import { getMedia, saveMedia } from '@/lib/mediaStorage'
+import { ShortDramaSlotVersions, ShortDramaVariantThumb } from '@/components/shortDrama/ShortDramaSlotVersions'
+import type { ShortDramaDraftV2, ShortDramaMediaSlot, ShortDramaMediaVariant } from '@/lib/shortDrama/types'
+import type { ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
+import { FileText, Loader2, Upload, Video as VideoIcon, Wand2 } from 'lucide-react'
+
+interface Props {
+  projectId: string
+  draft: ShortDramaDraftV2
+  setDraft: React.Dispatch<React.SetStateAction<ShortDramaDraftV2>>
+  prefs: ShortDramaStudioPrefsV1
+  setPrefs: React.Dispatch<React.SetStateAction<ShortDramaStudioPrefsV1>>
+}
+
+const makeId = () => globalThis.crypto?.randomUUID?.() || `sd_${Date.now()}_${Math.random().toString(16).slice(2)}`
+
+const isHttp = (v: string) => /^https?:\/\//i.test(v)
+
+// 视频 images 组装：首/尾允许重复，refs 去重且不顶替首尾语义
+const buildVideoImages = (startInput: string, endInput: string, refs: string[]) => {
+  const start = String(startInput || '').trim()
+  const end = String(endInput || '').trim()
+  const out: string[] = []
+  if (start) out.push(start)
+  if (end) out.push(end) // keep even if same as start
+  const seen = new Set<string>()
+  for (const v of out) {
+    if (v) seen.add(v)
+  }
+  for (const r of refs || []) {
+    const v = String(r || '').trim()
+    if (!v) continue
+    if (seen.has(v)) continue
+    out.push(v)
+    seen.add(v)
+  }
+  return out
+}
+
+export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, prefs, setPrefs }: Props) {
+  const navigate = useNavigate()
+  const queue = useMemo(() => getShortDramaTaskQueue(projectId), [projectId])
+  useEffect(() => {
+    queue.setLimits({ imageConcurrency: prefs.imageConcurrency, videoConcurrency: prefs.videoConcurrency, analysisConcurrency: 1 })
+  }, [queue, prefs.imageConcurrency, prefs.videoConcurrency])
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [analysisBusy, setAnalysisBusy] = useState(false)
+  const [analysisError, setAnalysisError] = useState<string>('')
+  const [analysisRaw, setAnalysisRaw] = useState<string>('')
+
+  const [busySlotIds, setBusySlotIds] = useState<Record<string, boolean>>({})
+  const busySlotsRef = useRef(busySlotIds)
+  busySlotsRef.current = busySlotIds
+
+  const setSlotBusy = useCallback((slotId: string, busy: boolean) => {
+    setBusySlotIds((prev) => ({ ...prev, [slotId]: busy }))
+  }, [])
+
+  const getSelectedVariant = useCallback((slot: ShortDramaMediaSlot) => {
+    const id = slot.selectedVariantId
+    return (slot.variants || []).find((v) => v.id === id) || null
+  }, [])
+
+  const resolveVariantInput = useCallback(async (variant: ShortDramaMediaVariant | undefined): Promise<string> => {
+    if (!variant) return ''
+    const s = String(variant.sourceUrl || '').trim()
+    if (s && isHttp(s)) return s
+    if (variant.mediaId) {
+      try {
+        const rec = await getMedia(variant.mediaId)
+        const dataUrl = String(rec?.data || '').trim()
+        if (dataUrl) return dataUrl
+      } catch {
+        // ignore
+      }
+    }
+    const d = String(variant.displayUrl || '').trim()
+    return d
+  }, [])
+
+  const buildCharacterSheetPrompt = useCallback(
+    (characterId: string) => {
+      const c = draft.characters.find((x) => x.id === characterId)
+      if (!c) return ''
+      const style = buildEffectiveStyle(draft.style)
+      const preset = getShortDramaStylePresetById(draft.style.presetId)
+
+      return [
+        draft.title ? `短剧标题：${draft.title}` : '',
+        draft.logline ? `短剧梗概：\n${draft.logline}` : '',
+        `风格预设：${preset.name}\n${preset.description}`,
+        style.styleText ? `统一画风/镜头语言（必须严格遵守）：\n${style.styleText}` : '',
+        style.negativeText ? `全局负面约束（严格避免）：\n${style.negativeText}` : '',
+        `角色：${String(c.name || '').trim()}`,
+        c.description ? `角色设定（必须保持一致性）：\n${String(c.description || '').trim()}` : '',
+        [
+          '请生成「单张」角色设定图（character sheet），不要输出解释文字。',
+          '同一张图中包含：正面全身、侧面全身、背面全身，以及至少 6 种表情（中性/开心/愤怒/悲伤/惊讶/害怕）。',
+          '要求：同一个角色（同一张脸/发型/服装/体型），干净背景，构图清晰；不要文字标签、不要水印。',
+        ].join('\n'),
+      ]
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+        .join('\n\n')
+        .trim()
+    },
+    [draft]
+  )
+
+  const collectRefImagesForCharacter = useCallback(
+    async (characterId: string) => {
+      const c = draft.characters.find((x) => x.id === characterId)
+      if (!c) return []
+      const inputs: string[] = []
+      for (const slot of c.refs || []) {
+        const v = getSelectedVariant(slot)
+        const input = await resolveVariantInput(v || undefined)
+        if (input) inputs.push(input)
+      }
+      return Array.from(new Set(inputs)).filter(Boolean)
+    },
+    [draft.characters, getSelectedVariant, resolveVariantInput]
+  )
+
+  const buildScenePrompt = useCallback(
+    (sceneId: string) => {
+      const s = draft.scenes.find((x) => x.id === sceneId)
+      if (!s) return ''
+      const style = buildEffectiveStyle(draft.style)
+      const preset = getShortDramaStylePresetById(draft.style.presetId)
+      return [
+        draft.title ? `短剧标题：${draft.title}` : '',
+        draft.logline ? `短剧梗概：\n${draft.logline}` : '',
+        `风格预设：${preset.name}\n${preset.description}`,
+        style.styleText ? `统一画风/镜头语言（必须严格遵守）：\n${style.styleText}` : '',
+        style.negativeText ? `全局负面约束（严格避免）：\n${style.negativeText}` : '',
+        `场景：${String(s.name || '').trim()}`,
+        s.description ? `场景固定元素（必须保持一致性）：\n${String(s.description || '').trim()}` : '',
+        '请生成该场景的参考图（仅场景环境，不要出现人物），不要输出任何解释文字。',
+      ]
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+        .join('\n\n')
+        .trim()
+    },
+    [draft]
+  )
+
+  const buildFramePrompt = useCallback(
+    (shotId: string, role: 'start' | 'end') => {
+      const shot = draft.shots.find((s) => s.id === shotId)
+      if (!shot) return ''
+      const frame = role === 'start' ? shot.frames.start : shot.frames.end
+      const style = buildEffectiveStyle(draft.style)
+      const preset = getShortDramaStylePresetById(draft.style.presetId)
+
+      const parts: string[] = []
+      if (draft.title) parts.push(`短剧标题：${draft.title}`)
+      if (draft.logline) parts.push(`短剧梗概：\n${draft.logline}`)
+      parts.push(`风格预设：${preset.name}\n${preset.description}`)
+      if (style.styleText) parts.push(`统一画风/镜头语言（必须严格遵守）：\n${style.styleText}`)
+      if (style.negativeText) parts.push(`全局负面约束（严格避免）：\n${style.negativeText}`)
+
+      if (shot.sceneId) {
+        const scene = draft.scenes.find((s) => s.id === shot.sceneId)
+        const sceneText = String(scene?.description || '').trim()
+        if (scene?.name || sceneText) parts.push(`场景：${String(scene?.name || '').trim()}\n${sceneText}`)
+      }
+
+      const chars = (shot.characterIds || [])
+        .map((id) => draft.characters.find((c) => c.id === id))
+        .filter(Boolean) as any[]
+      if (chars.length > 0) {
+        const charBlock = chars
+          .map((c) => `- ${String(c.name || '').trim()}\n${String(c.description || '').trim()}`.trim())
+          .join('\n\n')
+        parts.push(`出镜角色设定（保持同一张脸/发型/服装/体型的一致性）：\n${charBlock}`)
+      }
+
+      const beat = String(shot.beat || '').trim()
+      if (beat) parts.push(`本镜头意图/节拍：\n${beat}`)
+
+      const prompt = String(frame.prompt || '').trim()
+      if (prompt) parts.push(prompt)
+      return parts.join('\n\n').trim()
+    },
+    [draft]
+  )
+
+  const buildVideoPrompt = useCallback(
+    (shotId: string) => {
+      const shot = draft.shots.find((s) => s.id === shotId)
+      if (!shot) return ''
+      const style = buildEffectiveStyle(draft.style)
+      const preset = getShortDramaStylePresetById(draft.style.presetId)
+
+      const parts: string[] = []
+      if (draft.title) parts.push(`短剧标题：${draft.title}`)
+      if (draft.logline) parts.push(`短剧梗概：\n${draft.logline}`)
+      parts.push(`风格预设：${preset.name}\n${preset.description}`)
+      if (style.styleText) parts.push(`统一画风/镜头语言（必须严格遵守）：\n${style.styleText}`)
+      if (style.negativeText) parts.push(`全局负面约束（严格避免）：\n${style.negativeText}`)
+
+      if (shot.sceneId) {
+        const scene = draft.scenes.find((s) => s.id === shot.sceneId)
+        const sceneText = String(scene?.description || '').trim()
+        if (scene?.name || sceneText) parts.push(`场景：${String(scene?.name || '').trim()}\n${sceneText}`)
+      }
+
+      const chars = (shot.characterIds || [])
+        .map((id) => draft.characters.find((c) => c.id === id))
+        .filter(Boolean) as any[]
+      if (chars.length > 0) {
+        const names = chars.map((c) => String(c.name || '').trim()).filter(Boolean).join('、')
+        parts.push(`出镜角色：${names}`)
+      }
+
+      const v = String(shot.videoPrompt || '').trim() || String(shot.frames.start.prompt || '').trim()
+      if (v) parts.push(`视频描述（动作/运镜/节奏）：\n${v}`)
+      return parts.join('\n\n').trim()
+    },
+    [draft]
+  )
+
+  const collectRefImagesForShot = useCallback(
+    async (shotId: string, role: 'start' | 'end') => {
+      const shot = draft.shots.find((s) => s.id === shotId)
+      if (!shot) return []
+      const refInputs: string[] = []
+
+      // Scene refs (primary + extra)
+      if (shot.sceneId) {
+        const scene = draft.scenes.find((s) => s.id === shot.sceneId)
+        const slots: ShortDramaMediaSlot[] = []
+        if (scene?.ref) slots.push(scene.ref)
+        if (Array.isArray(scene?.refs) && scene.refs.length > 0) slots.push(...scene.refs)
+        for (const slot of slots) {
+          const v = getSelectedVariant(slot)
+          const input = await resolveVariantInput(v || undefined)
+          if (input) refInputs.push(input)
+        }
+      }
+
+      // Character refs: sheet + refs
+      for (const cid of shot.characterIds || []) {
+        const c = draft.characters.find((x) => x.id === cid)
+        if (!c) continue
+        const sheetV = c.sheet ? getSelectedVariant(c.sheet) : null
+        const sheetInput = await resolveVariantInput(sheetV || undefined)
+        if (sheetInput) refInputs.push(sheetInput)
+        for (const slot of c.refs || []) {
+          const v = getSelectedVariant(slot)
+          const input = await resolveVariantInput(v || undefined)
+          if (input) refInputs.push(input)
+        }
+      }
+
+      // End frame can use start frame as extra ref
+      if (role === 'end') {
+        const startV = getSelectedVariant(shot.frames.start.slot)
+        const input = await resolveVariantInput(startV || undefined)
+        if (input) refInputs.unshift(input)
+      }
+
+      return Array.from(new Set(refInputs)).filter(Boolean)
+    },
+    [draft, getSelectedVariant, resolveVariantInput]
+  )
+
+  const runGenerateSlotImage = useCallback(
+    async (slotId: string, prompt: string, refImages: string[], createdBy: 'auto' | 'manual') => {
+      if (busySlotsRef.current[slotId]) return
+      const p = String(prompt || '').trim()
+      if (!p) throw new Error('提示词为空')
+
+      const running: ShortDramaMediaVariant = {
+        id: makeId(),
+        kind: 'image',
+        status: 'running',
+        createdAt: Date.now(),
+        createdBy,
+        modelKey: draft.models.imageModelKey,
+        promptSnapshot: p,
+        styleSnapshot: { ...draft.style },
+      }
+      setSlotBusy(slotId, true)
+      setDraft((prev) => appendVariantToSlot(prev, slotId, running))
+      try {
+        const task = queue.enqueue('image', slotId, async () => {
+          return await generateShortDramaImage({
+            modelKey: draft.models.imageModelKey,
+            prompt: p,
+            size: draft.models.imageSize,
+            quality: draft.models.imageQuality,
+            refImages,
+          })
+        })
+        const result = await task.promise
+
+        const displayUrl = String(result.displayUrl || '').trim()
+        const sourceUrl = String(result.imageUrl || '').trim()
+        let mediaId: string | undefined
+        if (displayUrl.startsWith('data:')) {
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:slot:${slotId}:variant:${running.id}`,
+            projectId,
+            type: 'image',
+            data: displayUrl,
+            sourceUrl: sourceUrl && sourceUrl !== displayUrl ? sourceUrl : undefined,
+            model: draft.models.imageModelKey,
+          })
+        }
+
+        setDraft((prev) =>
+          updateVariantInSlot(prev, slotId, running.id, {
+            status: 'success',
+            sourceUrl: sourceUrl || undefined,
+            displayUrl: mediaId ? '' : displayUrl || undefined,
+            localPath: result.localPath || '',
+            mediaId,
+          })
+        )
+      } catch (err: any) {
+        const msg = err instanceof Error ? err.message : String(err || '生成失败')
+        setDraft((prev) => updateVariantInSlot(prev, slotId, running.id, { status: 'error', error: msg }))
+        throw err
+      } finally {
+        setSlotBusy(slotId, false)
+      }
+    },
+    [draft, projectId, queue, setDraft, setSlotBusy]
+  )
+
+  const runGenerateSlotVideo = useCallback(
+    async (slotId: string, prompt: string, images: string[], lastFrame: string, createdBy: 'auto' | 'manual') => {
+      if (busySlotsRef.current[slotId]) return
+      const p = String(prompt || '').trim()
+      if (!p && images.length === 0) throw new Error('提示词/首尾帧为空')
+
+      const running: ShortDramaMediaVariant = {
+        id: makeId(),
+        kind: 'video',
+        status: 'running',
+        createdAt: Date.now(),
+        createdBy,
+        modelKey: draft.models.videoModelKey,
+        promptSnapshot: p,
+        styleSnapshot: { ...draft.style },
+      }
+      setSlotBusy(slotId, true)
+      setDraft((prev) => appendVariantToSlot(prev, slotId, running))
+      try {
+        const task = queue.enqueue('video', slotId, async () => {
+          return await generateShortDramaVideo({
+            modelKey: draft.models.videoModelKey,
+            prompt: p,
+            ratio: draft.models.videoRatio,
+            duration: draft.models.videoDuration,
+            size: draft.models.videoSize,
+            images,
+            lastFrame,
+          })
+        })
+        const result = await task.promise
+        setDraft((prev) =>
+          updateVariantInSlot(prev, slotId, running.id, {
+            status: 'success',
+            taskId: result.taskId,
+            sourceUrl: result.videoUrl,
+            displayUrl: result.displayUrl,
+            localPath: result.localPath || '',
+          })
+        )
+      } catch (err: any) {
+        const msg = err instanceof Error ? err.message : String(err || '生成失败')
+        setDraft((prev) => updateVariantInSlot(prev, slotId, running.id, { status: 'error', error: msg }))
+        throw err
+      } finally {
+        setSlotBusy(slotId, false)
+      }
+    },
+    [draft, projectId, queue, setDraft, setSlotBusy]
+  )
+
+  const runAnalysis = useCallback(async () => {
+    const script = String(draft.script.text || '').trim()
+    if (!script) {
+      window.$message?.error?.('请先导入/粘贴剧本')
+      return
+    }
+    setAnalysisBusy(true)
+    setAnalysisError('')
+    setAnalysisRaw('')
+    try {
+      const res = await analyzeShortDramaScriptToDraftV2({ draft, modelKey: draft.models.analysisModelKey, scriptText: script })
+      setAnalysisRaw(res.rawText)
+      setDraft(res.draft)
+      window.$message?.success?.('剧本分析完成')
+      if (prefs.autoStrategy === 'full_auto') {
+        // Full auto: generate character sheets + scene refs + start/end frames (no video by default)
+        void (async () => {
+          try {
+            await runBatchGenerateKeyframes()
+          } catch {
+            // errors are already surfaced in variants
+          }
+        })()
+      }
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : String(err || '分析失败')
+      setAnalysisError(msg)
+      window.$message?.error?.(msg)
+    } finally {
+      setAnalysisBusy(false)
+    }
+  }, [draft, prefs.autoStrategy, setDraft])
+
+  const runBatchGenerateKeyframes = useCallback(async () => {
+    // 1) Character sheets
+    const charTasks = draft.characters.map(async (c) => {
+      const slotId = c.sheet.id
+      const hasSelected = !!getSelectedVariant(c.sheet)
+      if (hasSelected) return
+      const prompt = buildCharacterSheetPrompt(c.id)
+      const refImages = await collectRefImagesForCharacter(c.id)
+      await runGenerateSlotImage(slotId, prompt, refImages, 'auto')
+    })
+
+    // 2) Scene refs (primary)
+    const sceneTasks = draft.scenes.map(async (s) => {
+      const slotId = s.ref.id
+      const hasSelected = !!getSelectedVariant(s.ref)
+      if (hasSelected) return
+      const prompt = buildScenePrompt(s.id)
+      await runGenerateSlotImage(slotId, prompt, [], 'auto')
+    })
+
+    // 3) Shot frames (start & end)
+    const shotStartTasks = draft.shots.map(async (sh) => {
+      const slotId = sh.frames.start.slot.id
+      const hasSelected = !!getSelectedVariant(sh.frames.start.slot)
+      if (hasSelected) return
+      const prompt = buildFramePrompt(sh.id, 'start')
+      const refs = await collectRefImagesForShot(sh.id, 'start')
+      await runGenerateSlotImage(slotId, prompt, refs, 'auto')
+    })
+
+    const shotEndTasks = draft.shots.map(async (sh) => {
+      const slotId = sh.frames.end.slot.id
+      const hasSelected = !!getSelectedVariant(sh.frames.end.slot)
+      if (hasSelected) return
+      const prompt = buildFramePrompt(sh.id, 'end')
+      const refs = await collectRefImagesForShot(sh.id, 'end')
+      await runGenerateSlotImage(slotId, prompt, refs, 'auto')
+    })
+
+    await Promise.all([...charTasks, ...sceneTasks, ...shotStartTasks, ...shotEndTasks])
+    window.$message?.success?.('关键帧批量生成完成')
+  }, [
+    buildCharacterSheetPrompt,
+    buildFramePrompt,
+    buildScenePrompt,
+    collectRefImagesForCharacter,
+    collectRefImagesForShot,
+    draft.characters,
+    draft.scenes,
+    draft.shots,
+    getSelectedVariant,
+    runGenerateSlotImage,
+  ])
+
+  const runBatchGenerateVideos = useCallback(async () => {
+    const tasks = draft.shots.map(async (sh) => {
+      const slotId = sh.video.id
+      if (busySlotsRef.current[slotId]) return
+
+      const startV = getSelectedVariant(sh.frames.start.slot)
+      const endV = getSelectedVariant(sh.frames.end.slot)
+      const startInput = await resolveVariantInput(startV || undefined)
+      const endInput = await resolveVariantInput(endV || undefined)
+      if (!startInput || !endInput) return
+
+      const refs = await collectRefImagesForShot(sh.id, 'start')
+      const images = buildVideoImages(startInput, endInput, refs)
+      const prompt = buildVideoPrompt(sh.id)
+      await runGenerateSlotVideo(slotId, prompt, images, endInput, 'auto')
+    })
+    await Promise.all(tasks)
+    window.$message?.success?.('视频批量生成完成')
+  }, [buildVideoPrompt, collectRefImagesForShot, draft.shots, getSelectedVariant, resolveVariantInput, runGenerateSlotVideo])
+
+  const onImportFile = useCallback(async (file: File) => {
+    try {
+      const imported = await importShortDramaScriptFile(file)
+      setDraft((prev) => ({
+        ...prev,
+        script: {
+          text: imported.text,
+          importedAt: Date.now(),
+          source: { type: 'file', fileName: imported.fileName } as any,
+        },
+        updatedAt: Date.now(),
+      }))
+      window.$message?.success?.('剧本已导入')
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : String(err || '导入失败')
+      window.$message?.error?.(msg)
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }, [setDraft])
+
+  const selectedPreset = useMemo(() => getShortDramaStylePresetById(draft.style.presetId), [draft.style.presetId])
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-4 lg:flex-row">
+      {/* Left column (30%): top script/AI + bottom character/scene */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-[0_0_30%] lg:min-w-[360px] lg:max-w-[520px]">
+        <div className="flex min-h-0 flex-[0_0_42%] flex-col">
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">剧本 / AI</div>
+          </div>
+          <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1 space-y-4">
+            <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-[var(--text-primary)]">自动模式</div>
+            <div className="mt-1 text-xs text-[var(--text-secondary)]">
+              先用 AI 拆解剧本为「角色/场景/镜头（首帧/尾帧）」；生成结果与版本管理仍可在此查看，也可切换到“手动”精修。
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className={cn('h-8 px-3', prefs.autoStrategy === 'fill_only' ? 'bg-[var(--bg-primary)]' : '')}
+                onClick={() => setPrefs((p) => ({ ...p, autoStrategy: 'fill_only' }))}
+              >
+                仅填充
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className={cn('h-8 px-3', prefs.autoStrategy === 'full_auto' ? 'bg-[var(--bg-primary)]' : '')}
+                onClick={() => setPrefs((p) => ({ ...p, autoStrategy: 'full_auto' }))}
+              >
+                全自动
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+            <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-[var(--text-primary)]">剧本导入</div>
+          <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.md,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (!f) return
+                void onImportFile(f)
+              }}
+            />
+            <Button variant="secondary" size="sm" className="gap-1" onClick={() => fileInputRef.current?.click()}>
+              <Upload className="h-4 w-4" />
+              导入 txt/md/docx
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div className="flex flex-col gap-2">
+            <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">剧本文本</label>
+            <textarea
+              value={draft.script.text}
+              onChange={(e) => setDraft((prev) => ({ ...prev, script: { ...prev.script, text: e.target.value }, updatedAt: Date.now() }))}
+              className="min-h-[220px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+              placeholder="粘贴剧本文本；或使用右上角导入。"
+            />
+          </div>
+          <div className="space-y-3">
+            <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-[var(--text-primary)]">风格概览</div>
+                <div className="text-xs text-[var(--text-secondary)]">{draft.style.locked ? '已锁定' : '可由 AI 建议'}</div>
+              </div>
+              <div className="mt-2 text-xs text-[var(--text-secondary)]">
+                预设：<span className="text-[var(--text-primary)]">{selectedPreset.name}</span>（{selectedPreset.description}）
+              </div>
+              {draft.style.customText ? <div className="mt-2 text-xs text-[var(--text-secondary)]">补充：{draft.style.customText.slice(0, 120)}</div> : null}
+              {draft.style.negativeText ? <div className="mt-2 text-xs text-[var(--text-secondary)]">负面：{draft.style.negativeText.slice(0, 120)}</div> : null}
+            </div>
+
+            <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-[var(--text-primary)]">AI 拆解</div>
+                <Button size="sm" className="gap-1" disabled={analysisBusy} onClick={() => void runAnalysis()}>
+                  {analysisBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+                  分析并搭建
+                </Button>
+              </div>
+              {analysisError ? <div className="mt-2 text-xs text-red-500">{analysisError}</div> : null}
+              {analysisRaw ? (
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs text-[var(--text-secondary)]">查看模型原始返回</summary>
+                  <pre className="mt-2 max-h-[200px] overflow-auto rounded-lg bg-black/10 p-2 text-[11px] text-[var(--text-secondary)]">{analysisRaw}</pre>
+                </details>
+              ) : null}
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button variant="secondary" size="sm" onClick={() => void runBatchGenerateKeyframes()}>
+                  批量生成关键帧（首/尾）
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => void runBatchGenerateVideos()}>
+                  批量生成视频（基于已采用首/尾）
+                </Button>
+              </div>
+              <div className="mt-2 text-xs text-[var(--text-secondary)]">
+                提示：视频建议在首/尾帧“采用”满意版本后再生成；需要更精细的参考图绑定可切换到“手动”模式。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+          </div>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">角色 / 场景</div>
+          </div>
+          <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1 space-y-4">
+            <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="text-sm font-semibold text-[var(--text-primary)]">角色（{draft.characters.length}）</div>
+          <div className="mt-3 space-y-3">
+            {draft.characters.length === 0 ? <div className="text-sm text-[var(--text-secondary)]">尚未分析出角色。</div> : null}
+            {draft.characters.map((c) => {
+              const slot = c.sheet
+              const selected = getSelectedVariant(slot)
+              const busy = !!busySlotIds[slot.id]
+              return (
+                <div key={c.id} className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-semibold text-[var(--text-primary)]">{c.name}</div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                        <input
+                          type="checkbox"
+                          checked={!!slot.selectionLockedByUser}
+                          onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, slot.id, e.target.checked))}
+                        />
+                        锁定采用
+                      </label>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() =>
+                          void (async () => {
+                            const refs = await collectRefImagesForCharacter(c.id)
+                            await runGenerateSlotImage(slot.id, buildCharacterSheetPrompt(c.id), refs, 'auto')
+                          })()
+                        }
+                      >
+                        {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <FileText className="mr-1 h-4 w-4" />}
+                        生成设定图
+                      </Button>
+                    </div>
+                  </div>
+                  {selected ? (
+                    <div className="mt-2">
+                      <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
+                    </div>
+                  ) : null}
+                  <div className="mt-2">
+                    <ShortDramaSlotVersions
+                      slot={slot}
+                      onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, slot.id, vid))}
+                      onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, slot.id, vid))}
+                      disabled={busy}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+            <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="text-sm font-semibold text-[var(--text-primary)]">场景（{draft.scenes.length}）</div>
+          <div className="mt-3 space-y-3">
+            {draft.scenes.length === 0 ? <div className="text-sm text-[var(--text-secondary)]">尚未分析出场景。</div> : null}
+            {draft.scenes.map((s) => {
+              const slot = s.ref
+              const selected = getSelectedVariant(slot)
+              const busy = !!busySlotIds[slot.id]
+              return (
+                <div key={s.id} className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-semibold text-[var(--text-primary)]">{s.name}</div>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                        <input
+                          type="checkbox"
+                          checked={!!slot.selectionLockedByUser}
+                          onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, slot.id, e.target.checked))}
+                        />
+                        锁定采用
+                      </label>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void runGenerateSlotImage(slot.id, buildScenePrompt(s.id), [], 'auto')}>
+                        {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <FileText className="mr-1 h-4 w-4" />}
+                        生成参考图
+                      </Button>
+                    </div>
+                  </div>
+                  {selected ? (
+                    <div className="mt-2">
+                      <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
+                    </div>
+                  ) : null}
+                  <div className="mt-2">
+                    <ShortDramaSlotVersions
+                      slot={slot}
+                      onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, slot.id, vid))}
+                      onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, slot.id, vid))}
+                      disabled={busy}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Right column (70%): shots */}
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+          <div className="text-sm font-semibold text-[var(--text-primary)]">镜头（{draft.shots.length}）</div>
+          <div className="mt-3 space-y-3">
+            {draft.shots.length === 0 ? <div className="text-sm text-[var(--text-secondary)]">尚未分析出镜头。</div> : null}
+            {draft.shots.map((sh, idx) => {
+              const startSlot = sh.frames.start.slot
+              const endSlot = sh.frames.end.slot
+              const videoSlot = sh.video
+              const startSelected = getSelectedVariant(startSlot)
+              const endSelected = getSelectedVariant(endSlot)
+              const videoSelected = getSelectedVariant(videoSlot)
+              const startBusy = !!busySlotIds[startSlot.id]
+              const endBusy = !!busySlotIds[endSlot.id]
+              const videoBusy = !!busySlotIds[videoSlot.id]
+              return (
+                <div key={sh.id} className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    {idx + 1}. {sh.title || '镜头'}
+                  </div>
+
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-medium text-[var(--text-primary)]">首帧</div>
+                        <div className="flex items-center gap-3">
+                          <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                            <input
+                              type="checkbox"
+                              checked={!!startSlot.selectionLockedByUser}
+                              onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, startSlot.id, e.target.checked))}
+                            />
+                            锁定采用
+                          </label>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={startBusy}
+                            onClick={() =>
+                              void (async () => {
+                                const refs = await collectRefImagesForShot(sh.id, 'start')
+                                await runGenerateSlotImage(startSlot.id, buildFramePrompt(sh.id, 'start'), refs, 'auto')
+                              })()
+                            }
+                          >
+                            {startBusy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <FileText className="mr-1 h-4 w-4" />}
+                            再生成
+                          </Button>
+                        </div>
+                      </div>
+                      {startSelected ? (
+                        <div className="mt-2">
+                          <ShortDramaVariantThumb variant={startSelected} className="h-24 w-full" />
+                        </div>
+                      ) : null}
+                      <div className="mt-2">
+                        <ShortDramaSlotVersions
+                          slot={startSlot}
+                          onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, startSlot.id, vid))}
+                          onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, startSlot.id, vid))}
+                          disabled={startBusy}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-medium text-[var(--text-primary)]">尾帧</div>
+                        <div className="flex items-center gap-3">
+                          <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                            <input
+                              type="checkbox"
+                              checked={!!endSlot.selectionLockedByUser}
+                              onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, endSlot.id, e.target.checked))}
+                            />
+                            锁定采用
+                          </label>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={endBusy}
+                            onClick={() =>
+                              void (async () => {
+                                const refs = await collectRefImagesForShot(sh.id, 'end')
+                                await runGenerateSlotImage(endSlot.id, buildFramePrompt(sh.id, 'end'), refs, 'auto')
+                              })()
+                            }
+                          >
+                            {endBusy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <FileText className="mr-1 h-4 w-4" />}
+                            再生成
+                          </Button>
+                        </div>
+                      </div>
+                      {endSelected ? (
+                        <div className="mt-2">
+                          <ShortDramaVariantThumb variant={endSelected} className="h-24 w-full" />
+                        </div>
+                      ) : null}
+                      <div className="mt-2">
+                        <ShortDramaSlotVersions
+                          slot={endSlot}
+                          onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, endSlot.id, vid))}
+                          onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, endSlot.id, vid))}
+                          disabled={endBusy}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-medium text-[var(--text-primary)]">视频</div>
+                      <div className="flex items-center gap-2">
+                        <label className="mr-1 flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                          <input
+                            type="checkbox"
+                            checked={!!videoSlot.selectionLockedByUser}
+                            onChange={(e) => setDraft((prev) => setSlotSelectionLocked(prev, videoSlot.id, e.target.checked))}
+                          />
+                          锁定采用
+                        </label>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="gap-1"
+                          disabled={videoBusy}
+                          onClick={() =>
+                            void (async () => {
+                              const startV = getSelectedVariant(startSlot)
+                              const endV = getSelectedVariant(endSlot)
+                              const startInput = await resolveVariantInput(startV || undefined)
+                              const endInput = await resolveVariantInput(endV || undefined)
+                              const refs = await collectRefImagesForShot(sh.id, 'start')
+                              const images = buildVideoImages(startInput, endInput, refs)
+                              const prompt = buildVideoPrompt(sh.id)
+                              await runGenerateSlotVideo(videoSlot.id, prompt, images, endInput, 'auto')
+                            })()
+                          }
+                        >
+                          {videoBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <VideoIcon className="h-4 w-4" />}
+                          生成视频
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!videoSelected || videoSelected.status !== 'success'}
+                          onClick={() => navigate(`/edit/${projectId}?shotId=${sh.id}&videoVariantId=${videoSelected?.id || ''}`)}
+                        >
+                          进入剪辑台
+                        </Button>
+                      </div>
+                    </div>
+
+                    {videoSelected ? (
+                      <div className="mt-2">
+                        <ShortDramaVariantThumb variant={videoSelected} className="h-40 w-full" />
+                      </div>
+                    ) : null}
+
+                    <div className="mt-2">
+                      <ShortDramaSlotVersions
+                        slot={videoSlot}
+                        onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, videoSlot.id, vid))}
+                        onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, videoSlot.id, vid))}
+                        disabled={videoBusy}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+

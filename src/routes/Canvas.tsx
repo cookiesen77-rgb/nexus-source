@@ -17,12 +17,14 @@ import CanvasHud from '@/components/canvas/CanvasHud'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { useProjectsStore } from '@/store/projects'
 import { useAssetsStore } from '@/store/assets'
+import { syncAssetHistoryFromCanvasNodes } from '@/lib/assets/syncFromCanvas'
 import CanvasAssistantDrawer from '@/components/canvas/CanvasAssistantDrawer'
 import NodeRemarkModal from '@/components/canvas/NodeRemarkModal'
 import DownloadModal from '@/components/canvas/DownloadModal'
 import HistoryPanel from '@/components/canvas/HistoryPanel'
 import PromptLibraryModal from '@/components/canvas/PromptLibraryModal'
 import WorkflowTemplatesModal from '@/components/canvas/WorkflowTemplatesModal'
+import ShortDramaStudioModal from '@/components/canvas/ShortDramaStudioModal'
 import DirectorConsole from '@/components/canvas/DirectorConsole'
 import SketchEditor from '@/components/canvas/SketchEditor'
 import SonicStudio from '@/components/canvas/SonicStudio'
@@ -66,6 +68,7 @@ export default function Canvas() {
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
   const [workflowTemplatesOpen, setWorkflowTemplatesOpen] = useState(false)
+  const [shortDramaOpen, setShortDramaOpen] = useState(false)
   const [directorOpen, setDirectorOpen] = useState(false)
   const [sketchOpen, setSketchOpen] = useState(false)
   const [audioOpen, setAudioOpen] = useState(false)
@@ -75,6 +78,22 @@ export default function Canvas() {
   const [saveTemplateName, setSaveTemplateName] = useState('')
   const [saveTemplateDesc, setSaveTemplateDesc] = useState('')
   
+  // 支持从剪辑台返回时自动打开“短剧制作”工作台（并清理 URL 参数）
+  useEffect(() => {
+    const search = String(location.search || '')
+    if (!search) return
+    const sp = new URLSearchParams(search)
+    const open = String(sp.get('openShortDrama') || '').trim()
+    if (open !== '1' && open.toLowerCase() !== 'true') return
+
+    setShortDramaOpen(true)
+
+    sp.delete('openShortDrama')
+    const next = sp.toString()
+    const nextUrl = `${location.pathname}${next ? `?${next}` : ''}`
+    nav(nextUrl, { replace: true })
+  }, [location.pathname, location.search, nav])
+
   // 右键菜单状态（画布空白处）
   const [canvasContextMenu, setCanvasContextMenu] = useState<{
     x: number      // 屏幕坐标（用于菜单定位）
@@ -825,47 +844,10 @@ export default function Canvas() {
 
   // 同步画布素材到历史记录
   useEffect(() => {
-    const syncAssetsFromCanvas = () => {
-      const graphNodes = useGraphStore.getState().nodes
-      const assetsStore = useAssetsStore.getState()
-      const existingAssets = assetsStore.assets
-      
-      // 收集画布上所有 image 和 video 节点的素材
-      graphNodes.forEach((node) => {
-        if (node.type === 'image') {
-          const d = node.data as any
-          const src = d?.src || d?.url || d?.imageUrl
-          if (src && !src.startsWith('data:') && src.startsWith('http')) {
-            // 检查是否已存在
-            const exists = existingAssets.some((a) => a.src === src)
-            if (!exists) {
-              assetsStore.addAsset({
-                type: 'image',
-                src,
-                title: d?.label || d?.prompt?.slice?.(0, 50) || '画布图片'
-              })
-            }
-          }
-        } else if (node.type === 'video') {
-          const d = node.data as any
-          const src = d?.src || d?.url || d?.videoUrl
-          if (src && src.startsWith('http')) {
-            const exists = existingAssets.some((a) => a.src === src)
-            if (!exists) {
-              assetsStore.addAsset({
-                type: 'video',
-                src,
-                title: d?.label || d?.prompt?.slice?.(0, 50) || '画布视频',
-                duration: d?.duration
-              })
-            }
-          }
-        }
-      })
-    }
-    
     // 延迟执行，确保画布数据已加载
-    const timer = setTimeout(syncAssetsFromCanvas, 1000)
+    const timer = setTimeout(() => {
+      syncAssetHistoryFromCanvasNodes({ includeDataUrl: true, includeAssetUrl: true })
+    }, 1000)
     return () => clearTimeout(timer)
   }, [id])
 
@@ -1079,8 +1061,45 @@ export default function Canvas() {
 
         for (let i = 0; i < pairs.length; i++) {
           const { file, dataUrl } = pairs[i]
-          const kind = /^image\//i.test(file.type) ? 'image' : /^audio\//i.test(file.type) ? 'audio' : /^video\//i.test(file.type) ? 'video' : null
+          const rawType = String(file.type || '')
+          const typeLower = rawType.toLowerCase()
+          let kind: 'image' | 'audio' | 'video' | null =
+            /^image\//i.test(typeLower) ? 'image' : /^audio\//i.test(typeLower) ? 'audio' : /^video\//i.test(typeLower) ? 'video' : null
+
+          // 桌面拖拽在部分环境下 File.type 可能为空：用扩展名兜底
+          const nameLower = String(file.name || '').toLowerCase()
+          const ext = String(nameLower.match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase()
+          if (!kind && ext) {
+            if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'tif', 'tiff', 'avif'].includes(ext)) kind = 'image'
+            else if (['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv'].includes(ext)) kind = 'video'
+            else if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext)) kind = 'audio'
+          }
           if (!kind) continue
+
+          const inferredMime =
+            rawType ||
+            (ext === 'png' ? 'image/png'
+              : (ext === 'jpg' || ext === 'jpeg') ? 'image/jpeg'
+                : ext === 'gif' ? 'image/gif'
+                  : ext === 'webp' ? 'image/webp'
+                    : ext === 'bmp' ? 'image/bmp'
+                      : ext === 'svg' ? 'image/svg+xml'
+                        : ext === 'tif' || ext === 'tiff' ? 'image/tiff'
+                          : ext === 'avif' ? 'image/avif'
+                            : ext === 'webm' ? 'video/webm'
+                              : ext === 'mov' ? 'video/quicktime'
+                                : ext === 'm4v' ? 'video/x-m4v'
+                                  : ext === 'avi' ? 'video/x-msvideo'
+                                    : ext === 'mkv' ? 'video/x-matroska'
+                                      : ext === 'wav' ? 'audio/wav'
+                                        : ext === 'm4a' ? 'audio/mp4'
+                                          : ext === 'aac' ? 'audio/aac'
+                                            : ext === 'ogg' ? 'audio/ogg'
+                                              : ext === 'flac' ? 'audio/flac'
+                                                : ext === 'mp3' ? 'audio/mpeg'
+                                                  : kind === 'video' ? 'video/mp4'
+                                                    : kind === 'audio' ? 'audio/mpeg'
+                                                      : '')
           const label = kind === 'image' ? '上传图片' : kind === 'audio' ? '上传音频' : '上传视频'
           const id = addNode(kind, { x: baseX, y: baseY + i * 36 }, {
             label: file.name || label,
@@ -1088,7 +1107,7 @@ export default function Canvas() {
             // dataURL 不作为长期 source（跨重启用 mediaId 恢复）
             sourceUrl: '',
             fileName: file.name,
-            fileType: file.type,
+            fileType: inferredMime,
             createdAt: Date.now()
           })
           ids.push(id)
@@ -1130,6 +1149,91 @@ export default function Canvas() {
     },
     [addEdge, addNode, setSelection]
   )
+
+  // Tauri 原生桌面拖拽：通过 tauri://drag-drop 事件拿到真实文件路径（避免 WebView 拦截/拿不到 File.type）
+  useEffect(() => {
+    if (!isTauri) return
+    let mounted = true
+    let unlisten: (() => void) | null = null
+
+    const inferMimeFromName = (name: string) => {
+      const n = String(name || '').toLowerCase()
+      const ext = String(n.match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase()
+      if (!ext) return ''
+      if (ext === 'png') return 'image/png'
+      if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+      if (ext === 'gif') return 'image/gif'
+      if (ext === 'webp') return 'image/webp'
+      if (ext === 'bmp') return 'image/bmp'
+      if (ext === 'svg') return 'image/svg+xml'
+      if (ext === 'tif' || ext === 'tiff') return 'image/tiff'
+      if (ext === 'avif') return 'image/avif'
+
+      if (ext === 'webm') return 'video/webm'
+      if (ext === 'mov') return 'video/quicktime'
+      if (ext === 'm4v') return 'video/x-m4v'
+      if (ext === 'avi') return 'video/x-msvideo'
+      if (ext === 'mkv') return 'video/x-matroska'
+      if (ext === 'mp4') return 'video/mp4'
+
+      if (ext === 'wav') return 'audio/wav'
+      if (ext === 'm4a') return 'audio/mp4'
+      if (ext === 'aac') return 'audio/aac'
+      if (ext === 'ogg') return 'audio/ogg'
+      if (ext === 'flac') return 'audio/flac'
+      if (ext === 'mp3') return 'audio/mpeg'
+      return ''
+    }
+
+    ;(async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event')
+        const { readFile } = await import('@tauri-apps/plugin-fs')
+
+        unlisten = await listen<any>('tauri://drag-drop', async (event) => {
+          const payload: any = (event as any)?.payload || {}
+          const paths: string[] = Array.isArray(payload?.paths) ? payload.paths : []
+          if (!paths || paths.length === 0) return
+
+          const pos: any = payload?.position || payload?.positionPhysical || payload?.position_physical || payload?.positionLogical || payload?.position_logical
+          const dpr = window.devicePixelRatio || 1
+          const clientX = typeof pos?.x === 'number' ? pos.x / dpr : window.innerWidth / 2
+          const clientY = typeof pos?.y === 'number' ? pos.y / dpr : window.innerHeight / 2
+
+          const fileList = await Promise.all(
+            paths.map(async (p: string) => {
+              try {
+                const bytes = await readFile(p)
+                const name = String(p || '').split(/[/\\\\]/).pop() || 'file'
+                const mime = inferMimeFromName(name)
+                return new File([bytes], name, { type: mime })
+              } catch (err) {
+                console.warn('[Canvas] 读取拖拽文件失败:', p, err)
+                return null
+              }
+            })
+          )
+
+          if (!mounted) return
+          const files = fileList.filter(Boolean) as File[]
+          if (files.length > 0) {
+            void addDroppedFiles(files, { x: clientX, y: clientY })
+          }
+        })
+      } catch (err) {
+        console.warn('[Canvas] 初始化 Tauri 拖拽监听失败:', err)
+      }
+    })()
+
+    return () => {
+      mounted = false
+      try {
+        unlisten?.()
+      } catch {
+        // ignore
+      }
+    }
+  }, [addDroppedFiles])
 
   // 监听从历史面板拖拽素材到画布的事件
   useEffect(() => {
@@ -1266,7 +1370,20 @@ export default function Canvas() {
             e.preventDefault()
           }}
           onDrop={(e) => {
-            const files = Array.from(e.dataTransfer?.files || []).filter((f) => /^(image|audio|video)\//i.test(f.type))
+            const isSupportedMediaFile = (f: File) => {
+              const t = String((f as any)?.type || '').toLowerCase()
+              if (/^(image|audio|video)\//i.test(t)) return true
+              // 桌面拖拽在部分环境下 File.type 可能为空：用扩展名兜底
+              const name = String((f as any)?.name || '').toLowerCase()
+              const m = name.match(/\.([a-z0-9]+)$/i)
+              const ext = String(m?.[1] || '').toLowerCase()
+              if (!ext) return false
+              if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'tif', 'tiff', 'avif'].includes(ext)) return true
+              if (['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv'].includes(ext)) return true
+              if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext)) return true
+              return false
+            }
+            const files = Array.from(e.dataTransfer?.files || []).filter(isSupportedMediaFile)
             if (files.length > 0) {
               e.preventDefault()
               void addDroppedFiles(files, { x: e.clientX, y: e.clientY })
@@ -1401,6 +1518,7 @@ export default function Canvas() {
               canUndo={canUndo}
               canRedo={canRedo}
               onOpenWorkflow={() => setWorkflowTemplatesOpen(true)}
+              onOpenShortDrama={() => setShortDramaOpen(true)}
               onOpenDirector={() => setDirectorOpen(true)}
               onOpenSketch={() => setSketchOpen(true)}
               onOpenAudio={() => setAudioOpen(true)}
@@ -1497,6 +1615,11 @@ export default function Canvas() {
             window.$message?.success?.(`已添加「${template.name}」工作流模板`)
           }
         }}
+      />
+
+      <ShortDramaStudioModal
+        open={shortDramaOpen}
+        onClose={() => setShortDramaOpen(false)}
       />
       
       <DirectorConsole

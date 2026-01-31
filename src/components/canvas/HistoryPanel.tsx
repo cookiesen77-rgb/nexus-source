@@ -15,6 +15,7 @@ import {
   type AssetType,
   type HistoryPerformanceMode
 } from '@/store/assets'
+import { syncAssetHistoryFromCanvasNodes } from '@/lib/assets/syncFromCanvas'
 import {
   X,
   Image as ImageIcon,
@@ -40,6 +41,11 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
   const localCacheEnabled = useAssetsStore((s) => s.localCacheEnabled)
   const setHistoryPerformanceMode = useAssetsStore((s) => s.setHistoryPerformanceMode)
   const removeAsset = useAssetsStore((s) => s.removeAsset)
+
+  // One-way: sync current canvas nodes into history
+  useEffect(() => {
+    syncAssetHistoryFromCanvasNodes({ includeDataUrl: true, includeAssetUrl: true })
+  }, [])
 
   // Filtered assets by type
   const filteredAssets = useMemo(() => {

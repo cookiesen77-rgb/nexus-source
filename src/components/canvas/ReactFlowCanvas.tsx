@@ -906,7 +906,21 @@ function ReactFlowCanvasInner({ onContextMenu, onConnectEnd, onFileDrop }: React
       types: e.dataTransfer?.types
     })
     
-    const files = Array.from(e.dataTransfer?.files || []).filter((f) => /^(image|audio|video)\//i.test(f.type))
+    const isSupportedMediaFile = (f: File) => {
+      const t = String((f as any)?.type || '').toLowerCase()
+      if (/^(image|audio|video)\//i.test(t)) return true
+      // 桌面拖拽在部分环境下 File.type 可能为空：用扩展名兜底
+      const name = String((f as any)?.name || '').toLowerCase()
+      const m = name.match(/\.([a-z0-9]+)$/i)
+      const ext = String(m?.[1] || '').toLowerCase()
+      if (!ext) return false
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'tif', 'tiff', 'avif'].includes(ext)) return true
+      if (['mp4', 'webm', 'mov', 'm4v', 'avi', 'mkv'].includes(ext)) return true
+      if (['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext)) return true
+      return false
+    }
+
+    const files = Array.from(e.dataTransfer?.files || []).filter(isSupportedMediaFile)
     console.log('[ReactFlowCanvas] 过滤后的媒体文件数:', files.length)
     
     if (files.length > 0 && onFileDrop) {

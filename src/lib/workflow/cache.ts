@@ -114,11 +114,21 @@ export const cacheMedia = async (
 /**
  * Tauri 环境缓存
  */
+const absolutizeNexusApiUrl = (url: string) => {
+  const u = String(url || '').trim()
+  if (!u) return u
+  if (/^https?:\/\//i.test(u)) return u
+  const prefixes = ['/v1/', '/v1beta', '/kling', '/tencent-vod', '/video']
+  for (const p of prefixes) {
+    if (u.startsWith(p)) return `https://nexusapi.cn${u}`
+  }
+  return u
+}
+
 const cacheTauri = async (url: string, category: CacheCategory): Promise<CacheResult> => {
   // 如果是相对路径，转换为绝对 URL
-  let absoluteUrl = url
-  if (url.startsWith('/v1/')) {
-    absoluteUrl = `https://nexusapi.cn${url}`
+  const absoluteUrl = absolutizeNexusApiUrl(url)
+  if (absoluteUrl !== url) {
     console.log(`[Cache:Tauri] 相对路径转换为绝对 URL:`, absoluteUrl.slice(0, 80))
   }
   
@@ -265,9 +275,8 @@ export const resolveCachedImageUrl = async (url: string): Promise<{ displayUrl: 
   // Tauri 环境：使用 Rust 端的 cache_remote_image 命令
   if (t.isTauri) {
     // 如果是相对路径，转换为绝对 URL（Tauri 没有 Vite 代理）
-    let absoluteUrl = u
-    if (u.startsWith('/v1/')) {
-      absoluteUrl = `https://nexusapi.cn${u}`
+    const absoluteUrl = absolutizeNexusApiUrl(u)
+    if (absoluteUrl !== u) {
       console.log('[resolveCachedImageUrl] Tauri: 相对路径转换为绝对 URL:', absoluteUrl.slice(0, 80))
     }
     if (!/^https?:\/\//i.test(absoluteUrl)) return { displayUrl: absoluteUrl, localPath: '' }
@@ -304,9 +313,8 @@ export const resolveCachedMediaUrl = async (url: string) => {
   // Tauri 环境：使用 Rust 端的 cache_remote_media 命令（通过 reqwest 库发送 HTTP 请求）
   if (t.isTauri) {
     // 如果是相对路径，转换为绝对 URL（Tauri 没有 Vite 代理）
-    let absoluteUrl = u
-    if (u.startsWith('/v1/')) {
-      absoluteUrl = `https://nexusapi.cn${u}`
+    const absoluteUrl = absolutizeNexusApiUrl(u)
+    if (absoluteUrl !== u) {
       console.log('[resolveCachedMediaUrl] Tauri: 相对路径转换为绝对 URL:', absoluteUrl.slice(0, 80))
     }
     if (!/^https?:\/\//i.test(absoluteUrl)) return { displayUrl: absoluteUrl, localPath: '' }

@@ -796,6 +796,307 @@ Blurry, color cast, harsh shadows, cluttered background, amateur lighting, disto
     outputType: 'single'
   },
 
+  // ========== 电商海报（Flowith 模板） ==========
+  {
+    id: 'ecom_poster_fashion_hero_916',
+    name: '电商海报｜高端主视觉 9:16',
+    description: '高端极简竖版主视觉海报（适合服装/时尚品类），包含标题/卖点/CTA 排版',
+    aspectRatio: '9:16',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For High-End E-commerce Poster:
+1. Prioritize premium minimal fashion photography (high-end brand look)
+2. Keep layout clean and readable (headline + minimal info card + CTA)
+3. If reference image is provided, the product design MUST match it (no redesign)
+4. Produce both Chinese and English prompt versions (same meaning, same layout intent)`,
+    promptTemplate: `9:16 竖版高端极简电商产品主视觉海报（High-end minimal fashion e-commerce poster）。
+
+【产品/品牌 Brief】
+{{USER_PROMPT}}
+
+【硬性一致性】
+- 若提供参考图：产品版型/材质/颜色/细节必须严格匹配参考图，不允许自行改设计。
+
+【画面风格】
+- 高端极简时尚摄影，极致干净留白，柔和渐变背景（米白/奶油/燕麦色系）。
+- 柔和摄影棚自然日光（5500K），低对比，无硬阴影，强调面料细腻质感与自然垂坠感。
+
+【排版（可用于电商详情页/主视觉）】
+- 左上角：小号品牌 Logo（极简、不抢主体）。
+- 顶部或中部：大标题（可中英堆叠），留白充足，字体现代极简/高端衬线均可。
+- 信息卡（Glassmorphism 半透明柔边）：3 条双语卖点（CN/EN）。
+- 右下角：圆角药丸 CTA（如“立即选购 → / SHOP NOW →”）。
+
+【质量与限制】
+4K ultra-detailed, commercial photography quality, color-accurate.
+
+【NEGATIVE】
+cluttered, busy, messy text, watermark, harsh lighting, low quality, blurry, distorted product.`,
+    userPromptPlaceholder: '例如：品牌+品类+核心卖点+想要的背景/氛围（可上传产品参考图要求严格一致）',
+    supportsReferenceImage: true,
+    referenceImageGuide: '上传产品图：必须严格一致；可自动生成高端排版（标题/卖点/CTA）',
+    outputType: 'single'
+  },
+  {
+    id: 'ecom_poster_fashion_scene_916',
+    name: '电商海报｜场景展示 9:16',
+    description: '电影质感的生活方式场景海报（适合服装/穿搭/家居），强调“真实可穿/可用”',
+    aspectRatio: '9:16',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Lifestyle Scene E-commerce Poster:
+1. Cinematic but clean lifestyle photography (not cluttered)
+2. Natural light look, soft tones, premium brand style
+3. Keep product accuracy strict when reference provided
+4. Layout with bilingual headline/subtitle + CTA`,
+    promptTemplate: `9:16 竖版高端时尚产品场景展示海报（cinematic clean lifestyle poster）。
+
+【产品/场景 Brief】
+{{USER_PROMPT}}
+
+【硬性一致性】
+- 若提供参考图：产品/服装版型、领型、袖长、衣长、面料质感与光泽必须完全一致，不允许改动。
+
+【场景建议】
+- 极简北欧卧室/客厅/阳台等“生活化但干净”的空间，柔和晨光透过纱帘。
+- 低对比、无硬阴影，氛围温柔、松弛、有电影感。
+
+【排版】
+- 左上角：品牌 Logo + 小号双语副标题（克制）。
+- 底部左侧：主标题 + 双语副标题（留白充足）。
+- 右下角：圆角药丸 CTA（如“了解更多 → / LEARN MORE →”）。
+
+【NEGATIVE】
+cluttered room, messy props, harsh shadows, watermark, too many fonts, low quality.`,
+    userPromptPlaceholder: '例如：产品（服装/家居）+想要的生活方式场景（清晨居家/通勤/约会）+标题文案方向',
+    supportsReferenceImage: true,
+    referenceImageGuide: '上传产品图：AI 只做场景与排版，不改产品本体',
+    outputType: 'single'
+  },
+  {
+    id: 'ecom_poster_collage_916',
+    name: '电商海报｜多场景拼贴 9:16',
+    description: '极简拼贴（4 场景）+ 留白排版，一张图讲清多场景穿搭/使用',
+    aspectRatio: '9:16',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Minimal Collage Poster:
+1. Create a clean collage layout (rounded rectangles, breathing space)
+2. Maintain strict product consistency across all scenes
+3. Keep tone consistent (lighting + color grading)
+4. Include bilingual headline + small selling points`,
+    promptTemplate: `9:16 竖版极简多场景拼贴电商海报（minimal collage poster）。
+
+【产品/场景 Brief】
+{{USER_PROMPT}}
+
+【拼贴布局】
+- 温暖奶油色/米白背景，留白充足
+- 4 个大圆角照片块，均匀排布（呼吸感强）
+- 四个场景：清晨居家 / 客厅日常 / 镜前整理 / 阳台休闲（或由用户指定）
+
+【一致性规则】
+- 同一产品在四个场景中必须完全一致（颜色/版型/材质/细节不变）
+- 光线风格统一：柔和自然光，低对比
+
+【排版】
+- 左上角：品牌 Logo
+- 底部居中：主标题 + 双语副标题
+- 右下角附近：3 条双语卖点（短句）
+
+【NEGATIVE】
+busy collage, inconsistent lighting, different product designs, clutter, watermark.`,
+    userPromptPlaceholder: '例如：产品+想要的 4 个场景/使用方式 + 主标题/副标题方向',
+    supportsReferenceImage: true,
+    referenceImageGuide: '上传产品图：四个拼贴场景里产品必须一致',
+    outputType: 'single'
+  },
+  {
+    id: 'ecom_poster_macro_detail_916',
+    name: '电商海报｜材质细节微距 9:16',
+    description: '微距质感海报：强调面料/材质纹理与高级光泽，含双语标题与 CTA',
+    aspectRatio: '9:16',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Macro Detail Poster:
+1. Macro close-up product texture shot (premium, clean)
+2. Keep product material accurate to reference
+3. Use soft studio light that reveals texture without harshness
+4. Minimal bilingual typography layout`,
+    promptTemplate: `9:16 竖版高端极简微距细节海报（macro texture poster）。
+
+【材质/卖点 Brief】
+{{USER_PROMPT}}
+
+【拍摄】
+- 极近距离微距，聚焦材质纹理（不一定出现完整主体/五官）
+- 柔和摄影棚日光，低对比，强调自然微光泽与细腻织纹
+- 大量干净负空间用于排版
+
+【排版】
+- 左上角：品牌 Logo
+- 右侧偏上：双语标题（如“仿真丝光泽 / Silk-like Sheen”）
+- 标题下方：2 行双语短文案
+- 右下角：圆角药丸 CTA
+
+【NEGATIVE】
+over-sharpened, harsh lighting, noisy texture, clutter, watermark.`,
+    userPromptPlaceholder: '例如：面料/材质卖点（柔软亲肤、微光泽、耐磨等）+标题文案方向',
+    supportsReferenceImage: true,
+    referenceImageGuide: '上传产品/材质参考图：材质纹理必须准确',
+    outputType: 'single'
+  },
+  {
+    id: 'ecom_poster_sellpoint_stretch_fit_916',
+    name: '电商海报｜卖点·弹力贴合 9:16',
+    description: '用克制的轻微动态展示“修身但不紧绷/活动不束缚”等卖点',
+    aspectRatio: '9:16',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Selling Point Poster:
+1. Show the selling point visually (subtle dynamic, not exaggerated)
+2. Keep premium fashion look, clean background
+3. Bilingual info card bullets + CTA
+4. Strict product consistency if reference provided`,
+    promptTemplate: `9:16 竖版极简卖点海报（Selling point poster: Stretch & Fit）。
+
+【产品/卖点 Brief】
+{{USER_PROMPT}}
+
+【画面】
+- 米白渐变背景，极简留白
+- 半身或 3/4 身镜头，强调腰线/肩臂贴合
+- 轻微动态（抬手/自然转身）表达弹性与回弹，避免健身房/运动服既视感
+- 柔光主光 + 轻轮廓光，突出线条与面料张力
+
+【排版】
+- 左上角 Logo
+- 右侧标题：弹力贴合 / Stretch & Fit
+- Glass 信息卡：3 条双语卖点 bullets
+- 右下角 CTA：选择尺码 → / PICK YOUR SIZE →
+
+【NEGATIVE】
+gym vibe, exaggerated stretching, clutter, watermark, messy fonts.`,
+    userPromptPlaceholder: '例如：产品（服装/功能）+卖点（修身不紧绷/抬手不束缚/叠穿利落）',
+    supportsReferenceImage: true,
+    referenceImageGuide: '上传产品图：版型贴合程度以参考为准（不改紧松）',
+    outputType: 'single'
+  },
+  {
+    id: 'ecom_poster_infographic_916',
+    name: '电商海报｜信息图 9:16',
+    description: '高端品牌详情页风格的信息图：颜色/尺码建议/场景标签，一张图讲清',
+    aspectRatio: '9:16',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Premium Infographic Poster:
+1. Clean brand-style infographic (not Taobao clutter)
+2. Accurate product color representation
+3. Simple bilingual section layout
+4. Minimal icons and typography`,
+    promptTemplate: `9:16 竖版极简信息海报（Premium brand-style infographic）。
+
+【产品/信息 Brief】
+{{USER_PROMPT}}
+
+【布局】
+- 奶油色渐变背景留白
+- 左侧：产品干净展示（平铺或上半身展示；若有参考图需同款一致）
+- 右侧：规则排版信息区（像高端品牌官方详情页）
+  - 颜色 / Colors：2-4 个小色块（只用真实存在的色系，不虚构）
+  - 尺码 / Size Guide：3 行以内建议（不写具体数值表）
+  - 场景 / Styling：3 个短标签（通勤/居家/叠穿或自定义）
+
+【排版】
+- 左上角 Logo
+- 右下角 CTA：立即选购 → / SHOP NOW →
+
+【NEGATIVE】
+too dense table, messy icons, cheap infographic look, watermark.`,
+    userPromptPlaceholder: '例如：产品+有哪些颜色（如有）+尺码建议口径+适用场景标签',
+    supportsReferenceImage: true,
+    referenceImageGuide: '上传产品图：颜色准确、信息区不写错',
+    outputType: 'single'
+  },
+  {
+    id: 'ecom_poster_care_guide_916',
+    name: '电商详情页｜洗护信任页 9:16',
+    description: '详情页结尾的护理说明/信任页：极简图标 + 双语洗护指南 + 温柔收尾文案',
+    aspectRatio: '9:16',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Care Guide Trust Page:
+1. Clean care-guide poster layout (soft, trustworthy)
+2. Minimal linear icons + bilingual short lines
+3. Brand consistency, lots of whitespace
+4. No cluttered tables; keep it premium`,
+    promptTemplate: `9:16 竖版高端极简护理说明海报（Care guide trust page）。
+
+【品牌/产品 Brief】
+{{USER_PROMPT}}
+
+【画面风格】
+- 奶油色/温暖米白柔和渐变背景，极致干净
+- 均匀柔和棚拍光，温和安心，低对比
+
+【排版】
+- 左上角：品牌 Logo（小号、克制）
+- 顶部：大标题（洗护指南 / CARE GUIDE，中英上下排列）
+- 中部：极简线性图标 + 双语说明（建议 5 条）
+  - 建议手洗或使用洗衣袋 / Hand wash or use laundry bag
+  - 冷水或 30°C 以下 / Cold or below 30°C water
+  - 不可漂白或强力拧干 / No bleach or wringing
+  - 悬挂阴干避免暴晒 / Hang dry, avoid direct sun
+  - 低温熨烫垫布更佳 / Low heat iron, use cloth
+- 底部：温柔收尾短句（双语）
+
+【NEGATIVE】
+busy layout, heavy texture, strong shadows, watermark, messy icons, cheap design.`,
+    userPromptPlaceholder: '例如：品牌名+产品（材质）+想要的护理语气（温柔/专业）',
+    supportsReferenceImage: false,
+    outputType: 'single'
+  },
+  {
+    id: 'ecom_poster_before_after_45',
+    name: '电商工具海报｜Before-After 4:5',
+    description: '产品图“原图→成图”的对比流程海报（适合 AI 电商工具、修图工具宣传）',
+    aspectRatio: '4:5',
+    resolution: '4K',
+    systemPrompt: `${POLISH_SYSTEM_PROMPT}
+
+For Before-After Tool Poster:
+1. Looks like a real e-commerce workflow screenshot (not over-designed)
+2. Clear BEFORE (input) and AFTER (output cards) with arrow
+3. Minimal tech-glow accents; keep readable
+4. Bilingual sell-point tags`,
+    promptTemplate: `4:5 竖版 Before-After 对比海报（像电商工具使用过程的真实截图）。
+
+【工具/卖点 Brief】
+{{USER_PROMPT}}
+
+【布局】
+- 左侧 BEGIN：上传的参考图（圆角发光边框）
+- 右侧 END：电商产品分镜图（6 张卡片网格：标题+图片）
+- 中间发光箭头：标注工具名/流程（可写品牌/产品名）
+- 底部卖点标签：原图直用 / 自动构图 / 细节强化 / 商品级打光 / 直接上架（可双语）
+
+【风格】
+真实商品摄影感，可直接用于详情页；避免卡通插画风。
+
+【NEGATIVE】
+illustration, cartoon, messy neon, dark background, clutter, watermark, low quality.`,
+    userPromptPlaceholder: '例如：工具名+“把原图生成爆款电商图/分镜图”的卖点与语气',
+    supportsReferenceImage: false,
+    outputType: 'single'
+  },
+
   // ========== 产品多角度 ==========
   {
     id: 'product_multiangle',

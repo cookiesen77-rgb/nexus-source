@@ -138,7 +138,37 @@ const getConnectedInputs = (configId: string) => {
   const promptParts: string[] = []
   const refImages: string[] = []
 
-  for (const edge of connectedEdges) {
+  // Stable ordering:
+  // - text -> imageConfig: sort by promptOrder if present
+  // - image -> imageConfig: sort by imageOrder if present
+  // Fallback to original insertion order for unknown edges.
+  const promptEdges: any[] = []
+  const imageEdges: any[] = []
+  const otherEdges: any[] = []
+
+  for (let idx = 0; idx < connectedEdges.length; idx++) {
+    const edge = connectedEdges[idx]
+    const sourceNode = byId.get(edge.source)
+    if (sourceNode?.type === 'text') {
+      const order = Number((edge.data as any)?.promptOrder)
+      promptEdges.push({ edge, idx, order: Number.isFinite(order) && order > 0 ? order : 999999 })
+      continue
+    }
+    if (sourceNode?.type === 'image') {
+      const order = Number((edge.data as any)?.imageOrder)
+      imageEdges.push({ edge, idx, order: Number.isFinite(order) && order > 0 ? order : 999999 })
+      continue
+    }
+    otherEdges.push({ edge, idx, order: 999999 })
+  }
+
+  promptEdges.sort((a, b) => (a.order - b.order) || (a.idx - b.idx))
+  imageEdges.sort((a, b) => (a.order - b.order) || (a.idx - b.idx))
+  otherEdges.sort((a, b) => (a.idx - b.idx))
+
+  const ordered = [...promptEdges, ...imageEdges, ...otherEdges].map((x) => x.edge)
+
+  for (const edge of ordered) {
     const sourceNode = byId.get(edge.source)
     console.log('[getConnectedInputs] 边 source:', edge.source, '-> 节点:', sourceNode?.type, sourceNode?.data)
     if (!sourceNode) continue
@@ -181,12 +211,35 @@ const findConnectedOutputImageNode = (configId: string) => {
   return null
 }
 
-export const generateImageFromConfigNode = async (configNodeId: string, overrides?: ImageGenerationOverrides) => {
+export type GenerateImageFromConfigNodeOptions = {
+  /**
+   * 指定输出图片节点 ID（用于 loopCount 并发批量生成，避免并发抢占同一输出节点）
+   */
+  outputNodeId?: string
+  /**
+   * 是否自动选中输出节点（默认 true）
+   * - 批量并发时建议关闭，避免并发任务互相抢焦点
+   */
+  selectOutput?: boolean
+  /**
+   * 是否写回配置节点 executed/outputNodeId（默认 true）
+   * - 批量并发时建议关闭，由批量调度方统一在结束后写回
+   */
+  markConfigExecuted?: boolean
+}
+
+export const generateImageFromConfigNode = async (
+  configNodeId: string,
+  overrides?: ImageGenerationOverrides,
+  options?: GenerateImageFromConfigNodeOptions
+) => {
   // 等待确保 store 状态已同步（增加到 200ms）
   console.log('[generateImage] 开始，等待 store 同步... configNodeId:', configNodeId, 'overrides:', overrides)
   await new Promise(resolve => setTimeout(resolve, 200))
   
   const store = useGraphStore.getState()
+  const selectOutput = options?.selectOutput !== false
+  const markConfigExecuted = options?.markConfigExecuted !== false
   console.log('[generateImage] store 节点数:', store.nodes.length, '边数:', store.edges.length)
   
   const cfg = store.nodes.find((n) => n.id === configNodeId)
@@ -230,64 +283,80 @@ export const generateImageFromConfigNode = async (configNodeId: string, override
   }
 
   // 3. 先创建/复用图片节点（显示 loading 状态）- 与 Vue 版本一致
-  let imageNodeId = findConnectedOutputImageNode(configNodeId)
+  const forcedOutputId = String(options?.outputNodeId || '').trim()
+  let imageNodeId = forcedOutputId || findConnectedOutputImageNode(configNodeId)
   const nodeX = cfg.x
   const nodeY = cfg.y
   
-  // 获取重新生成模式设置
-  const regenerateMode = useSettingsStore.getState().regenerateMode || 'create'
-  
-  // 记录旧的图片数据（用于保存到历史记录）
-  let oldImageData: any = null
-  
-  if (imageNodeId) {
-    const existingNode = store.nodes.find(n => n.id === imageNodeId)
-    if (existingNode?.data?.url) {
-      oldImageData = { ...existingNode.data }
-    }
-    
-    if (regenerateMode === 'replace') {
-      // 替代模式：直接更新现有节点
-      store.updateNode(imageNodeId, { data: { loading: true, error: '' } } as any)
+  let forceOutput = false
+  if (forcedOutputId) {
+    const forcedNode = store.nodes.find((n) => n.id === forcedOutputId)
+    if (forcedNode?.type === 'image') {
+      forceOutput = true
+      // 强制使用指定输出节点
+      store.updateNode(forcedOutputId, { data: { loading: true, error: '' } } as any)
     } else {
-      // 新建模式：如果已有节点有内容，创建新节点
-      if (oldImageData?.url) {
-        // 将旧数据保存到历史记录
-        if (oldImageData.url) {
-          useAssetsStore.getState().addAsset({
-            type: 'image',
-            src: oldImageData.url,
-            title: oldImageData.label || '图片历史',
-            model: modelKey
-          })
-        }
-        // 创建新节点
-        imageNodeId = store.addNode('image', { x: nodeX + 400, y: nodeY + 50 }, {
-          url: '',
-          loading: true,
-          label: '图像生成结果'
-        })
-        store.addEdge(configNodeId, imageNodeId, {
-          sourceHandle: 'right',
-          targetHandle: 'left'
-        })
-      } else {
-        // 复用已有的空白图片节点
-        store.updateNode(imageNodeId, { data: { loading: true, error: '' } } as any)
-      }
+      console.warn('[generateImage] 指定 outputNodeId 无效，回退到默认创建/复用:', forcedOutputId, forcedNode?.type)
+      imageNodeId = findConnectedOutputImageNode(configNodeId)
     }
-  } else {
-    // 创建新的图片节点（带 loading 状态）
-    imageNodeId = store.addNode('image', { x: nodeX + 400, y: nodeY }, {
-      url: '',
-      loading: true,
-      label: '图像生成结果'
-    })
-    // 自动连接 imageConfig → image
-    store.addEdge(configNodeId, imageNodeId, {
-      sourceHandle: 'right',
-      targetHandle: 'left'
-    })
+  }
+
+  if (!forceOutput) {
+    // 获取重新生成模式设置
+    const regenerateMode = useSettingsStore.getState().regenerateMode || 'create'
+    
+    // 记录旧的图片数据（用于保存到历史记录）
+    let oldImageData: any = null
+    
+    if (imageNodeId) {
+      const existingNode = store.nodes.find(n => n.id === imageNodeId)
+      if (existingNode?.data?.url) {
+        oldImageData = { ...existingNode.data }
+      }
+      
+      if (regenerateMode === 'replace') {
+        // 替代模式：直接更新现有节点
+        store.updateNode(imageNodeId, { data: { loading: true, error: '' } } as any)
+      } else {
+        // 新建模式：如果已有节点有内容，创建新节点
+        if (oldImageData?.url) {
+          // 将旧数据保存到历史记录
+          if (oldImageData.url) {
+            useAssetsStore.getState().addAsset({
+              type: 'image',
+              src: oldImageData.url,
+              title: oldImageData.label || '图片历史',
+              model: modelKey
+            })
+          }
+          // 创建新节点
+          imageNodeId = store.addNode('image', { x: nodeX + 400, y: nodeY + 50 }, {
+            url: '',
+            loading: true,
+            label: '图像生成结果'
+          })
+          store.addEdge(configNodeId, imageNodeId, {
+            sourceHandle: 'right',
+            targetHandle: 'left'
+          })
+        } else {
+          // 复用已有的空白图片节点
+          store.updateNode(imageNodeId, { data: { loading: true, error: '' } } as any)
+        }
+      }
+    } else {
+      // 创建新的图片节点（带 loading 状态）
+      imageNodeId = store.addNode('image', { x: nodeX + 400, y: nodeY }, {
+        url: '',
+        loading: true,
+        label: '图像生成结果'
+      })
+      // 自动连接 imageConfig → image
+      store.addEdge(configNodeId, imageNodeId, {
+        sourceHandle: 'right',
+        targetHandle: 'left'
+      })
+    }
   }
 
   // 4. 调用 API 生成图片
@@ -526,7 +595,9 @@ export const generateImageFromConfigNode = async (configNodeId: string, override
     }
     
     // 选中新创建的图片节点
-    latestStore.setSelected(imageNodeId)
+    if (selectOutput) {
+      latestStore.setSelected(imageNodeId)
+    }
 
     // 同步到历史素材
     try {
@@ -541,7 +612,9 @@ export const generateImageFromConfigNode = async (configNodeId: string, override
     }
 
     // 标记配置节点已执行
-    latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: imageNodeId } } as any)
+    if (markConfigExecuted) {
+      latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: imageNodeId } } as any)
+    }
 
   } catch (err: any) {
     // 6. 失败：更新图片节点显示错误

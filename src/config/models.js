@@ -309,6 +309,51 @@ export const VIDEO_MODELS = [
         ],
         defaultParams: { ratio: '9:16', duration: 4, size: '720x1280' }
     },
+    {
+        label: 'Grok Video 3 (6s)',
+        // 文档模型名：grok-video-3（当前实测常见为 6 秒输出；接口不提供显式 duration 参数）
+        // https://yunwu.apifox.cn/api-385288046
+        key: 'grok-video-3',
+        // Grok 视频统一格式（JSON）
+        // 文档：https://yunwu.apifox.cn/api-385288046
+        endpoint: '/v1/video/create',
+        // 查询任务：https://yunwu.apifox.cn/api-385288050
+        statusEndpoint: '/v1/video/query',
+        authMode: 'bearer',
+        format: 'unified-video',
+        // Grok 当前为“垫图生成”，images 为必填（至少 1 张）
+        requiresImages: true,
+        // 文档描述为“垫图图片链接”，避免把 dataURL/base64 直接塞进 JSON（容易超时/失败）
+        imagesMustBeHttp: true,
+        // 允许多张垫图；上游具体限制未知，这里做保守上限
+        maxImages: 3,
+        // 文档限定：2:3, 3:2, 1:1
+        ratios: ['3:2', '2:3', '1:1'],
+        // 文档：size 720P 或 1080P（但当前仅支持 720P）
+        sizes: [{ label: '720P', key: '720P' }],
+        durs: [{ label: '6 秒', key: 6 }],
+        // 时长由模型固定，接口不提供 duration 参数（避免传入后触发上游校验）
+        supportsDuration: false,
+        defaultParams: { ratio: '3:2', duration: 6, size: '720P' }
+    },
+    {
+        label: 'Grok Video 3 (10s)',
+        // 部分环境/线路可能提供 10 秒变体；接口本身不提供 duration 字段，只能通过模型名区分
+        // https://yunwu.apifox.cn/api-385288046
+        key: 'grok-video-3-10s',
+        endpoint: '/v1/video/create',
+        statusEndpoint: '/v1/video/query',
+        authMode: 'bearer',
+        format: 'unified-video',
+        requiresImages: true,
+        imagesMustBeHttp: true,
+        maxImages: 3,
+        ratios: ['3:2', '2:3', '1:1'],
+        sizes: [{ label: '720P', key: '720P' }],
+        durs: [{ label: '10 秒', key: 10 }],
+        supportsDuration: false,
+        defaultParams: { ratio: '3:2', duration: 10, size: '720P' }
+    },
     // ========== Vidu 系列 (按秒计费) ==========
     {
         label: 'Vidu q2-turbo ¥0.55/4s',

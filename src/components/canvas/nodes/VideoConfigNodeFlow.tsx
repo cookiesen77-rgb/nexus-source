@@ -6,14 +6,19 @@ import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Copy, Expand, Video } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
+import { getNodeSize } from '@/graph/nodeSizing'
 import { generateVideoFromConfigNode } from '@/lib/workflow/video'
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from '@/config/models'
+import * as modelsConfig from '@/config/models'
 
 // 模型选项
 const MODEL_OPTIONS = VIDEO_MODELS.map((m: any) => ({ key: m.key, label: m.label }))
 
 // 获取模型配置
 const getModelConfig = (modelKey: string) => {
+  // 兼容旧 key（MODEL_ALIASES），避免旧工程打开后 UI 显示/参数不匹配
+  const resolved: any = (modelsConfig as any)?.getModelByName?.(modelKey) || null
+  if (resolved && String(resolved?.format || '').includes('video')) return resolved
   return VIDEO_MODELS.find((m: any) => m.key === modelKey) || VIDEO_MODELS[0]
 }
 
@@ -58,6 +63,21 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
   
   const updateTimerRef = useRef<number>(0)
   const initializedRef = useRef(false)
+
+  // 兼容旧 key（MODEL_ALIASES）：如果节点里保存的是旧 key，自动迁移到新 key，避免下拉框空白
+  useEffect(() => {
+    const cur = String(model || '').trim()
+    if (!cur) return
+    if (MODEL_OPTIONS.some((o) => o.key === cur)) return
+    const resolved: any = (modelsConfig as any)?.getModelByName?.(cur) || null
+    const nextKey = String(resolved?.key || '').trim()
+    if (!nextKey) return
+    if (nextKey === cur) return
+    if (!MODEL_OPTIONS.some((o) => o.key === nextKey)) return
+    setModel(nextKey)
+    debouncedUpdateStore({ model: nextKey })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model, id])
   
   // 清理定时器（防止内存泄漏）
   useEffect(() => {
@@ -180,22 +200,61 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current)
       useGraphStore.getState().updateNode(id, { data: { model, ratio, dur: duration, size, loopCount } } as any)
       
-      // 循环生成（每次都创建新节点）
+      // 循环生成（并发）：选择 N 次就立即创建 N 个后续输出节点，并发完成调用
       const actualLoopCount = Math.max(1, Math.min(10, loopCount)) // 限制 1-10 次
-      
-      for (let i = 0; i < actualLoopCount; i++) {
-        if (actualLoopCount > 1) {
-          window.$message?.info?.(`正在生成第 ${i + 1}/${actualLoopCount} 个视频...`)
+      const outIds: string[] = []
+
+      const s0 = useGraphStore.getState()
+      const cfgNode = s0.nodes.find((n) => n.id === id)
+      if (!cfgNode) throw new Error('配置节点不存在')
+
+      const baseX = (cfgNode.x || 0) + 460
+      const baseY = (cfgNode.y || 0)
+      const outSize = getNodeSize('video')
+      const spacingY = Math.max(36, (outSize?.h || 240) + 60)
+
+      // 先把 N 个输出节点创建出来（确保“选多少次就出现多少个后续节点”）
+      useGraphStore.getState().withBatchUpdates(() => {
+        for (let i = 0; i < actualLoopCount; i++) {
+          const outId = useGraphStore.getState().addNode('video', { x: baseX, y: baseY + i * spacingY }, {
+            url: '',
+            loading: true,
+            error: '',
+            label: '视频生成结果'
+          })
+          outIds.push(outId)
+          useGraphStore.getState().addEdge(id, outId, { sourceHandle: 'right', targetHandle: 'left' })
         }
-        // 直接传递参数到生成函数，彻底避免异步同步问题
-        await generateVideoFromConfigNode(id, { model, ratio, duration, size })
-      }
-      
-      console.log('[VideoConfigNode] 视频生成成功')
+      })
+
       if (actualLoopCount > 1) {
-        window.$message?.success?.(`成功生成 ${actualLoopCount} 个视频`)
+        window.$message?.info?.(`开始并发生成 ${actualLoopCount} 个视频...`)
+      }
+
+      const tasks = outIds.map((outId) =>
+        generateVideoFromConfigNode(
+          id,
+          { model, ratio, duration, size },
+          { outputNodeId: outId, selectOutput: false, markConfigExecuted: false }
+        )
+          .then(() => ({ ok: true as const, outId }))
+          .catch((err) => ({ ok: false as const, outId, err }))
+      )
+
+      const results = await Promise.all(tasks)
+      const okCount = results.filter((r) => r.ok).length
+      const failCount = results.length - okCount
+
+      // 批量结束后统一标记配置节点完成（保持 outputNodeId 兼容：指向最后一个输出）
+      const lastOut = outIds[outIds.length - 1] || ''
+      useGraphStore.getState().updateNode(id, { data: { executed: true, outputNodeId: lastOut, outputNodeIds: outIds } } as any)
+
+      console.log('[VideoConfigNode] 视频生成完成', { okCount, failCount })
+      if (failCount === 0) {
+        if (actualLoopCount > 1) window.$message?.success?.(`成功生成 ${okCount} 个视频`)
+        else window.$message?.success?.('视频生成成功')
       } else {
-        window.$message?.success?.('视频生成成功')
+        window.$message?.warning?.(`生成完成：成功 ${okCount}，失败 ${failCount}`)
       }
     } catch (err: any) {
       console.error('[VideoConfigNode] 生成失败:', err)

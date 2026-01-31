@@ -6,8 +6,9 @@
  */
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
-import { Copy, Trash2, Expand } from 'lucide-react'
+import { Copy, Trash2, Expand, ArrowUp, ArrowDown } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
+import { getNodeSize } from '@/graph/nodeSizing'
 import { generateImageFromConfigNode } from '@/lib/workflow/image'
 import { IMAGE_MODELS } from '@/config/models'
 
@@ -134,21 +135,60 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current)
       useGraphStore.getState().updateNode(id, { data: { model, size, quality, loopCount } })
       
-      // 循环生成（每次都创建新节点）
+      // 循环生成（并发）：选择 N 次就立即创建 N 个后续输出节点，并发完成调用
       const actualLoopCount = Math.max(1, Math.min(10, loopCount)) // 限制 1-10 次
-      
-      for (let i = 0; i < actualLoopCount; i++) {
-        if (actualLoopCount > 1) {
-          window.$message?.info?.(`正在生成第 ${i + 1}/${actualLoopCount} 张图片...`)
+      const outIds: string[] = []
+
+      const s0 = useGraphStore.getState()
+      const cfgNode = s0.nodes.find((n) => n.id === id)
+      if (!cfgNode) throw new Error('配置节点不存在')
+
+      const baseX = (cfgNode.x || 0) + 400
+      const baseY = (cfgNode.y || 0)
+      const outSize = getNodeSize('image')
+      const spacingY = Math.max(36, (outSize?.h || 200) + 40)
+
+      // 先把 N 个输出节点创建出来（确保“选多少次就出现多少个后续节点”）
+      useGraphStore.getState().withBatchUpdates(() => {
+        for (let i = 0; i < actualLoopCount; i++) {
+          const outId = useGraphStore.getState().addNode('image', { x: baseX, y: baseY + i * spacingY }, {
+            url: '',
+            loading: true,
+            error: '',
+            label: '图像生成结果'
+          })
+          outIds.push(outId)
+          useGraphStore.getState().addEdge(id, outId, { sourceHandle: 'right', targetHandle: 'left' })
         }
-        // 直接传递参数到生成函数，彻底避免异步同步问题
-        await generateImageFromConfigNode(id, { model, size, quality })
-      }
-      
+      })
+
       if (actualLoopCount > 1) {
-        window.$message?.success?.(`成功生成 ${actualLoopCount} 张图片`)
+        window.$message?.info?.(`开始并发生成 ${actualLoopCount} 张图片...`)
+      }
+
+      const tasks = outIds.map((outId) =>
+        generateImageFromConfigNode(
+          id,
+          { model, size, quality },
+          { outputNodeId: outId, selectOutput: false, markConfigExecuted: false }
+        )
+          .then(() => ({ ok: true as const, outId }))
+          .catch((err) => ({ ok: false as const, outId, err }))
+      )
+
+      const results = await Promise.all(tasks)
+      const okCount = results.filter((r) => r.ok).length
+      const failCount = results.length - okCount
+
+      // 批量结束后统一标记配置节点完成（保持 outputNodeId 兼容：指向最后一个输出）
+      const lastOut = outIds[outIds.length - 1] || ''
+      useGraphStore.getState().updateNode(id, { data: { executed: true, outputNodeId: lastOut, outputNodeIds: outIds } } as any)
+
+      if (failCount === 0) {
+        if (actualLoopCount > 1) window.$message?.success?.(`成功生成 ${okCount} 张图片`)
+        else window.$message?.success?.('图片生成成功')
       } else {
-        window.$message?.success?.('图片生成成功')
+        window.$message?.warning?.(`生成完成：成功 ${okCount}，失败 ${failCount}`)
       }
     } catch (err: any) {
       window.$message?.error?.(err?.message || '图片生成失败')
@@ -322,6 +362,9 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
           {/* 连接输入指示 */}
           <ConnectionStatusIndicator getConnectionStatus={getConnectionStatus} />
 
+          {/* 参考图顺序（可调整） */}
+          <ReferenceOrderEditor configNodeId={id} />
+
           {/* 生成按钮 - 允许多次点击 */}
           <button
             onClick={handleGenerate}
@@ -351,6 +394,115 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
           </button>
         </div>
       )}
+    </div>
+  )
+})
+
+// 参考图顺序编辑器（基于 imageOrder edge）
+const ReferenceOrderEditor = memo(function ReferenceOrderEditor({ configNodeId }: { configNodeId: string }) {
+  const [items, setItems] = useState<
+    { edgeId: string; order: number; nodeId: string; label: string }[]
+  >([])
+
+  const recompute = useCallback(() => {
+    const s = useGraphStore.getState()
+    const byId = new Map(s.nodes.map((n) => [n.id, n]))
+    const edges = s.edges.filter((e) => e.target === configNodeId)
+    const list: { edgeId: string; order: number; nodeId: string; label: string }[] = []
+    for (const e of edges) {
+      const src = byId.get(e.source)
+      if (!src || src.type !== 'image') continue
+      const orderRaw = Number((e.data as any)?.imageOrder)
+      const order = Number.isFinite(orderRaw) && orderRaw > 0 ? orderRaw : 999999
+      const label = String((src.data as any)?.label || '').trim() || `参考图 ${src.id}`
+      list.push({ edgeId: e.id, order, nodeId: src.id, label })
+    }
+    list.sort((a, b) => (a.order - b.order) || a.label.localeCompare(b.label))
+    setItems(list)
+  }, [configNodeId])
+
+  useEffect(() => {
+    recompute()
+    const unsub = useGraphStore.subscribe(
+      (state, prev) => {
+        if (state.edges !== prev.edges || state.nodes !== prev.nodes) {
+          recompute()
+        }
+      }
+    )
+    return unsub
+  }, [recompute])
+
+  const moveUp = useCallback(
+    (idx: number) => {
+      if (idx <= 0) return
+      const a = items[idx]
+      const b = items[idx - 1]
+      if (!a || !b) return
+      // swap orders via store helper
+      useGraphStore.getState().setEdgeImageOrder(a.edgeId, b.order)
+      recompute()
+    },
+    [items, recompute]
+  )
+
+  const moveDown = useCallback(
+    (idx: number) => {
+      if (idx >= items.length - 1) return
+      const a = items[idx]
+      const b = items[idx + 1]
+      if (!a || !b) return
+      useGraphStore.getState().setEdgeImageOrder(a.edgeId, b.order)
+      recompute()
+    },
+    [items, recompute]
+  )
+
+  if (!items || items.length <= 1) return null
+
+  return (
+    <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-tertiary)] p-2">
+      <div className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">参考图顺序</div>
+      <div className="mt-2 space-y-1">
+        {items.map((it, idx) => (
+          <div key={it.edgeId} className="flex items-center justify-between gap-2 rounded-md bg-[var(--bg-secondary)] px-2 py-1">
+            <div className="min-w-0 flex-1 truncate text-xs text-[var(--text-primary)]">
+              {idx + 1}. {it.label}
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="rounded p-1 text-[var(--text-secondary)] hover:bg-[var(--bg-primary)] disabled:opacity-40"
+                disabled={idx === 0}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  moveUp(idx)
+                }}
+                title="上移"
+              >
+                <ArrowUp size={14} />
+              </button>
+              <button
+                type="button"
+                className="rounded p-1 text-[var(--text-secondary)] hover:bg-[var(--bg-primary)] disabled:opacity-40"
+                disabled={idx === items.length - 1}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  moveDown(idx)
+                }}
+                title="下移"
+              >
+                <ArrowDown size={14} />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 text-[11px] text-[var(--text-secondary)] opacity-80">
+        说明：顺序会影响部分模型对多张参考图的优先级。
+      </div>
     </div>
   )
 })

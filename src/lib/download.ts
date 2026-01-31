@@ -35,10 +35,30 @@ function extractLocalPath(assetUrl: string): string | null {
   try {
     const url = new URL(assetUrl)
     // asset://localhost/Users/... -> /Users/...
-    return decodeURIComponent(url.pathname)
+    const p = decodeURIComponent(url.pathname)
+    // Windows: asset://localhost/C:/Users/... -> /C:/Users/...（需要去掉前导斜杠）
+    if (/^\/[A-Za-z]:\//.test(p)) return p.slice(1)
+    return p
   } catch {
     return null
   }
+}
+
+/**
+ * 规范化网关相对路径为绝对 URL（Tauri plugin-http 需要绝对地址）
+ */
+function normalizeGatewayUrl(url: string): string {
+  const u = String(url || '').trim()
+  if (!u) return u
+  if (/^https?:\/\//i.test(u)) return u
+  if (u.startsWith('asset://') || u.startsWith('data:') || u.startsWith('blob:')) return u
+  const prefixes = ['/v1/', '/v1beta', '/kling', '/tencent-vod', '/video']
+  if (u.startsWith('/')) {
+    for (const p of prefixes) {
+      if (u.startsWith(p)) return `https://nexusapi.cn${u}`
+    }
+  }
+  return u
 }
 
 /**
@@ -80,8 +100,9 @@ async function fetchFileData(url: string): Promise<Uint8Array> {
     // HTTP URL
     if (isTauri) {
       const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
-      console.log('[download] Tauri fetch:', url.slice(0, 100))
-      const response = await tauriFetch(url)
+      const resolvedUrl = normalizeGatewayUrl(url)
+      console.log('[download] Tauri fetch:', resolvedUrl.slice(0, 100))
+      const response = await tauriFetch(resolvedUrl)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }

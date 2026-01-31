@@ -96,7 +96,10 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
   const [resolution, setResolution] = useState<'1K' | '2K' | '4K'>('2K')
 
   // AI 润色相关
-  const [polishedPrompt, setPolishedPrompt] = useState('')
+  type PolishLang = 'zh' | 'en'
+  const [polishLang, setPolishLang] = useState<PolishLang>('zh')
+  const [polishedPromptZh, setPolishedPromptZh] = useState('')
+  const [polishedPromptEn, setPolishedPromptEn] = useState('')
   const [isPolishing, setIsPolishing] = useState(false)
   const [polishError, setPolishError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -124,7 +127,8 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
       setAspectRatio(currentPreset.aspectRatio)
       setResolution(currentPreset.resolution)
       // 清空之前的结果
-      setPolishedPrompt('')
+      setPolishedPromptZh('')
+      setPolishedPromptEn('')
       setGeneratedImageUrl(null)
       setShots([])
     }
@@ -206,6 +210,32 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
+  const parsePolishDualLang = useCallback((raw: string): { zh: string; en: string } => {
+    const text = String(raw || '').trim()
+    const withoutFences = text
+      .replace(/^```(?:json)?/i, '')
+      .replace(/```$/i, '')
+      .trim()
+    const i0 = withoutFences.indexOf('{')
+    const i1 = withoutFences.lastIndexOf('}')
+    const jsonStr = i0 >= 0 && i1 > i0 ? withoutFences.slice(i0, i1 + 1) : ''
+
+    const fallback = { zh: text, en: text }
+    if (!jsonStr) return fallback
+
+    try {
+      const obj: any = JSON.parse(jsonStr)
+      const zh = String(obj?.zh || obj?.prompt_zh || obj?.final_prompt_cn || '').trim()
+      const en = String(obj?.en || obj?.prompt_en || obj?.final_prompt_en || '').trim()
+      if (zh || en) {
+        return { zh: zh || en || text, en: en || zh || text }
+      }
+      return fallback
+    } catch {
+      return fallback
+    }
+  }, [])
+
   // AI 润色提示词
   const handlePolish = useCallback(async () => {
     if (!userPrompt.trim()) {
@@ -215,7 +245,8 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
 
     setIsPolishing(true)
     setPolishError(null)
-    setPolishedPrompt('')
+    setPolishedPromptZh('')
+    setPolishedPromptEn('')
 
     try {
       // 获取全局 AI 助手模型设置
@@ -232,14 +263,15 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
         userContent = [
           {
             type: 'text',
-            text: `Please analyze this reference image and use it to enhance the following prompt. Extract character appearance, style, and visual elements from the image.
+            text: `Please analyze this reference image and use it to enhance the following prompt. Extract product/subject details, style, and visual elements from the image.
 
 User's description:
 ${userPrompt}
 
 ${currentPreset.promptTemplate ? `Use this template structure:\n${currentPreset.promptTemplate}` : ''}
 
-Output ONLY the polished, professional prompt. No explanations.`
+Output STRICT JSON only (no markdown, no code fences):
+{"zh":"<polished prompt in Simplified Chinese>","en":"<polished prompt in English>"}`
           },
           {
             type: 'image_url',
@@ -254,7 +286,8 @@ ${userPrompt}
 
 ${currentPreset.promptTemplate ? `Use this template structure:\n${currentPreset.promptTemplate}` : ''}
 
-Output ONLY the polished prompt. No explanations.`
+Output STRICT JSON only (no markdown, no code fences):
+{"zh":"<polished prompt in Simplified Chinese>","en":"<polished prompt in English>"}`
       }
 
       messages.push({ role: 'user', content: userContent })
@@ -263,8 +296,11 @@ Output ONLY the polished prompt. No explanations.`
       let response = ''
       for await (const chunk of streamAiAssistant(aiModel, messages, { filterThinking: true })) {
         response += chunk
-        setPolishedPrompt(response)
       }
+
+      const dual = parsePolishDualLang(response)
+      setPolishedPromptZh(dual.zh)
+      setPolishedPromptEn(dual.en)
 
       // 如果没有使用模板，直接使用AI返回的结果
       // 如果使用了模板，AI已经按模板格式润色了
@@ -275,11 +311,12 @@ Output ONLY the polished prompt. No explanations.`
     } finally {
       setIsPolishing(false)
     }
-  }, [userPrompt, referenceImage, currentPreset])
+  }, [userPrompt, referenceImage, currentPreset, parsePolishDualLang])
 
   // 生成图片 - 支持多种模型格式（用于单独生图，已有润色结果时）
   const handleGenerateImage = useCallback(async () => {
-    const promptToUse = polishedPrompt || userPrompt
+    const polished = (polishLang === 'zh' ? polishedPromptZh : polishedPromptEn).trim()
+    const promptToUse = polished || userPrompt
     if (!promptToUse.trim()) {
       setGenerateError('请先输入或润色提示词')
       return
@@ -380,7 +417,7 @@ Output ONLY the polished prompt. No explanations.`
     } finally {
       setIsGeneratingImage(false)
     }
-  }, [polishedPrompt, userPrompt, imageModel, aspectRatio, referenceImage, resolution])
+  }, [polishLang, polishedPromptZh, polishedPromptEn, userPrompt, imageModel, aspectRatio, referenceImage, resolution])
 
   // 一键生成：先润色，再生图
   const handlePolishAndGenerate = useCallback(async () => {
@@ -392,10 +429,12 @@ Output ONLY the polished prompt. No explanations.`
     // 第一步：润色
     setIsPolishing(true)
     setPolishError(null)
-    setPolishedPrompt('')
+    setPolishedPromptZh('')
+    setPolishedPromptEn('')
     setGenerateError(null)
     setGeneratedImageUrl(null)
 
+    let raw = ''
     let finalPrompt = ''
 
     try {
@@ -413,14 +452,15 @@ Output ONLY the polished prompt. No explanations.`
         userContent = [
           {
             type: 'text',
-            text: `Please analyze this reference image and use it to enhance the following prompt. Extract character appearance, style, and visual elements from the image.
+            text: `Please analyze this reference image and use it to enhance the following prompt. Extract product/subject details, style, and visual elements from the image.
 
 User's description:
 ${userPrompt}
 
 ${currentPreset.promptTemplate ? `Use this template structure:\n${currentPreset.promptTemplate}` : ''}
 
-Output ONLY the polished, professional prompt. No explanations.`
+Output STRICT JSON only (no markdown, no code fences):
+{"zh":"<polished prompt in Simplified Chinese>","en":"<polished prompt in English>"}`
           },
           {
             type: 'image_url',
@@ -435,15 +475,15 @@ ${userPrompt}
 
 ${currentPreset.promptTemplate ? `Use this template structure:\n${currentPreset.promptTemplate}` : ''}
 
-Output ONLY the polished prompt. No explanations.`
+Output STRICT JSON only (no markdown, no code fences):
+{"zh":"<polished prompt in Simplified Chinese>","en":"<polished prompt in English>"}`
       }
 
       messages.push({ role: 'user', content: userContent })
 
       // 调用 AI 润色（使用全局设置的模型）
       for await (const chunk of streamAiAssistant(aiModel, messages, { filterThinking: true })) {
-        finalPrompt += chunk
-        setPolishedPrompt(finalPrompt)
+        raw += chunk
       }
     } catch (err: any) {
       console.error('[DirectorConsole] AI 润色失败:', err)
@@ -455,7 +495,12 @@ Output ONLY the polished prompt. No explanations.`
     setIsPolishing(false)
 
     // 第二步：生成图片
-    if (!finalPrompt.trim()) {
+    const dual = parsePolishDualLang(raw)
+    setPolishedPromptZh(dual.zh)
+    setPolishedPromptEn(dual.en)
+
+    finalPrompt = (polishLang === 'zh' ? dual.zh : dual.en).trim()
+    if (!finalPrompt) {
       setGenerateError('润色结果为空')
       return
     }
@@ -565,16 +610,17 @@ Output ONLY the polished prompt. No explanations.`
     } finally {
       setIsGeneratingImage(false)
     }
-  }, [userPrompt, referenceImage, currentPreset, imageModel, aspectRatio, resolution])
+  }, [userPrompt, referenceImage, currentPreset, imageModel, aspectRatio, resolution, parsePolishDualLang, polishLang])
 
   // 复制润色后的提示词
   const handleCopyPrompt = useCallback(() => {
-    if (polishedPrompt) {
-      navigator.clipboard.writeText(polishedPrompt)
+    const txt = (polishLang === 'zh' ? polishedPromptZh : polishedPromptEn).trim()
+    if (txt) {
+      navigator.clipboard.writeText(txt)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
-  }, [polishedPrompt])
+  }, [polishLang, polishedPromptZh, polishedPromptEn])
 
   // 旧的分镜生成逻辑（保留）
   const buildStoryboardPrompt = useCallback(() => {
@@ -681,6 +727,7 @@ Output ONLY the polished prompt. No explanations.`
   const handleCreate = () => {
     // 预设模式：生成单图
     if (selectedPreset !== 'none' && generatedImageUrl) {
+      const usedPolished = (polishLang === 'zh' ? polishedPromptZh : polishedPromptEn).trim()
       onCreateNodes({
         storyIdea: userPrompt.trim(),
         styleBible: styleBible.trim(),
@@ -690,7 +737,7 @@ Output ONLY the polished prompt. No explanations.`
         aspectRatio,
         autoGenerateImages: false,
         singleImageUrl: generatedImageUrl,
-        singleImagePrompt: polishedPrompt || userPrompt
+        singleImagePrompt: (usedPolished || userPrompt).trim()
       })
       onClose()
       return
@@ -1065,24 +1112,53 @@ Output ONLY the polished prompt. No explanations.`
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-[var(--text-primary)]">AI 润色提示词</label>
-                    {polishedPrompt && (
-                      <button
-                        onClick={handleCopyPrompt}
-                        className="flex items-center gap-1 text-xs text-[var(--accent-color)] hover:underline"
-                      >
-                        {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                        {copied ? '已复制' : '复制'}
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <div className="flex overflow-hidden rounded-full border border-[var(--border-color)] bg-[var(--bg-primary)]">
+                        <button
+                          type="button"
+                          onClick={() => setPolishLang('zh')}
+                          className={cn(
+                            'px-2 py-1 text-[11px] transition-colors',
+                            polishLang === 'zh'
+                              ? 'bg-[rgb(var(--accent-rgb)/0.2)] text-[var(--accent-color)]'
+                              : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                          )}
+                        >
+                          中文
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPolishLang('en')}
+                          className={cn(
+                            'px-2 py-1 text-[11px] transition-colors',
+                            polishLang === 'en'
+                              ? 'bg-[rgb(var(--accent-rgb)/0.2)] text-[var(--accent-color)]'
+                              : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                          )}
+                        >
+                          English
+                        </button>
+                      </div>
+                      {!!(polishLang === 'zh' ? polishedPromptZh.trim() : polishedPromptEn.trim()) && (
+                        <button
+                          onClick={handleCopyPrompt}
+                          className="flex items-center gap-1 text-xs text-[var(--accent-color)] hover:underline"
+                          type="button"
+                        >
+                          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                          {copied ? '已复制' : '复制'}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="h-[200px] overflow-auto rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
-                    {polishedPrompt ? (
+                    {(polishLang === 'zh' ? polishedPromptZh.trim() : polishedPromptEn.trim()) ? (
                       <pre className="whitespace-pre-wrap text-xs text-[var(--text-primary)] font-mono leading-relaxed">
-                        {polishedPrompt}
+                        {polishLang === 'zh' ? polishedPromptZh : polishedPromptEn}
                       </pre>
                     ) : (
                       <div className="flex h-full items-center justify-center text-sm text-[var(--text-secondary)]">
-                        点击「AI 润色提示词」开始
+                        {isPolishing ? '正在润色...' : '点击「AI 润色提示词」开始'}
                       </div>
                     )}
                   </div>

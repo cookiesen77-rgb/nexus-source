@@ -85,6 +85,60 @@ const get502BackoffMs = (attempt: number) => {
   return Math.min(15000, base + jitter) // 最多 15 秒
 }
 
+// ===== multipart/form-data (Tauri) =====
+// Tauri plugin-http 在部分平台（尤其 Windows）对 FormData 支持不稳定。
+// 这里在 Tauri 环境下手动把 FormData 编码成 multipart bytes，避免直接传 FormData 导致请求失败。
+const concatUint8 = (chunks: Uint8Array[]) => {
+  const total = chunks.reduce((sum, c) => sum + (c?.byteLength || 0), 0)
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const c of chunks) {
+    out.set(c, offset)
+    offset += c.byteLength
+  }
+  return out
+}
+
+const encodeText = (s: string) => new TextEncoder().encode(String(s || ''))
+
+const escapeQuotes = (s: string) => String(s || '').replace(/"/g, '%22')
+
+const formDataToMultipartBody = async (form: FormData) => {
+  const boundary = '----WebKitFormBoundary' + Math.random().toString(36).slice(2)
+  const chunks: Uint8Array[] = []
+
+  for (const [name, value] of form.entries()) {
+    const fieldName = escapeQuotes(String(name || ''))
+    if (typeof value === 'string') {
+      chunks.push(
+        encodeText(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${value}\r\n`)
+      )
+      continue
+    }
+
+    // File / Blob
+    const anyVal: any = value as any
+    const filename = escapeQuotes(String(anyVal?.name || 'file'))
+    const contentType = String(anyVal?.type || 'application/octet-stream')
+    chunks.push(
+      encodeText(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`
+      )
+    )
+    try {
+      const buf = await (value as Blob).arrayBuffer()
+      chunks.push(new Uint8Array(buf))
+    } catch {
+      // If blob can't be read, keep empty; server will fail with a clearer message.
+    }
+    chunks.push(encodeText(`\r\n`))
+  }
+
+  chunks.push(encodeText(`--${boundary}--\r\n`))
+  const body = concatUint8(chunks)
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
 const getApiKey = () => {
   try {
     return localStorage.getItem('apiKey') || ''
@@ -177,17 +231,18 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     // Tauri HTTP 插件在某些平台（特别是 Windows）上对 AbortController 支持不完善
     // 因此只在非 Tauri 环境或明确设置超时时使用 signal
-    const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
     const useSignal = !isTauri && timeoutMs > 0
-    const t = timeoutMs > 0 ? window.setTimeout(() => {
-      try { controller.abort() } catch { /* ignore */ }
+    const controller = useSignal ? new AbortController() : null
+    const t = useSignal ? window.setTimeout(() => {
+      try { controller?.abort() } catch { /* ignore */ }
     }, timeoutMs) : null
 
     try {
       const fetchOptions: RequestInit = {
         method: 'POST',
         headers: {
+          Accept: 'application/json',
           'Content-Type': 'application/json',
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
           ...(authMode !== 'query' && apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
@@ -196,7 +251,7 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
       }
       // 只在非 Tauri 环境下使用 signal（避免 Windows Tauri 兼容性问题）
       if (useSignal) {
-        fetchOptions.signal = controller.signal
+        fetchOptions.signal = controller!.signal
       }
       const res = await safeFetch(url, fetchOptions)
 
@@ -255,6 +310,9 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
     } catch (err: any) {
       // AbortError 通常表示超时；默认不自动重试，避免重复扣费/生成
       const name = String(err?.name || '')
+      if (name === 'AbortError' && timeoutMs > 0) {
+        throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）。请稍后重试或检查网络/后端服务是否可用。`)
+      }
       const shouldRetry = attempt < maxRetries && name !== 'AbortError' && isRetryableError(err)
       if (shouldRetry) {
         const wait = backoffMs(attempt)
@@ -292,24 +350,28 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
   // Tauri 环境下增加重试次数
   const maxRetries = isTauri ? 3 : 2
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
     const useSignal = !isTauri && timeoutMs > 0
-    const t = timeoutMs > 0 ? window.setTimeout(() => {
-      try { controller.abort() } catch { /* ignore */ }
+    const controller = useSignal ? new AbortController() : null
+    const t = useSignal ? window.setTimeout(() => {
+      try { controller?.abort() } catch { /* ignore */ }
     }, timeoutMs) : null
 
     try {
+      // In Tauri: convert FormData to multipart bytes for maximum compatibility (especially Windows).
+      const multipart = isTauri ? await formDataToMultipartBody(body) : null
       const fetchOptions: RequestInit = {
         method: 'POST',
         headers: {
+          Accept: 'application/json',
+          ...(multipart ? { 'Content-Type': multipart.contentType } : {}),
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
           ...(authMode !== 'query' && apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
         },
-        body
+        body: (multipart ? (multipart.body as any) : body) as any
       }
       if (useSignal) {
-        fetchOptions.signal = controller.signal
+        fetchOptions.signal = controller!.signal
       }
       const res = await safeFetch(url, fetchOptions)
 
@@ -366,6 +428,9 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
       throw new Error(errorMsg)
     } catch (err: any) {
       const name = String(err?.name || '')
+      if (name === 'AbortError' && timeoutMs > 0) {
+        throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）。请稍后重试或检查网络/后端服务是否可用。`)
+      }
       const shouldRetry = attempt < maxRetries && name !== 'AbortError' && isRetryableError(err)
       if (shouldRetry) {
         const wait = backoffMs(attempt)
@@ -397,23 +462,24 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
   // Tauri 环境下增加重试次数（轮询视频状态时 502 更常见）
   const maxRetries = isTauri ? 3 : 2
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController()
     const timeoutMs = Number(opts?.timeoutMs || 0)
     const useSignal = !isTauri && timeoutMs > 0
-    const t = timeoutMs > 0 ? window.setTimeout(() => {
-      try { controller.abort() } catch { /* ignore */ }
+    const controller = useSignal ? new AbortController() : null
+    const t = useSignal ? window.setTimeout(() => {
+      try { controller?.abort() } catch { /* ignore */ }
     }, timeoutMs) : null
 
     try {
       const fetchOptions: RequestInit = {
         method: 'GET',
         headers: {
+          Accept: 'application/json',
           ...(authMode === 'query' && apiKey ? { 'x-goog-api-key': apiKey } : {}),
           ...(authMode !== 'query' && apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
         }
       }
       if (useSignal) {
-        fetchOptions.signal = controller.signal
+        fetchOptions.signal = controller!.signal
       }
       const res = await safeFetch(url, fetchOptions)
 
@@ -471,6 +537,9 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
       throw new Error(errorMsg)
     } catch (err: any) {
       const name = String(err?.name || '')
+      if (name === 'AbortError' && timeoutMs > 0) {
+        throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）。请稍后重试或检查网络/后端服务是否可用。`)
+      }
       const shouldRetry = attempt < maxRetries && name !== 'AbortError' && isRetryableError(err)
       if (shouldRetry) {
         const wait = backoffMs(attempt)
