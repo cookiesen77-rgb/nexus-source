@@ -85,14 +85,17 @@ export const IMAGE_MODELS = [
         format: 'doubao-seedream',
         timeout: 240000,
         tips: '参考图目前仅支持 1 张。',
-        sizes: [
+        // 分辨率（方式1）：1K/2K/4K；尺寸（方式2）：通过像素宽高来精确指定比例
+        qualities: [
             { label: '1K', key: '1K' },
             { label: '2K', key: '2K' },
-            { label: '4K', key: '4K' },
-            ...SEEDREAM_SIZE_OPTIONS
+            { label: '4K', key: '4K' }
         ],
+        // 尺寸：仅展示比例；最终会根据“分辨率+比例”映射成具体像素值写入 size 字段
+        sizes: SEEDREAM_SIZE_OPTIONS.map((o) => o.label),
         defaultParams: {
-            size: '2K'
+            size: '3:4',
+            quality: '2K'
         }
     },
     {

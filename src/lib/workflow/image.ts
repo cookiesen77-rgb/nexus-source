@@ -1,6 +1,6 @@
 import { useGraphStore } from '@/graph/store'
 import type { GraphNode } from '@/graph/types'
-import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from '@/config/models'
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, SEEDREAM_SIZE_OPTIONS, SEEDREAM_4K_SIZE_OPTIONS } from '@/config/models'
 import { getJson, postJson } from '@/lib/workflow/request'
 import { resolveCachedImageUrl } from '@/lib/workflow/cache'
 import { saveMedia, isLargeData, isBase64Data } from '@/lib/mediaStorage'
@@ -27,6 +27,45 @@ const normalizeText = (text: unknown) => String(text || '').replace(/\r\n/g, '\n
 const toDataUrl = (b64: string, mime = 'image/png') => `data:${mime};base64,${b64}`
 
 const isHttpUrl = (v: string) => /^https?:\/\//i.test(v)
+
+const roundEvenInt = (n: number) => {
+  const v = Math.max(1, Math.round(n))
+  return v % 2 === 0 ? v : v + 1
+}
+
+// Seedream：将“分辨率(1K/2K/4K)+比例(16:9等)”映射为像素宽高（用于写入 size 字段）
+const seedreamSizeByRatioAndResolution = (ratio: string, resolution: string) => {
+  const r = String(ratio || '').trim()
+  if (/^\d{3,5}x\d{3,5}$/i.test(r)) return r
+
+  const res = String(resolution || '').trim().toUpperCase()
+  const lookup = (list: any[], label: string) => {
+    const hit = (Array.isArray(list) ? list : []).find((o: any) => String(o?.label || '').trim() === label)
+    const key = String(hit?.key || '').trim()
+    return /^\d{3,5}x\d{3,5}$/i.test(key) ? key : ''
+  }
+
+  if (res === '4K') return lookup(SEEDREAM_4K_SIZE_OPTIONS as any, r) || lookup(SEEDREAM_SIZE_OPTIONS as any, r) || '4096x4096'
+  if (res === '2K') return lookup(SEEDREAM_SIZE_OPTIONS as any, r) || '2048x2048'
+  if (res === '1K') {
+    const m = r.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/)
+    const a = Number(m?.[1] || 1)
+    const b = Number(m?.[2] || 1)
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return '1024x1024'
+    const base = 1024
+    if (a >= b) {
+      const h = base
+      const w = roundEvenInt((base * a) / b)
+      return `${w}x${h}`
+    }
+    const w = base
+    const h = roundEvenInt((base * b) / a)
+    return `${w}x${h}`
+  }
+
+  // fallback：按 2K 处理
+  return lookup(SEEDREAM_SIZE_OPTIONS as any, r) || '2048x2048'
+}
 
 // Gemini 生图容易在高并发或提示词不明确时返回纯文本（无 inlineData）。
 // 这里统一把提示词包裹成“只输出图片”的指令，提高稳定性。
@@ -446,10 +485,26 @@ export const generateImageFromConfigNode = async (
       // - response_format: 'url' | 'b64_json'
       // - watermark: boolean
       // - sequential_image_generation: 'disabled' | 'auto'（disabled=单图）
+      // 说明：UI 上分为“尺寸(比例)”与“分辨率(1K/2K/4K)”，最终合成写入 size 字段
+      const ratioRaw = String(size || '').trim()
+      const resRaw = String(quality || '').trim()
+
+      // 兼容旧数据：早期把 1K/2K/4K 塞在 size 里
+      let ratio = ratioRaw
+      let resolution = resRaw
+      if (!resolution && /^(1k|2k|4k)$/i.test(ratio)) {
+        resolution = ratio.toUpperCase()
+        ratio = ''
+      }
+
+      if (!ratio) ratio = String(modelCfg.defaultParams?.size || '3:4')
+      if (!resolution) resolution = String(modelCfg.defaultParams?.quality || '2K')
+
+      const finalSize = seedreamSizeByRatioAndResolution(ratio, resolution)
       const payload: any = {
         model: modelCfg.key,
         prompt,
-        size: size || modelCfg.defaultParams?.size || '2K',
+        size: finalSize,
         response_format: 'url',
         watermark: false,
         sequential_image_generation: 'disabled',

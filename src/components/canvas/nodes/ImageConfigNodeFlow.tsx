@@ -10,7 +10,7 @@ import { Copy, Trash2, Expand, ArrowUp, ArrowDown } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { generateImageFromConfigNode } from '@/lib/workflow/image'
-import { IMAGE_MODELS } from '@/config/models'
+import { IMAGE_MODELS, SEEDREAM_SIZE_OPTIONS, SEEDREAM_4K_SIZE_OPTIONS } from '@/config/models'
 
 // 默认图片模型
 const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]?.key || 'gemini-3-pro-image-preview'
@@ -83,6 +83,8 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
   const sizeOptions = getModelSizeOptions(model)
   const qualityOptions = getModelQualityOptions(model)
   const hasQualityOptions = qualityOptions.length > 0
+  const isResolutionQuality = hasQualityOptions && qualityOptions.every((opt: any) => /^\d+k$/i.test(String(opt?.key || '').trim()))
+  const qualityLabel = isResolutionQuality ? '分辨率' : '画质'
   
   // 按需计算连接状态
   const getConnectionStatus = useCallback(() => {
@@ -206,6 +208,57 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
     }, 300)
   }, [id])
 
+  // Seedream：把“尺寸/分辨率”拆开后，兼容旧数据（曾把 1K/2K/4K 或像素值写在 size 里）
+  useEffect(() => {
+    const cfg = getModelConfig(model) as any
+    if (cfg?.format !== 'doubao-seedream') return
+
+    const ratioKeys = new Set(getModelSizeOptions(model).map((o: any) => String(o?.key || '').trim()))
+    const resKeys = new Set(getModelQualityOptions(model).map((o: any) => String(o?.key || '').trim()))
+
+    const curSize = String(size || '').trim()
+    const curQuality = String(quality || '').trim()
+
+    const defaultRatio = String(cfg?.defaultParams?.size || '3:4')
+    const defaultRes = String(cfg?.defaultParams?.quality || '2K')
+
+    let nextSize = curSize
+    let nextQuality = curQuality
+
+    // 先修复分辨率
+    if (!nextQuality || !resKeys.has(nextQuality)) nextQuality = defaultRes
+
+    // 再修复尺寸（比例）
+    if (!ratioKeys.has(nextSize)) {
+      // 旧：把 1K/2K/4K 直接塞在 size
+      if (/^(1k|2k|4k)$/i.test(nextSize)) {
+        nextQuality = nextSize.toUpperCase()
+        nextSize = defaultRatio
+      } else if (/^\d{3,5}x\d{3,5}$/i.test(nextSize)) {
+        // 旧：把像素宽高塞在 size（从 2K/4K 预设反推比例）
+        const found2k: any = (SEEDREAM_SIZE_OPTIONS as any[]).find((o: any) => String(o?.key || '').trim() === nextSize)
+        const found4k: any = (SEEDREAM_4K_SIZE_OPTIONS as any[]).find((o: any) => String(o?.key || '').trim() === nextSize)
+        if (found2k?.label) {
+          nextSize = String(found2k.label)
+          nextQuality = '2K'
+        } else if (found4k?.label) {
+          nextSize = String(found4k.label)
+          nextQuality = '4K'
+        } else {
+          nextSize = defaultRatio
+        }
+      } else {
+        nextSize = defaultRatio
+      }
+    }
+
+    if (nextSize === curSize && nextQuality === curQuality) return
+    setSize(nextSize)
+    setQuality(nextQuality)
+    useGraphStore.getState().updateNode(id, { data: { size: nextSize, quality: nextQuality } } as any)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model])
+
   // 自动执行逻辑：当 autoExecute 为 true 时自动生成图片
   useEffect(() => {
     if (nodeData?.autoExecute && !autoExecuteTriggered.current && !loading) {
@@ -296,7 +349,7 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
           {/* 画质选择 */}
           {hasQualityOptions && (
             <div className="flex items-center justify-between">
-              <span className="text-xs text-[var(--text-secondary)]">画质</span>
+              <span className="text-xs text-[var(--text-secondary)]">{qualityLabel}</span>
               <select
                 value={quality}
                 onChange={(e) => {
