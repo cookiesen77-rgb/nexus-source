@@ -136,6 +136,8 @@ jobs:
             ### 本次更新（重点）
             - 仅使用云雾官方图床（imageproxy）上传垫图
             - Grok 在 Tauri 下遇到“官方负载过大”时增加退避重试
+            - Windows/Tauri：图片缓存失败时自动兜底下载为 dataURL，避免生成成功但画布不显示
+            - 参考图顺序调整立即生效，并同步图片节点的“参考图1/2”标识（兼容旧画布缺失 imageOrder）
             
             ### 获取 API Key
             访问 [nexusapi.cn](https://nexusapi.cn/) 获取 API Key

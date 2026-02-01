@@ -4,7 +4,8 @@
  * 根据运行环境自动选择最优缓存实现：
  * - Tauri 环境：使用 Rust 后端进行文件系统缓存
  * - Web 环境：使用 IndexedDB 进行本地缓存
- */import { getTauri, tauriInvoke } from '@/lib/tauri'
+ */
+import { getTauri, tauriInvoke } from '@/lib/tauri'
 import { LocalCacheManager, type CacheEntry } from '@/lib/indexedDB'
 
 // 缓存结果类型
@@ -30,6 +31,43 @@ const urlToCacheId = new Map<string, string>()
 const getApiKey = () => {
   try {
     return localStorage.getItem('apiKey') || ''
+  } catch {
+    return ''
+  }
+}
+
+const blobToDataUrl = async (blob: Blob) => {
+  return await new Promise<string>((resolve) => {
+    const reader = new FileReader()
+    reader.onerror = () => resolve('')
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.readAsDataURL(blob)
+  })
+}
+
+const isLikelyAuthRequiredUrl = (url: string) => {
+  const u = String(url || '').trim()
+  if (!u) return false
+  // 主要：nexusapi.cn 域名资源通常需要 Authorization
+  if (/^https?:\/\/[^/]*nexusapi\.cn\b/i.test(u)) return true
+  // 兼容一些相对路径（已在上游被 absolutize）
+  if (u.startsWith('/v1/') || u.startsWith('/v1beta') || u.startsWith('/kling') || u.startsWith('/tencent-vod')) return true
+  return false
+}
+
+const tryFetchImageAsDataUrlInTauri = async (absoluteUrl: string, token: string) => {
+  const url = String(absoluteUrl || '').trim()
+  if (!/^https?:\/\//i.test(url)) return ''
+  try {
+    const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
+    const headers: Record<string, string> = {}
+    if (token && isLikelyAuthRequiredUrl(url)) headers.Authorization = `Bearer ${token}`
+    const res: any = await (tauriFetch as any)(url, { method: 'GET', headers })
+    if (!res?.ok) return ''
+    const blob: Blob = await res.blob()
+    // 避免把超大图片转成 dataURL（base64 体积会膨胀）
+    if ((blob as any)?.size && Number(blob.size) > 12 * 1024 * 1024) return ''
+    return await blobToDataUrl(blob)
   } catch {
     return ''
   }
@@ -135,15 +173,15 @@ const cacheTauri = async (url: string, category: CacheCategory): Promise<CacheRe
   if (!/^https?:\/\//i.test(absoluteUrl)) {
     return { displayUrl: absoluteUrl, localPath: '', source: 'direct' }
   }
+
+  // 根据 URL 判断是图片还是视频
+  const isVideo = /\.(mp4|webm|mov|m4v|m3u8)(\?|$)/i.test(absoluteUrl) ||
+                  absoluteUrl.includes('/videos/') ||
+                  absoluteUrl.includes('/video/')
   
   try {
     const token = getApiKey()
     const t = await getTauri()
-    
-    // 根据 URL 判断是图片还是视频
-    const isVideo = /\.(mp4|webm|mov|m4v|m3u8)(\?|$)/i.test(absoluteUrl) ||
-                    absoluteUrl.includes('/videos/') ||
-                    absoluteUrl.includes('/video/')
     
     const command = isVideo ? 'cache_remote_media' : 'cache_remote_image'
     console.log(`[Cache:Tauri] 调用 ${command} 命令`)
@@ -155,7 +193,15 @@ const cacheTauri = async (url: string, category: CacheCategory): Promise<CacheRe
     
     if (!path) {
       console.error(`[Cache:Tauri] ${command} 返回空`)
-      return { displayUrl: '', localPath: '', source: 'tauri', error: '缓存失败' }
+      // 仅图片：缓存失败时尝试用插件 fetch 下载并转成 dataURL，确保画布可显示（尤其 Windows）
+      if (!isVideo) {
+        const dataUrl = await tryFetchImageAsDataUrlInTauri(absoluteUrl, token)
+        if (dataUrl) {
+          console.warn(`[Cache:Tauri] ${command} 返回空，已回退为 dataURL`)
+          return { displayUrl: dataUrl, localPath: '', source: 'memory', error: '缓存失败，回退为 dataURL' }
+        }
+      }
+      return { displayUrl: absoluteUrl, localPath: '', source: 'direct', error: '缓存失败，回退为原始URL' }
     }
 
     const displayUrl = t.convertFileSrc ? t.convertFileSrc(path) : absoluteUrl
@@ -163,7 +209,15 @@ const cacheTauri = async (url: string, category: CacheCategory): Promise<CacheRe
     return { displayUrl, localPath: path, source: 'tauri' }
   } catch (err) {
     console.error(`[Cache:Tauri] 缓存异常:`, err)
-    return { displayUrl: '', localPath: '', source: 'tauri', error: String(err) }
+    if (!isVideo) {
+      const token = getApiKey()
+      const dataUrl = await tryFetchImageAsDataUrlInTauri(absoluteUrl, token)
+      if (dataUrl) {
+        console.warn(`[Cache:Tauri] 缓存异常，已回退为 dataURL`)
+        return { displayUrl: dataUrl, localPath: '', source: 'memory', error: `缓存异常，回退为 dataURL：${String(err)}` }
+      }
+    }
+    return { displayUrl: absoluteUrl, localPath: '', source: 'direct', error: String(err) }
   }
 }
 
@@ -281,13 +335,16 @@ export const resolveCachedImageUrl = async (url: string): Promise<{ displayUrl: 
     }
     if (!/^https?:\/\//i.test(absoluteUrl)) return { displayUrl: absoluteUrl, localPath: '' }
     
+    const token = getApiKey()
     try {
-      const token = getApiKey()
       console.log('[resolveCachedImageUrl] Tauri: 调用 cache_remote_image 命令')
       const path = await tauriInvoke<string>('cache_remote_image', { url: absoluteUrl, authToken: token || null })
       if (!path) {
         // 缓存失败时回退到原始 URL，而不是返回空（修复 Windows 图片不显示问题）
         console.warn('[resolveCachedImageUrl] Tauri: cache_remote_image 返回空，回退到原始 URL')
+        // 若原始 URL 需要鉴权，<img> 无法携带 Authorization；这里兜底转成 dataURL 确保可显示
+        const dataUrl = await tryFetchImageAsDataUrlInTauri(absoluteUrl, token)
+        if (dataUrl) return { displayUrl: dataUrl, localPath: '', error: '缓存图片失败，已回退为 dataURL' }
         return { displayUrl: absoluteUrl, localPath: '', error: '缓存图片失败，使用原始URL' }
       }
 
@@ -297,6 +354,8 @@ export const resolveCachedImageUrl = async (url: string): Promise<{ displayUrl: 
     } catch (err) {
       // 缓存异常时回退到原始 URL（修复 Windows 图片不显示问题）
       console.error('[resolveCachedImageUrl] Tauri: cache_remote_image 异常，回退到原始 URL:', err)
+      const dataUrl = await tryFetchImageAsDataUrlInTauri(absoluteUrl, token)
+      if (dataUrl) return { displayUrl: dataUrl, localPath: '', error: `缓存图片异常，已回退为 dataURL：${String(err)}` }
       return { displayUrl: absoluteUrl, localPath: '', error: String(err) }
     }
   }

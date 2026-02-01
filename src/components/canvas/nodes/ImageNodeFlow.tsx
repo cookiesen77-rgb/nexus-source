@@ -45,21 +45,41 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   // 计算序号的函数
   const computeRefIndex = useCallback(() => {
     const state = useGraphStore.getState()
+    const byId = new Map(state.nodes.map(n => [n.id, n]))
     // 找到从此节点出发连接到 imageConfig 或 videoConfig 的边
     const outgoingEdges = state.edges.filter(e => e.source === id)
     for (const edge of outgoingEdges) {
-      const targetNode = state.nodes.find(n => n.id === edge.target)
-      if (targetNode && (targetNode.type === 'imageConfig' || targetNode.type === 'videoConfig')) {
-        // 找到所有连接到同一配置节点的图片节点
+      const targetNode = byId.get(edge.target)
+      if (!targetNode) continue
+
+      // 仅 imageConfig：参考图顺序来自 edge.data.imageOrder（支持在配置节点中手动调整）
+      if (targetNode.type === 'imageConfig') {
         const configId = targetNode.id
         const inputEdges = state.edges.filter(e => e.target === configId)
         const imageInputs = inputEdges
-          .map(e => state.nodes.find(n => n.id === e.source))
-          .filter(n => n?.type === 'image')
+          .map((e, idx) => {
+            const n = byId.get(e.source)
+            if (!n || n.type !== 'image') return null
+            const orderRaw = Number((e.data as any)?.imageOrder)
+            const order = Number.isFinite(orderRaw) && orderRaw > 0 ? orderRaw : 999999
+            return { nodeId: n.id, idx, order }
+          })
+          .filter(Boolean) as { nodeId: string; idx: number; order: number }[]
+
+        imageInputs.sort((a, b) => (a.order - b.order) || (a.idx - b.idx))
+        const idx = imageInputs.findIndex(n => n.nodeId === id)
+        if (imageInputs.length > 1 && idx >= 0) return idx + 1
+      }
+
+      // 保持兼容：videoConfig 仍按原逻辑给出参考序号（主要用于标识多图引用场景）
+      if (targetNode.type === 'videoConfig') {
+        const configId = targetNode.id
+        const inputEdges = state.edges.filter(e => e.target === configId)
+        const imageInputs = inputEdges
+          .map(e => byId.get(e.source))
+          .filter(n => n?.type === 'image') as any[]
         const idx = imageInputs.findIndex(n => n?.id === id)
-        if (imageInputs.length > 1 && idx >= 0) {
-          return idx + 1
-        }
+        if (imageInputs.length > 1 && idx >= 0) return idx + 1
       }
     }
     return null

@@ -409,13 +409,36 @@ const ReferenceOrderEditor = memo(function ReferenceOrderEditor({ configNodeId }
     const byId = new Map(s.nodes.map((n) => [n.id, n]))
     const edges = s.edges.filter((e) => e.target === configNodeId)
     const list: { edgeId: string; order: number; nodeId: string; label: string }[] = []
-    for (const e of edges) {
+    const usedOrders = new Set<number>()
+    const missing: { edgeId: string; idx: number }[] = []
+
+    edges.forEach((e, idx) => {
       const src = byId.get(e.source)
-      if (!src || src.type !== 'image') continue
+      if (!src || src.type !== 'image') return
       const orderRaw = Number((e.data as any)?.imageOrder)
-      const order = Number.isFinite(orderRaw) && orderRaw > 0 ? orderRaw : 999999
+      const orderOk = Number.isFinite(orderRaw) && orderRaw > 0
+      const order = orderOk ? Math.floor(orderRaw) : 999999
+      if (orderOk) usedOrders.add(Math.floor(orderRaw))
+      else missing.push({ edgeId: e.id, idx })
+
       const label = String((src.data as any)?.label || '').trim() || `参考图 ${src.id}`
       list.push({ edgeId: e.id, order, nodeId: src.id, label })
+    })
+
+    // 兼容旧画布：早期 edge 可能没有 imageOrder，导致“上/下移”无效
+    // 这里为缺失的边补齐连续的 imageOrder（尽量保持原连接顺序）
+    if (missing.length > 0) {
+      useGraphStore.getState().withBatchUpdates(() => {
+        let next = 1
+        const sortedMissing = missing.slice().sort((a, b) => a.idx - b.idx)
+        for (const m of sortedMissing) {
+          while (usedOrders.has(next)) next++
+          useGraphStore.getState().updateEdge(m.edgeId, { type: 'imageOrder', data: { imageOrder: next } } as any)
+          usedOrders.add(next)
+          next++
+        }
+      })
+      return
     }
     list.sort((a, b) => (a.order - b.order) || a.label.localeCompare(b.label))
     setItems(list)
