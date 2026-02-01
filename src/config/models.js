@@ -84,7 +84,7 @@ export const IMAGE_MODELS = [
         authMode: 'bearer',
         format: 'doubao-seedream',
         timeout: 240000,
-        tips: '云雾文档：POST /v1/images/generations；size 支持 1K/2K/4K 或 2048x2048 等像素字符串；可接 1 张参考图（图文生图）',
+        tips: '参考图目前仅支持 1 张。',
         sizes: [
             { label: '1K', key: '1K' },
             { label: '2K', key: '2K' },
