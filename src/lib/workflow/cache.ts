@@ -286,16 +286,18 @@ export const resolveCachedImageUrl = async (url: string): Promise<{ displayUrl: 
       console.log('[resolveCachedImageUrl] Tauri: 调用 cache_remote_image 命令')
       const path = await tauriInvoke<string>('cache_remote_image', { url: absoluteUrl, authToken: token || null })
       if (!path) {
-        console.error('[resolveCachedImageUrl] Tauri: cache_remote_image 返回空')
-        return { displayUrl: '', localPath: '', error: '缓存图片失败' }
+        // 缓存失败时回退到原始 URL，而不是返回空（修复 Windows 图片不显示问题）
+        console.warn('[resolveCachedImageUrl] Tauri: cache_remote_image 返回空，回退到原始 URL')
+        return { displayUrl: absoluteUrl, localPath: '', error: '缓存图片失败，使用原始URL' }
       }
 
       const displayUrl = t.convertFileSrc ? t.convertFileSrc(path) : absoluteUrl
       console.log('[resolveCachedImageUrl] Tauri: 缓存成功, displayUrl:', displayUrl.slice(0, 80))
       return { displayUrl, localPath: path }
     } catch (err) {
-      console.error('[resolveCachedImageUrl] Tauri: cache_remote_image 异常:', err)
-      return { displayUrl: '', localPath: '', error: String(err) }
+      // 缓存异常时回退到原始 URL（修复 Windows 图片不显示问题）
+      console.error('[resolveCachedImageUrl] Tauri: cache_remote_image 异常，回退到原始 URL:', err)
+      return { displayUrl: absoluteUrl, localPath: '', error: String(err) }
     }
   }
   
@@ -324,16 +326,18 @@ export const resolveCachedMediaUrl = async (url: string) => {
       console.log('[resolveCachedMediaUrl] Tauri: 调用 cache_remote_media 命令')
       const path = await tauriInvoke<string>('cache_remote_media', { url: absoluteUrl, authToken: token || null })
       if (!path) {
-        console.error('[resolveCachedMediaUrl] Tauri: cache_remote_media 返回空')
-        return { displayUrl: '', localPath: '', error: '缓存媒体失败' }
+        // 缓存失败时回退到原始 URL（修复 Windows 媒体不显示问题）
+        console.warn('[resolveCachedMediaUrl] Tauri: cache_remote_media 返回空，回退到原始 URL')
+        return { displayUrl: absoluteUrl, localPath: '', error: '缓存媒体失败，使用原始URL' }
       }
 
       const displayUrl = t.convertFileSrc ? t.convertFileSrc(path) : absoluteUrl
       console.log('[resolveCachedMediaUrl] Tauri: 缓存成功, displayUrl:', displayUrl.slice(0, 80))
       return { displayUrl, localPath: path }
     } catch (err) {
-      console.error('[resolveCachedMediaUrl] Tauri: cache_remote_media 异常:', err)
-      return { displayUrl: '', localPath: '', error: String(err) }
+      // 缓存异常时回退到原始 URL（修复 Windows 媒体不显示问题）
+      console.error('[resolveCachedMediaUrl] Tauri: cache_remote_media 异常，回退到原始 URL:', err)
+      return { displayUrl: absoluteUrl, localPath: '', error: String(err) }
     }
   }
   
