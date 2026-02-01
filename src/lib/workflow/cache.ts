@@ -334,6 +334,12 @@ export const resolveCachedImageUrl = async (url: string): Promise<{ displayUrl: 
       console.log('[resolveCachedImageUrl] Tauri: 相对路径转换为绝对 URL:', absoluteUrl.slice(0, 80))
     }
     if (!/^https?:\/\//i.test(absoluteUrl)) return { displayUrl: absoluteUrl, localPath: '' }
+
+    // 非鉴权公网图片：直接使用原始 URL，避免 Tauri 额外缓存下载导致“后端完成但画布出图慢”
+    // 注：需要鉴权的 URL（如 nexusapi.cn）仍然走 cache_remote_image，以便携带 Bearer 并落到本地文件
+    if (!isLikelyAuthRequiredUrl(absoluteUrl)) {
+      return { displayUrl: absoluteUrl, localPath: '' }
+    }
     
     const token = getApiKey()
     try {

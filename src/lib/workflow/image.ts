@@ -233,6 +233,7 @@ export const generateImageFromConfigNode = async (
   overrides?: ImageGenerationOverrides,
   options?: GenerateImageFromConfigNodeOptions
 ) => {
+  const t0 = Date.now()
   // 等待确保 store 状态已同步（增加到 200ms）
   console.log('[generateImage] 开始，等待 store 同步... configNodeId:', configNodeId, 'overrides:', overrides)
   await new Promise(resolve => setTimeout(resolve, 200))
@@ -504,64 +505,43 @@ export const generateImageFromConfigNode = async (
     }
 
     // 5. 成功：更新图片节点
-    const cached = await resolveCachedImageUrl(imageUrl)
-    console.log('[generateImage] 准备更新节点:', imageNodeId, 'url长度:', cached.displayUrl?.length || 0)
-    
+    // 快速回写：对于非鉴权公网图片，先把 URL 写回画布，避免后续缓存/落库阻塞“出图”
     const latestStore = useGraphStore.getState()
+    if (isHttpUrl(imageUrl) && !/nexusapi\.cn/i.test(imageUrl)) {
+      try {
+        latestStore.updateNode(imageNodeId, {
+          data: {
+            url: imageUrl,
+            sourceUrl: imageUrl,
+            loading: false,
+            error: '',
+            label: '文生图',
+            model: modelKey,
+            updatedAt: Date.now()
+          }
+        } as any)
+      } catch {
+        // ignore
+      }
+    }
+
+    const cacheT1 = Date.now()
+    const cached = await resolveCachedImageUrl(imageUrl)
+    console.log('[generateImage] resolveCachedImageUrl 耗时(ms):', Date.now() - cacheT1, '总耗时(ms):', Date.now() - t0)
     
     // 确认节点存在
     const existingNode = latestStore.nodes.find(n => n.id === imageNodeId)
     console.log('[generateImage] 节点存在检查:', existingNode ? '存在' : '不存在', existingNode?.type)
     
-    // 如果数据是大型数据（base64），保存到 IndexedDB
-    let mediaId: string | undefined
     const displayUrl = cached.displayUrl
-    if (isLargeData(displayUrl) || isBase64Data(displayUrl)) {
-      try {
-        const projectId = latestStore.projectId || 'default'
-        mediaId = await saveMedia({
-          nodeId: imageNodeId,
-          projectId,
-          type: 'image',
-          data: displayUrl,
-          sourceUrl: imageUrl !== displayUrl ? imageUrl : undefined,
-          model: modelKey,
-        })
-        console.log('[generateImage] 图片已保存到 IndexedDB, mediaId:', mediaId)
-      } catch (err) {
-        console.error('[generateImage] 保存到 IndexedDB 失败:', err)
-        // 继续执行，即使 IndexedDB 保存失败，图片仍然可以在当前会话中显示
-      }
-    }
-    // 若返回的是 HTTP 图片 URL：最佳努力转存为 dataURL 写入 IndexedDB，避免后续 openai-video 垫图因跨域/CORS 无法读取
-    if (!mediaId && isHttpUrl(displayUrl)) {
-      try {
-        const inline = await resolveImageToInlineData(displayUrl)
-        if (inline?.data) {
-          const projectId = latestStore.projectId || 'default'
-          const dataUrl = toDataUrl(inline.data, inline.mimeType || 'image/png')
-          mediaId = await saveMedia({
-            nodeId: imageNodeId,
-            projectId,
-            type: 'image',
-            data: dataUrl,
-            sourceUrl: displayUrl,
-            model: modelKey,
-          })
-          console.log('[generateImage] HTTP 图片已转存到 IndexedDB, mediaId:', mediaId)
-        }
-      } catch (err) {
-        console.warn('[generateImage] HTTP 图片转存 IndexedDB 失败（可能跨域/CORS），跳过:', (err as any)?.message || err)
-      }
-    }
-    
+    console.log('[generateImage] 准备更新节点:', imageNodeId, 'url长度:', displayUrl?.length || 0)
+
+    // 先更新节点显示（不要被 IndexedDB 落库阻塞）
     latestStore.updateNode(imageNodeId, {
       data: {
         url: displayUrl,
         localPath: cached.localPath,
-        // 如果是 HTTPS URL，保存原始 URL；如果是 base64，保存 mediaId
         sourceUrl: isHttpUrl(imageUrl) ? imageUrl : undefined,
-        mediaId, // IndexedDB 媒体 ID
         loading: false,
         error: '',
         label: '文生图',
@@ -569,6 +549,48 @@ export const generateImageFromConfigNode = async (
         updatedAt: Date.now()
       }
     } as any)
+
+    // 后台最佳努力：落库（跨重启/垫图）。注意：不应阻塞画布出图与 Promise 完成。
+    void (async () => {
+      try {
+        let mediaId: string | undefined
+        const projectId = useGraphStore.getState().projectId || 'default'
+
+        // 如果数据是大型数据（base64/dataURL），保存到 IndexedDB
+        if (isLargeData(displayUrl) || isBase64Data(displayUrl)) {
+          mediaId = await saveMedia({
+            nodeId: imageNodeId,
+            projectId,
+            type: 'image',
+            data: displayUrl,
+            sourceUrl: imageUrl !== displayUrl ? imageUrl : undefined,
+            model: modelKey,
+          })
+          if (mediaId) useGraphStore.getState().patchNodeDataSilent(imageNodeId, { mediaId })
+          return
+        }
+
+        // 若返回的是 HTTP 图片 URL：最佳努力转存为 dataURL 写入 IndexedDB
+        // 该步骤可能涉及再次下载图片，不应阻塞画布渲染
+        if (isHttpUrl(displayUrl)) {
+          const inline = await resolveImageToInlineData(displayUrl)
+          if (inline?.data) {
+            const dataUrl = toDataUrl(inline.data, inline.mimeType || 'image/png')
+            mediaId = await saveMedia({
+              nodeId: imageNodeId,
+              projectId,
+              type: 'image',
+              data: dataUrl,
+              sourceUrl: displayUrl,
+              model: modelKey,
+            })
+            if (mediaId) useGraphStore.getState().patchNodeDataSilent(imageNodeId, { mediaId })
+          }
+        }
+      } catch (err) {
+        console.warn('[generateImage] 后台落库失败（不影响画布显示）:', (err as any)?.message || err)
+      }
+    })()
     
     // 等待 React 渲染周期，确保 store 更新已同步
     await new Promise(r => setTimeout(r, 50))
@@ -581,7 +603,7 @@ export const generateImageFromConfigNode = async (
     if (!afterUpdate || !(afterUpdate.data as any)?.url) {
       console.warn('[generateImage] 节点更新验证失败，尝试重新更新')
       useGraphStore.getState().updateNode(imageNodeId, {
-        data: { url: displayUrl, loading: false, error: '', model: modelKey, mediaId }
+        data: { url: displayUrl, loading: false, error: '', model: modelKey }
       } as any)
       await new Promise(r => setTimeout(r, 50))
     }
