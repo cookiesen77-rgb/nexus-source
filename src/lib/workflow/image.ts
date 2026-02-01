@@ -272,8 +272,13 @@ export const generateImageFromConfigNode = async (
 
   // 2. 检查模型是否支持参考图
   const format = modelCfg.format
-  const supportsRefImages = format === 'gemini-image' || format === 'openai-image-edit' || format === 'kling-image'
-  const maxRefImages = modelKey === 'gemini-3-pro-image-preview' ? 14 : refImages.length
+  const supportsRefImages = format === 'gemini-image' || format === 'openai-image-edit' || format === 'kling-image' || format === 'doubao-seedream'
+  const maxRefImages =
+    modelKey === 'gemini-3-pro-image-preview'
+      ? 14
+      : format === 'doubao-seedream'
+        ? 1
+        : refImages.length
   const limitedRefImages = refImages.slice(0, maxRefImages)
 
   if (!supportsRefImages && refImages.length > 0) {
@@ -432,6 +437,33 @@ export const generateImageFromConfigNode = async (
         n: 1
       }
       if (quality) payload.quality = quality
+      const rsp = await postJson<any>(modelCfg.endpoint, payload, { authMode: modelCfg.authMode, timeoutMs: modelCfg.timeout || 240000 })
+      imageUrl = normalizeToImageUrl(rsp)
+    } else if (modelCfg.format === 'doubao-seedream') {
+      // 云雾：豆包 Seedream 4.5（dall-e-3 格式外观，但字段与 OpenAI Images 不一致）
+      // 文档示例：POST /v1/images/generations
+      // - size: '1K' | '2K' | '4K' | '2048x2048'（像素字符串）
+      // - response_format: 'url' | 'b64_json'
+      // - watermark: boolean
+      // - sequential_image_generation: 'disabled' | 'auto'（disabled=单图）
+      const payload: any = {
+        model: modelCfg.key,
+        prompt,
+        size: size || modelCfg.defaultParams?.size || '2K',
+        response_format: 'url',
+        watermark: false,
+        sequential_image_generation: 'disabled',
+      }
+
+      const imageInput = String(limitedRefImages[0] || '').trim()
+      if (imageInput) {
+        // 该接口需要“外网可访问的图片 URL”（data:/asset:// 等无法直接使用）
+        if (!isHttpUrl(imageInput)) {
+          throw new Error('该模型的参考图必须是 http(s) URL（建议先用画布生成的图片，或将本地图片上传到图床后再用）')
+        }
+        payload.image = imageInput
+      }
+
       const rsp = await postJson<any>(modelCfg.endpoint, payload, { authMode: modelCfg.authMode, timeoutMs: modelCfg.timeout || 240000 })
       imageUrl = normalizeToImageUrl(rsp)
     } else if (modelCfg.format === 'openai-chat-image') {

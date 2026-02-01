@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ArrowDown, ArrowUp, Pause, Play, Plus, SkipBack, SkipForward, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Download, FileDown, Pause, Play, Plus, SkipBack, SkipForward, Trash2 } from 'lucide-react'
 import { getMedia } from '@/lib/mediaStorage'
+import { downloadFile } from '@/lib/download'
 import { loadShortDramaDraftV2 } from '@/lib/shortDrama/draftStorage'
 import { loadShortDramaEditorProjectV1, saveShortDramaEditorProjectV1 } from '@/lib/editor/editorStorage'
 import type { ShortDramaEditorClipV1 } from '@/lib/editor/editorTypes'
@@ -391,6 +392,44 @@ export default function Editor() {
     updateClip(selectedClip.id, { outSec: Math.max(t, inn) })
   }, [selectedClip, updateClip])
 
+  // 下载当前选中片段（原视频）
+  const downloadSelectedClip = useCallback(async () => {
+    if (!selectedClip) {
+      window.$message?.warning?.('请先在时间线选择一个片段')
+      return
+    }
+    try {
+      const url = await ensureClipUrl(selectedClip)
+      if (!url) {
+        window.$message?.warning?.('暂无可下载的视频地址')
+        return
+      }
+      const safeLabel = String(selectedClip.label || 'clip')
+        .replace(/[\\/:*?"<>|]+/g, '_')
+        .slice(0, 48)
+      const filename = `clip_${projectId}_${safeLabel}_${Date.now()}.mp4`
+      const ok = await downloadFile({ url, filename, mimeType: 'video/mp4' })
+      if (ok) window.$message?.success?.('下载成功')
+    } catch (err: any) {
+      window.$message?.error?.(err?.message || '下载失败')
+    }
+  }, [ensureClipUrl, projectId, selectedClip])
+
+  // 导出剪辑工程（JSON）
+  const exportProjectJson = useCallback(async () => {
+    try {
+      const json = JSON.stringify(editorRef.current, null, 2)
+      // btoa 仅支持 Latin1，这里做一次 UTF-8 兼容编码
+      const base64 = btoa(unescape(encodeURIComponent(json)))
+      const dataUrl = `data:application/json;base64,${base64}`
+      const filename = `editor_${projectId}_${Date.now()}.json`
+      const ok = await downloadFile({ url: dataUrl, filename, mimeType: 'application/json' })
+      if (ok) window.$message?.success?.('已导出工程文件')
+    } catch (err: any) {
+      window.$message?.error?.(err?.message || '导出失败')
+    }
+  }, [projectId])
+
   const title = selectedClip?.label || '剪辑台'
 
   return (
@@ -448,6 +487,14 @@ export default function Editor() {
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-color)] px-4 py-3">
               <div className="text-sm font-medium text-[var(--text-primary)]">预览</div>
               <div className="flex items-center gap-2">
+                <Button variant="secondary" onClick={exportProjectJson}>
+                  <FileDown className="mr-2 h-4 w-4" />
+                  导出工程
+                </Button>
+                <Button variant="secondary" onClick={downloadSelectedClip} disabled={!selectedClip}>
+                  <Download className="mr-2 h-4 w-4" />
+                  下载片段
+                </Button>
                 <Button variant="secondary" onClick={playSelected} disabled={!clips.length}>
                   <Play className="mr-2 h-4 w-4" />
                   播放片段
@@ -500,7 +547,9 @@ export default function Editor() {
                   <Button variant="secondary" onClick={setOutToCurrentTime} disabled={!selectedClip || !activeSrc}>
                     设为出点
                   </Button>
-                  <div className="text-xs text-[var(--text-secondary)]">提示：这里只做“播放裁切预览”，不做真实导出。</div>
+                  <div className="text-xs text-[var(--text-secondary)]">
+                    提示：当前支持裁切预览、排序、下载片段与导出工程（JSON）；“合成导出为一个完整视频”仍在规划中。
+                  </div>
                 </div>
               </div>
 

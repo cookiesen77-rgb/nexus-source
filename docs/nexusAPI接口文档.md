@@ -493,7 +493,6 @@ sora 是 OpenAI 的视频生成模型，支持多种格式：
 | 配置 key | 格式 | 端点 |
 |----------|------|------|
 | `veo3.1-fast-components` | veo-unified | `/video/create` |
-| `veo_3_1-fast-components-4K` | veo-unified | `/video/create` |
 | `veo_3_1-fast-4K` | openai-video | `/videos` |
 | `veo3.1-4k` | veo-unified | `/video/create` |
 

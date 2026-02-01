@@ -16,6 +16,8 @@ const MODEL_ALIASES = {
     // Videos
     'veo3.1-fast': 'veo3.1-4k',
     'veo3.1-pro': 'veo3.1-pro-4k',
+    // Veo 旧 key（已下线）兼容迁移
+    'veo_3_1-fast-components-4K': 'veo3.1-fast-components',
     'sora-2-pro': 'sora-2-all',
     // Tencent AIGC Video 兼容旧 key
     'aigc-video-vidu': 'vidu-q2-pro',
@@ -73,6 +75,24 @@ export const IMAGE_MODELS = [
         defaultParams: {
             size: '3:4',
             quality: '2K'
+        }
+    },
+    {
+        label: '豆包 Seedream 4.5（doubao-seedream-4-5-251128）',
+        key: 'doubao-seedream-4-5-251128',
+        endpoint: '/images/generations',
+        authMode: 'bearer',
+        format: 'doubao-seedream',
+        timeout: 240000,
+        tips: '云雾文档：POST /v1/images/generations；size 支持 1K/2K/4K 或 2048x2048 等像素字符串；可接 1 张参考图（图文生图）',
+        sizes: [
+            { label: '1K', key: '1K' },
+            { label: '2K', key: '2K' },
+            { label: '4K', key: '4K' },
+            ...SEEDREAM_SIZE_OPTIONS
+        ],
+        defaultParams: {
+            size: '2K'
         }
     },
     {
@@ -195,19 +215,6 @@ export const VIDEO_MODELS = [
     {
         label: 'Veo 3.1 Fast Components ¥0.10',
         key: 'veo3.1-fast-components',
-        endpoint: '/video/create',
-        statusEndpoint: '/v1/video/query',
-        authMode: 'bearer',
-        format: 'veo-unified',
-        // components 模型支持最多 3 张图片作为视频元素
-        maxImages: 3,
-        ratios: ['16:9', '9:16'],
-        durs: [{ label: '8 秒', key: 8 }],
-        defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
-    },
-    {
-        label: 'Veo 3.1 Fast Components 4K ¥0.31',
-        key: 'veo_3_1-fast-components-4K',
         endpoint: '/video/create',
         statusEndpoint: '/v1/video/query',
         authMode: 'bearer',
