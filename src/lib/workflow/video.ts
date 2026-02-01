@@ -1263,8 +1263,16 @@ export const generateVideoFromConfigNode = async (
       fd.append('model', modelCfg.key)
       fd.append('prompt', prompt)
       if (Number.isFinite(duration) && duration > 0) fd.append('seconds', String(duration))
-      // 优先使用配置中的 size，否则根据 ratio 自动选择
-      const sizeValue = overrides?.size || d.size || modelCfg.defaultParams?.size || (ratio === '9:16' ? '720x1280' : '1280x720')
+      // Apifox：OpenAI 视频格式 size 使用像素（横版 1280x720 / 竖版 720x1280）
+      // 兼容旧节点可能残留的 size=720p（会触发上游“不合法的size”）
+      const sizeCandidate = String(overrides?.size || d.size || modelCfg.defaultParams?.size || '')
+        .trim()
+        .replace(/\s+/g, '')
+        .replace(/X/g, 'x')
+      const sizeValue =
+        sizeCandidate === '720x1280' || sizeCandidate === '1280x720'
+          ? sizeCandidate
+          : (ratio === '9:16' ? '720x1280' : '1280x720')
       fd.append('size', sizeValue)
       const watermark = modelCfg.defaultParams?.watermark
       if (typeof watermark === 'boolean') fd.append('watermark', watermark ? 'true' : 'false')
@@ -1781,6 +1789,19 @@ export const generateVideoFromConfigNode = async (
       } catch {
         // ignore
       }
+      
+      // 同步到历史素材（先记录远程 URL；极速模式下本地缓存会在后台完成）
+      try {
+        useAssetsStore.getState().addAsset({
+          type: 'video',
+          src: videoUrl,
+          title: String((d.label || d.prompt || '画布视频') as any).slice(0, 80),
+          model: modelKey,
+          duration: Number(duration || 0),
+        })
+      } catch {
+        // ignore
+      }
 
       void (async () => {
         try {
@@ -1858,6 +1879,19 @@ export const generateVideoFromConfigNode = async (
         updatedAt: Date.now()
       }
     } as any)
+    
+    // 同步到历史素材（画布视频）
+    try {
+      useAssetsStore.getState().addAsset({
+        type: 'video',
+        src: displayUrl,
+        title: String((d.label || d.prompt || '画布视频') as any).slice(0, 80),
+        model: modelKey,
+        duration: Number(duration || 0),
+      })
+    } catch {
+      // ignore
+    }
     
     // 等待 React 渲染周期，确保 store 更新已同步
     await new Promise(r => setTimeout(r, 50))

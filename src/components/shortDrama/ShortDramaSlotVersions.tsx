@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { getMedia } from '@/lib/mediaStorage'
 import type { ShortDramaMediaSlot, ShortDramaMediaVariant } from '@/lib/shortDrama/types'
-import { Check, Image as ImageIcon, Trash2, Video as VideoIcon } from 'lucide-react'
+import { Check, Eye, Image as ImageIcon, Trash2, Video as VideoIcon } from 'lucide-react'
 
 function useMediaPreview(mediaId?: string) {
   const [url, setUrl] = useState<string>('')
@@ -46,11 +46,13 @@ export function ShortDramaSlotVersions({
   slot,
   onAdopt,
   onRemove,
+  onPreview,
   disabled,
 }: {
   slot: ShortDramaMediaSlot
   onAdopt: (variantId: string) => void
   onRemove: (variantId: string) => void
+  onPreview?: (variant: ShortDramaMediaVariant) => void
   disabled?: boolean
 }) {
   if (!slot.variants || slot.variants.length === 0) {
@@ -64,9 +66,18 @@ export function ShortDramaSlotVersions({
         .map((v) => {
           const adopted = slot.selectedVariantId === v.id
           const Icon = v.kind === 'video' ? VideoIcon : ImageIcon
+          const canPreview = !!onPreview && v.status === 'success'
           return (
             <div key={v.id} className="flex items-center gap-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-2">
-              <ShortDramaVariantThumb variant={v} />
+              <button
+                type="button"
+                className={cn('shrink-0', canPreview ? 'cursor-pointer' : 'cursor-default')}
+                onClick={() => (canPreview ? onPreview?.(v) : undefined)}
+                disabled={!canPreview || disabled}
+                title={canPreview ? '预览' : undefined}
+              >
+                <ShortDramaVariantThumb variant={v} />
+              </button>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <Icon className="h-4 w-4 text-[var(--text-secondary)]" />
@@ -80,6 +91,16 @@ export function ShortDramaSlotVersions({
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!canPreview || disabled}
+                  onClick={() => onPreview?.(v)}
+                  className="h-8 w-8 px-0"
+                  title="预览"
+                >
+                  <Eye className="h-4 w-4" />
+                </Button>
                 <Button size="sm" variant="ghost" disabled={disabled || adopted || v.status !== 'success'} onClick={() => onAdopt(v.id)}>
                   <Check className="mr-1 h-4 w-4" />
                   采用

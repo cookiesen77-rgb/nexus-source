@@ -98,16 +98,62 @@ const stripCodeFences = (raw: string) => {
   return t.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim()
 }
 
-const extractJsonBlock = (raw: string) => {
+class ShortDramaParseError extends Error {
+  rawText: string
+  constructor(message: string, rawText: string) {
+    super(message)
+    this.name = 'ShortDramaParseError'
+    this.rawText = rawText
+  }
+}
+
+const extractFirstJsonObject = (raw: string) => {
   const t = stripCodeFences(raw)
   const start = t.indexOf('{')
-  const end = t.lastIndexOf('}')
-  if (start === -1 || end === -1 || end <= start) return ''
-  return t.slice(start, end + 1)
+  if (start === -1) return ''
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = start; i < t.length; i++) {
+    const ch = t[i]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (ch === '\\') {
+        escaped = true
+        continue
+      }
+      if (ch === '"') {
+        inString = false
+        continue
+      }
+      continue
+    }
+
+    if (ch === '"') {
+      inString = true
+      continue
+    }
+    if (ch === '{') {
+      depth++
+      continue
+    }
+    if (ch === '}') {
+      depth--
+      if (depth === 0) return t.slice(start, i + 1)
+      continue
+    }
+  }
+  return ''
 }
 
 const parseJsonLoose = (raw: string) => {
-  const json = extractJsonBlock(raw)
+  const json = extractFirstJsonObject(raw)
   if (!json) return null
   try {
     return JSON.parse(json)
@@ -190,14 +236,36 @@ export async function analyzeShortDramaScriptToDraftV2(opts: {
   ].join('\n')
 
   const modelKey = String(opts.modelKey || opts.draft.models.analysisModelKey || DEFAULT_CHAT_MODEL).trim()
-  const rawText = await callChatModel(modelKey, [
+  let rawText = await callChatModel(modelKey, [
     { role: 'system', content: system },
     { role: 'user', content: user },
   ])
 
-  const parsed = parseJsonLoose(rawText) as ShortDramaScriptAnalysis | null
+  let parsed = parseJsonLoose(rawText) as ShortDramaScriptAnalysis | null
   if (!parsed) {
-    throw new Error(`剧本解析失败：模型未返回可解析 JSON（返回片段：${rawText.slice(0, 200)}）`)
+    // Retry once with stronger constraints to avoid truncated/invalid JSON.
+    const retrySystem = [
+      system,
+      '',
+      '你上一次输出未能被 JSON.parse 解析。',
+      '请只输出完整、严格的 JSON（不要输出解释/Markdown/多余文字），确保所有括号与引号闭合。',
+      '如果剧本很长：最多输出 30 个 shots；宁可减少镜头数，也不要输出不完整 JSON。',
+      'shots/characters/scenes 必须存在；没有就输出空数组 []（不要省略字段）。',
+    ].join('\n')
+    const retryUser = [
+      '请重新输出 JSON（只输出 JSON）。',
+      '',
+      '【剧本】',
+      script,
+    ].join('\n')
+    rawText = await callChatModel(modelKey, [
+      { role: 'system', content: retrySystem },
+      { role: 'user', content: retryUser },
+    ])
+    parsed = parseJsonLoose(rawText) as ShortDramaScriptAnalysis | null
+    if (!parsed) {
+      throw new ShortDramaParseError('剧本解析失败：模型未返回合法 JSON', rawText)
+    }
   }
 
   const analysis: ShortDramaScriptAnalysis = {

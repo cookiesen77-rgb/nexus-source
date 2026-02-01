@@ -1,17 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { CHAT_MODELS, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { cn } from '@/lib/utils'
 import { importShortDramaScriptFile } from '@/lib/shortDrama/scriptImport'
 import { analyzeShortDramaScriptToDraftV2 } from '@/lib/shortDrama/ai'
 import { getShortDramaTaskQueue } from '@/lib/shortDrama/taskQueue'
-import { buildEffectiveStyle, getShortDramaStylePresetById } from '@/lib/shortDrama/stylePresets'
+import { buildEffectiveStyle, getShortDramaStylePresetById, SHORT_DRAMA_STYLE_PRESETS } from '@/lib/shortDrama/stylePresets'
 import { generateShortDramaImage, generateShortDramaVideo } from '@/lib/shortDrama/generateMedia'
 import { appendVariantToSlot, removeVariantFromSlot, setSlotSelectionLocked, setSlotSelectedVariant, updateVariantInSlot } from '@/lib/shortDrama/draftOps'
+import { saveShortDramaDraftV2 } from '@/lib/shortDrama/draftStorage'
 import { getMedia, saveMedia } from '@/lib/mediaStorage'
+import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
+import { useAssetsStore } from '@/store/assets'
+import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
 import { ShortDramaSlotVersions, ShortDramaVariantThumb } from '@/components/shortDrama/ShortDramaSlotVersions'
 import type { ShortDramaDraftV2, ShortDramaMediaSlot, ShortDramaMediaVariant } from '@/lib/shortDrama/types'
-import type { ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
+import { saveShortDramaPrefs, type ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
 import { FileText, Loader2, Upload, Video as VideoIcon, Wand2 } from 'lucide-react'
 
 interface Props {
@@ -25,6 +30,23 @@ interface Props {
 const makeId = () => globalThis.crypto?.randomUUID?.() || `sd_${Date.now()}_${Math.random().toString(16).slice(2)}`
 
 const isHttp = (v: string) => /^https?:\/\//i.test(v)
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+const SUPPORTED_VIDEO_FORMATS = new Set<string>(['sora-unified', 'veo-unified', 'kling-video', 'unified-video'])
+
+const getModelLabel = (m: any) => String(m?.label || m?.key || '')
+
+const getImageModels = () =>
+  (IMAGE_MODELS as any[]).map((m) => ({ key: String(m?.key || ''), label: getModelLabel(m) })).filter((m) => m.key)
+
+const getChatModels = () =>
+  (CHAT_MODELS as any[]).map((m) => ({ key: String(m?.key || ''), label: getModelLabel(m) })).filter((m) => m.key)
+
+const getSupportedVideoModels = () =>
+  (VIDEO_MODELS as any[])
+    .filter((m) => SUPPORTED_VIDEO_FORMATS.has(String(m?.format || '')))
+    .map((m) => ({ key: String(m?.key || ''), label: getModelLabel(m) }))
+    .filter((m) => m.key)
 
 // 视频 images 组装：首/尾允许重复，refs 去重且不顶替首尾语义
 const buildVideoImages = (startInput: string, endInput: string, refs: string[]) => {
@@ -54,10 +76,38 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
     queue.setLimits({ imageConcurrency: prefs.imageConcurrency, videoConcurrency: prefs.videoConcurrency, analysisConcurrency: 1 })
   }, [queue, prefs.imageConcurrency, prefs.videoConcurrency])
 
+  const imageModels = useMemo(() => getImageModels(), [])
+  const chatModels = useMemo(() => getChatModels(), [])
+  const videoModels = useMemo(() => getSupportedVideoModels(), [])
+
+  const patchModels = useCallback(
+    (patch: Partial<ShortDramaDraftV2['models']>) => {
+      setDraft((prev) => ({ ...prev, models: { ...prev.models, ...patch }, updatedAt: Date.now() }))
+    },
+    [setDraft]
+  )
+
+  const patchStyle = useCallback(
+    (patch: Partial<ShortDramaDraftV2['style']>) => {
+      setDraft((prev) => ({ ...prev, style: { ...prev.style, ...patch }, updatedAt: Date.now() }))
+    },
+    [setDraft]
+  )
+
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [analysisBusy, setAnalysisBusy] = useState(false)
   const [analysisError, setAnalysisError] = useState<string>('')
   const [analysisRaw, setAnalysisRaw] = useState<string>('')
+  const [prepBusy, setPrepBusy] = useState(false)
+  const [keyframesBusy, setKeyframesBusy] = useState(false)
+  const [videosBusy, setVideosBusy] = useState(false)
+  const autoPipelineRef = useRef(false)
+  const [autoPipelineToken, setAutoPipelineToken] = useState(0)
+
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [previewType, setPreviewType] = useState<'image' | 'video'>('image')
+  const [previewBusy, setPreviewBusy] = useState(false)
 
   const [busySlotIds, setBusySlotIds] = useState<Record<string, boolean>>({})
   const busySlotsRef = useRef(busySlotIds)
@@ -88,6 +138,53 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
     const d = String(variant.displayUrl || '').trim()
     return d
   }, [])
+
+  const resolveVariantPreviewUrl = useCallback(async (variant: ShortDramaMediaVariant | undefined): Promise<string> => {
+    if (!variant) return ''
+    const display = String(variant.displayUrl || '').trim()
+    if (display) return display
+    if (variant.mediaId) {
+      try {
+        const rec = await getMedia(variant.mediaId)
+        const dataUrl = String(rec?.data || '').trim()
+        if (dataUrl) return dataUrl
+      } catch {
+        // ignore
+      }
+    }
+    return String(variant.sourceUrl || '').trim()
+  }, [])
+
+  const openPreview = useCallback(
+    async (variant: ShortDramaMediaVariant | undefined) => {
+      if (!variant) return
+      if (variant.status !== 'success') return
+      if (previewBusy) return
+      setPreviewBusy(true)
+      try {
+        let url = await resolveVariantPreviewUrl(variant)
+        if (!url) throw new Error('暂无可预览的地址')
+
+        // 视频在 Tauri 下尽量走缓存后的 asset://（更稳定）
+        if (variant.kind === 'video' && isTauri) {
+          const isAlreadyLocal = url.startsWith('asset://') || url.startsWith('data:') || url.startsWith('blob:')
+          if (!isAlreadyLocal) {
+            const cached = await resolveCachedMediaUrl(url)
+            if (cached?.displayUrl) url = cached.displayUrl
+          }
+        }
+
+        setPreviewType(variant.kind === 'video' ? 'video' : 'image')
+        setPreviewUrl(url)
+        setPreviewOpen(true)
+      } catch (err: any) {
+        window.$message?.error?.(err?.message || '预览失败')
+      } finally {
+        setPreviewBusy(false)
+      }
+    },
+    [previewBusy, resolveVariantPreviewUrl]
+  )
 
   const buildCharacterSheetPrompt = useCallback(
     (characterId: string) => {
@@ -310,6 +407,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
 
         const displayUrl = String(result.displayUrl || '').trim()
         const sourceUrl = String(result.imageUrl || '').trim()
+        const safeSourceUrl = isHttp(sourceUrl) ? sourceUrl : ''
         let mediaId: string | undefined
         if (displayUrl.startsWith('data:')) {
           mediaId = await saveMedia({
@@ -317,7 +415,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
             projectId,
             type: 'image',
             data: displayUrl,
-            sourceUrl: sourceUrl && sourceUrl !== displayUrl ? sourceUrl : undefined,
+            sourceUrl: safeSourceUrl && safeSourceUrl !== displayUrl ? safeSourceUrl : undefined,
             model: draft.models.imageModelKey,
           })
         }
@@ -325,12 +423,24 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
         setDraft((prev) =>
           updateVariantInSlot(prev, slotId, running.id, {
             status: 'success',
-            sourceUrl: sourceUrl || undefined,
+            sourceUrl: safeSourceUrl || undefined,
             displayUrl: mediaId ? '' : displayUrl || undefined,
             localPath: result.localPath || '',
             mediaId,
           })
         )
+
+        // 同步到历史素材（短剧自动模式）
+        try {
+          useAssetsStore.getState().addAsset({
+            type: 'image',
+            src: displayUrl || safeSourceUrl,
+            title: String((p || '短剧图片').slice(0, 80)).trim(),
+            model: draft.models.imageModelKey,
+          })
+        } catch {
+          // ignore
+        }
       } catch (err: any) {
         const msg = err instanceof Error ? err.message : String(err || '生成失败')
         setDraft((prev) => updateVariantInSlot(prev, slotId, running.id, { status: 'error', error: msg }))
@@ -382,6 +492,19 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
             localPath: result.localPath || '',
           })
         )
+
+        // 同步到历史素材（短剧自动模式）
+        try {
+          useAssetsStore.getState().addAsset({
+            type: 'video',
+            src: String(result.displayUrl || result.videoUrl || '').trim(),
+            title: String((p || '短剧视频').slice(0, 80)).trim(),
+            model: draft.models.videoModelKey,
+            duration: Number(draft.models.videoDuration || 0),
+          })
+        } catch {
+          // ignore
+        }
       } catch (err: any) {
         const msg = err instanceof Error ? err.message : String(err || '生成失败')
         setDraft((prev) => updateVariantInSlot(prev, slotId, running.id, { status: 'error', error: msg }))
@@ -407,26 +530,22 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
       setAnalysisRaw(res.rawText)
       setDraft(res.draft)
       window.$message?.success?.('剧本分析完成')
-      if (prefs.autoStrategy === 'full_auto') {
-        // Full auto: generate character sheets + scene refs + start/end frames (no video by default)
-        void (async () => {
-          try {
-            await runBatchGenerateKeyframes()
-          } catch {
-            // errors are already surfaced in variants
-          }
-        })()
-      }
+      // 解析后：先自动生成“角色设定图 + 场景参考图”（一致性素材）。
+      // 关键帧（首/尾）与视频必须由用户手动点击按钮触发（避免未确认一致性就开跑）。
+      autoPipelineRef.current = true
+      setAutoPipelineToken((x) => x + 1)
     } catch (err: any) {
+      const raw = typeof err?.rawText === 'string' ? String(err.rawText) : ''
+      if (raw) setAnalysisRaw(raw)
       const msg = err instanceof Error ? err.message : String(err || '分析失败')
       setAnalysisError(msg)
       window.$message?.error?.(msg)
     } finally {
       setAnalysisBusy(false)
     }
-  }, [draft, prefs.autoStrategy, setDraft])
+  }, [draft, setDraft])
 
-  const runBatchGenerateKeyframes = useCallback(async () => {
+  const runBatchGenerateCoreRefs = useCallback(async () => {
     // 1) Character sheets
     const charTasks = draft.characters.map(async (c) => {
       const slotId = c.sheet.id
@@ -446,27 +565,62 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
       await runGenerateSlotImage(slotId, prompt, [], 'auto')
     })
 
-    // 3) Shot frames (start & end)
-    const shotStartTasks = draft.shots.map(async (sh) => {
-      const slotId = sh.frames.start.slot.id
-      const hasSelected = !!getSelectedVariant(sh.frames.start.slot)
-      if (hasSelected) return
-      const prompt = buildFramePrompt(sh.id, 'start')
-      const refs = await collectRefImagesForShot(sh.id, 'start')
-      await runGenerateSlotImage(slotId, prompt, refs, 'auto')
-    })
+    await Promise.all([...charTasks, ...sceneTasks])
+  }, [
+    buildCharacterSheetPrompt,
+    buildScenePrompt,
+    collectRefImagesForCharacter,
+    draft.characters,
+    draft.scenes,
+    getSelectedVariant,
+    runGenerateSlotImage,
+  ])
 
-    const shotEndTasks = draft.shots.map(async (sh) => {
-      const slotId = sh.frames.end.slot.id
-      const hasSelected = !!getSelectedVariant(sh.frames.end.slot)
-      if (hasSelected) return
-      const prompt = buildFramePrompt(sh.id, 'end')
-      const refs = await collectRefImagesForShot(sh.id, 'end')
-      await runGenerateSlotImage(slotId, prompt, refs, 'auto')
-    })
+  // 自动流水线：解析 -> 先生成角色/场景一致性素材（到此为止；关键帧/视频由用户手动触发）
+  useEffect(() => {
+    const shouldRun = autoPipelineRef.current
+    if (!shouldRun) return
+    autoPipelineRef.current = false
+    void (async () => {
+      setPrepBusy(true)
+      try {
+        await runBatchGenerateCoreRefs()
+        window.$message?.success?.('角色/场景参考图已生成（用于一致性）')
+      } catch {
+        // errors are already surfaced in variants
+      } finally {
+        setPrepBusy(false)
+      }
+    })()
+  }, [autoPipelineToken, runBatchGenerateCoreRefs])
 
-    await Promise.all([...charTasks, ...sceneTasks, ...shotStartTasks, ...shotEndTasks])
-    window.$message?.success?.('关键帧批量生成完成')
+  const runBatchGenerateKeyframes = useCallback(async () => {
+    setKeyframesBusy(true)
+    try {
+      // Shot frames (start & end) — 依赖角色/场景参考图（已在“分析并搭建”后优先生成）
+      const shotStartTasks = draft.shots.map(async (sh) => {
+        const slotId = sh.frames.start.slot.id
+        const hasSelected = !!getSelectedVariant(sh.frames.start.slot)
+        if (hasSelected) return
+        const prompt = buildFramePrompt(sh.id, 'start')
+        const refs = await collectRefImagesForShot(sh.id, 'start')
+        await runGenerateSlotImage(slotId, prompt, refs, 'auto')
+      })
+
+      const shotEndTasks = draft.shots.map(async (sh) => {
+        const slotId = sh.frames.end.slot.id
+        const hasSelected = !!getSelectedVariant(sh.frames.end.slot)
+        if (hasSelected) return
+        const prompt = buildFramePrompt(sh.id, 'end')
+        const refs = await collectRefImagesForShot(sh.id, 'end')
+        await runGenerateSlotImage(slotId, prompt, refs, 'auto')
+      })
+
+      await Promise.all([...shotStartTasks, ...shotEndTasks])
+      window.$message?.success?.('关键帧批量生成完成')
+    } finally {
+      setKeyframesBusy(false)
+    }
   }, [
     buildCharacterSheetPrompt,
     buildFramePrompt,
@@ -481,23 +635,28 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
   ])
 
   const runBatchGenerateVideos = useCallback(async () => {
-    const tasks = draft.shots.map(async (sh) => {
-      const slotId = sh.video.id
-      if (busySlotsRef.current[slotId]) return
+    setVideosBusy(true)
+    try {
+      const tasks = draft.shots.map(async (sh) => {
+        const slotId = sh.video.id
+        if (busySlotsRef.current[slotId]) return
 
-      const startV = getSelectedVariant(sh.frames.start.slot)
-      const endV = getSelectedVariant(sh.frames.end.slot)
-      const startInput = await resolveVariantInput(startV || undefined)
-      const endInput = await resolveVariantInput(endV || undefined)
-      if (!startInput || !endInput) return
+        const startV = getSelectedVariant(sh.frames.start.slot)
+        const endV = getSelectedVariant(sh.frames.end.slot)
+        const startInput = await resolveVariantInput(startV || undefined)
+        const endInput = await resolveVariantInput(endV || undefined)
+        if (!startInput || !endInput) return
 
-      const refs = await collectRefImagesForShot(sh.id, 'start')
-      const images = buildVideoImages(startInput, endInput, refs)
-      const prompt = buildVideoPrompt(sh.id)
-      await runGenerateSlotVideo(slotId, prompt, images, endInput, 'auto')
-    })
-    await Promise.all(tasks)
-    window.$message?.success?.('视频批量生成完成')
+        const refs = await collectRefImagesForShot(sh.id, 'start')
+        const images = buildVideoImages(startInput, endInput, refs)
+        const prompt = buildVideoPrompt(sh.id)
+        await runGenerateSlotVideo(slotId, prompt, images, endInput, 'auto')
+      })
+      await Promise.all(tasks)
+      window.$message?.success?.('视频批量生成完成')
+    } finally {
+      setVideosBusy(false)
+    }
   }, [buildVideoPrompt, collectRefImagesForShot, draft.shots, getSelectedVariant, resolveVariantInput, runGenerateSlotVideo])
 
   const onImportFile = useCallback(async (file: File) => {
@@ -522,6 +681,16 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
   }, [setDraft])
 
   const selectedPreset = useMemo(() => getShortDramaStylePresetById(draft.style.presetId), [draft.style.presetId])
+  const shotsTotal = draft.shots.length
+  const adoptedKeyframes = useMemo(() => {
+    let ok = 0
+    for (const sh of draft.shots) {
+      const start = getSelectedVariant(sh.frames.start.slot)
+      const end = getSelectedVariant(sh.frames.end.slot)
+      if (start?.status === 'success' && end?.status === 'success') ok += 1
+    }
+    return ok
+  }, [draft.shots, getSelectedVariant])
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 lg:flex-row">
@@ -537,7 +706,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
           <div>
             <div className="text-sm font-semibold text-[var(--text-primary)]">自动模式</div>
             <div className="mt-1 text-xs text-[var(--text-secondary)]">
-              先用 AI 拆解剧本为「角色/场景/镜头（首帧/尾帧）」；生成结果与版本管理仍可在此查看，也可切换到“手动”精修。
+              先用 AI 拆解剧本为「角色/场景/镜头（首帧/尾帧）」；分析后会优先生成角色/场景一致性参考图。首/尾关键帧与视频需你确认一致性后再手动点击生成。
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -564,6 +733,62 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
       </div>
 
             <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-[var(--text-primary)]">默认模型（自动模式使用）</div>
+                  <div className="mt-1 text-xs text-[var(--text-secondary)]">自动拆解/批量生成将使用下方模型作为默认值。</div>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-3">
+                <div className="flex flex-col gap-2">
+                  <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">拆解模型</label>
+                  <select
+                    value={draft.models.analysisModelKey || DEFAULT_CHAT_MODEL}
+                    onChange={(e) => patchModels({ analysisModelKey: e.target.value })}
+                    className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                  >
+                    {chatModels.map((m) => (
+                      <option key={m.key} value={m.key}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-1 gap-3">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">生图模型</label>
+                    <select
+                      value={draft.models.imageModelKey || DEFAULT_IMAGE_MODEL}
+                      onChange={(e) => patchModels({ imageModelKey: e.target.value })}
+                      className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                    >
+                      {imageModels.map((m) => (
+                        <option key={m.key} value={m.key}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频模型</label>
+                    <select
+                      value={draft.models.videoModelKey || DEFAULT_VIDEO_MODEL}
+                      onChange={(e) => patchModels({ videoModelKey: e.target.value })}
+                      className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                    >
+                      {videoModels.map((m) => (
+                        <option key={m.key} value={m.key}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-xs text-[var(--text-secondary)]">当前自动模式仅展示工作台支持的视频模型。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold text-[var(--text-primary)]">剧本导入</div>
           <div className="flex items-center gap-2">
@@ -585,7 +810,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
           </div>
         </div>
 
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div className="mt-3 grid gap-3">
           <div className="flex flex-col gap-2">
             <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">剧本文本</label>
             <textarea
@@ -597,43 +822,138 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
           </div>
           <div className="space-y-3">
             <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-[var(--text-primary)]">风格概览</div>
-                <div className="text-xs text-[var(--text-secondary)]">{draft.style.locked ? '已锁定' : '可由 AI 建议'}</div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold text-[var(--text-primary)]">画风与统一要求</div>
+                <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                  <input type="checkbox" checked={!!draft.style.locked} onChange={(e) => patchStyle({ locked: e.target.checked })} />
+                  锁定（AI 不可改）
+                </label>
               </div>
-              <div className="mt-2 text-xs text-[var(--text-secondary)]">
-                预设：<span className="text-[var(--text-primary)]">{selectedPreset.name}</span>（{selectedPreset.description}）
+
+              <div className="mt-3 space-y-3">
+                <div className="flex flex-col gap-2">
+                  <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">预设</label>
+                  <select
+                    value={draft.style.presetId}
+                    onChange={(e) => patchStyle({ presetId: e.target.value })}
+                    className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                  >
+                    {SHORT_DRAMA_STYLE_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-[var(--text-secondary)]">{selectedPreset.description}</div>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">补充/覆盖（可选）</label>
+                  <textarea
+                    value={draft.style.customText}
+                    onChange={(e) => patchStyle({ customText: e.target.value })}
+                    className="min-h-[80px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                    placeholder="例如：固定服装、固定发型、固定色板、固定镜头焦段…"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">全局负面（可选）</label>
+                  <textarea
+                    value={draft.style.negativeText}
+                    onChange={(e) => patchStyle({ negativeText: e.target.value })}
+                    className="min-h-[60px] w-full resize-y rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                    placeholder="例如：禁止字幕/水印、禁止换装、禁止换脸…"
+                  />
+                </div>
+
+                <div className="text-[11px] text-[var(--text-secondary)]">
+                  提示：未锁定时，AI 拆解只会在你未设置自定义风格/负面时给出建议，不会强行覆盖你的选择。
+                </div>
               </div>
-              {draft.style.customText ? <div className="mt-2 text-xs text-[var(--text-secondary)]">补充：{draft.style.customText.slice(0, 120)}</div> : null}
-              {draft.style.negativeText ? <div className="mt-2 text-xs text-[var(--text-secondary)]">负面：{draft.style.negativeText.slice(0, 120)}</div> : null}
             </div>
 
-            <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-[var(--text-primary)]">AI 拆解</div>
-                <Button size="sm" className="gap-1" disabled={analysisBusy} onClick={() => void runAnalysis()}>
-                  {analysisBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-                  分析并搭建
-                </Button>
+            <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-[var(--text-primary)]">AI 拆解与批量生成</div>
+                  <div className="mt-1 text-xs text-[var(--text-secondary)]">按步骤运行：拆解 → 关键帧 → 视频</div>
+                </div>
+                <div className="text-xs text-[var(--text-secondary)]">
+                  已采用首/尾：<span className="text-[var(--text-primary)]">{adoptedKeyframes}</span>/{shotsTotal}
+                </div>
               </div>
-              {analysisError ? <div className="mt-2 text-xs text-red-500">{analysisError}</div> : null}
-              {analysisRaw ? (
-                <details className="mt-2">
-                  <summary className="cursor-pointer text-xs text-[var(--text-secondary)]">查看模型原始返回</summary>
-                  <pre className="mt-2 max-h-[200px] overflow-auto rounded-lg bg-black/10 p-2 text-[11px] text-[var(--text-secondary)]">{analysisRaw}</pre>
-                </details>
-              ) : null}
 
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button variant="secondary" size="sm" onClick={() => void runBatchGenerateKeyframes()}>
-                  批量生成关键帧（首/尾）
-                </Button>
-                <Button variant="secondary" size="sm" onClick={() => void runBatchGenerateVideos()}>
-                  批量生成视频（基于已采用首/尾）
-                </Button>
-              </div>
-              <div className="mt-2 text-xs text-[var(--text-secondary)]">
-                提示：视频建议在首/尾帧“采用”满意版本后再生成；需要更精细的参考图绑定可切换到“手动”模式。
+              <div className="mt-3 space-y-3">
+                {/* Step 1 */}
+                <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[var(--accent-color)] text-[11px] font-bold text-white">
+                        1
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-[var(--text-primary)]">拆解剧本</div>
+                        <div className="mt-0.5 text-xs text-[var(--text-secondary)]">生成角色/场景/镜头与首尾帧提示词，并自动搭建草稿结构。</div>
+                      </div>
+                    </div>
+                    <Button size="sm" className="gap-1" disabled={analysisBusy || prepBusy} onClick={() => void runAnalysis()}>
+                      {analysisBusy || prepBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+                      分析并搭建
+                    </Button>
+                  </div>
+
+                  {prepBusy ? <div className="mt-2 text-xs text-[var(--text-secondary)]">一致性素材生成中：角色设定图 / 场景参考图…</div> : null}
+                  {analysisError ? (
+                    <div className="mt-2 max-h-[120px] overflow-auto whitespace-pre-wrap break-words text-xs text-red-500">{analysisError}</div>
+                  ) : null}
+                  {analysisRaw ? (
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-xs text-[var(--text-secondary)]">查看模型原始返回</summary>
+                      <pre className="mt-2 max-h-[200px] overflow-auto rounded-lg bg-black/10 p-2 text-[11px] text-[var(--text-secondary)]">{analysisRaw}</pre>
+                    </details>
+                  ) : null}
+                </div>
+
+                {/* Step 2 */}
+                <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/10 text-[11px] font-bold text-[var(--text-secondary)]">
+                        2
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-[var(--text-primary)]">生成关键帧</div>
+                        <div className="mt-0.5 text-xs text-[var(--text-secondary)]">批量生成每个镜头的首帧/尾帧（会新增版本）。</div>
+                      </div>
+                    </div>
+                    <Button variant="secondary" size="sm" disabled={analysisBusy || prepBusy || keyframesBusy} onClick={() => void runBatchGenerateKeyframes()}>
+                      批量生成首/尾
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Step 3 */}
+                <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/10 text-[11px] font-bold text-[var(--text-secondary)]">
+                        3
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-[var(--text-primary)]">生成视频</div>
+                        <div className="mt-0.5 text-xs text-[var(--text-secondary)]">基于“已采用”的首/尾帧批量生成视频（会新增版本）。</div>
+                      </div>
+                    </div>
+                    <Button variant="secondary" size="sm" disabled={analysisBusy || prepBusy || keyframesBusy || videosBusy} onClick={() => void runBatchGenerateVideos()}>
+                      批量生成视频
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-[var(--text-secondary)]">
+                  提示：建议先在首/尾帧中“采用”满意版本后再生成视频；需要更精细的参考图绑定可切换到“手动”模式。
+                </div>
               </div>
             </div>
           </div>
@@ -686,7 +1006,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                   </div>
                   {selected ? (
                     <div className="mt-2">
-                      <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
+                      <button type="button" className="w-full" onClick={() => void openPreview(selected)} disabled={previewBusy} title="预览">
+                        <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
+                      </button>
                     </div>
                   ) : null}
                   <div className="mt-2">
@@ -694,6 +1016,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                       slot={slot}
                       onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, slot.id, vid))}
                       onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, slot.id, vid))}
+                      onPreview={(v) => void openPreview(v)}
                       disabled={busy}
                     />
                   </div>
@@ -732,7 +1055,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                   </div>
                   {selected ? (
                     <div className="mt-2">
-                      <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
+                      <button type="button" className="w-full" onClick={() => void openPreview(selected)} disabled={previewBusy} title="预览">
+                        <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
+                      </button>
                     </div>
                   ) : null}
                   <div className="mt-2">
@@ -740,6 +1065,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                       slot={slot}
                       onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, slot.id, vid))}
                       onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, slot.id, vid))}
+                      onPreview={(v) => void openPreview(v)}
                       disabled={busy}
                     />
                   </div>
@@ -805,7 +1131,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                       </div>
                       {startSelected ? (
                         <div className="mt-2">
-                          <ShortDramaVariantThumb variant={startSelected} className="h-24 w-full" />
+                          <button type="button" className="w-full" onClick={() => void openPreview(startSelected)} disabled={previewBusy} title="预览">
+                            <ShortDramaVariantThumb variant={startSelected} className="h-24 w-full" />
+                          </button>
                         </div>
                       ) : null}
                       <div className="mt-2">
@@ -813,6 +1141,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                           slot={startSlot}
                           onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, startSlot.id, vid))}
                           onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, startSlot.id, vid))}
+                          onPreview={(v) => void openPreview(v)}
                           disabled={startBusy}
                         />
                       </div>
@@ -848,7 +1177,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                       </div>
                       {endSelected ? (
                         <div className="mt-2">
-                          <ShortDramaVariantThumb variant={endSelected} className="h-24 w-full" />
+                          <button type="button" className="w-full" onClick={() => void openPreview(endSelected)} disabled={previewBusy} title="预览">
+                            <ShortDramaVariantThumb variant={endSelected} className="h-24 w-full" />
+                          </button>
                         </div>
                       ) : null}
                       <div className="mt-2">
@@ -856,6 +1187,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                           slot={endSlot}
                           onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, endSlot.id, vid))}
                           onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, endSlot.id, vid))}
+                          onPreview={(v) => void openPreview(v)}
                           disabled={endBusy}
                         />
                       </div>
@@ -899,7 +1231,20 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                           size="sm"
                           variant="ghost"
                           disabled={!videoSelected || videoSelected.status !== 'success'}
-                          onClick={() => navigate(`/edit/${projectId}?shotId=${sh.id}&videoVariantId=${videoSelected?.id || ''}`)}
+                          onClick={() => {
+                            // 跳转前强制落盘（避免 debounced 保存窗口导致“返回后版本消失”）
+                            try {
+                              void saveShortDramaDraftV2(projectId, draft)
+                            } catch {
+                              // ignore
+                            }
+                            try {
+                              void saveShortDramaPrefs(projectId, prefs)
+                            } catch {
+                              // ignore
+                            }
+                            navigate(`/edit/${projectId}?shotId=${sh.id}&videoVariantId=${videoSelected?.id || ''}`)
+                          }}
                         >
                           进入剪辑台
                         </Button>
@@ -908,7 +1253,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
 
                     {videoSelected ? (
                       <div className="mt-2">
-                        <ShortDramaVariantThumb variant={videoSelected} className="h-40 w-full" />
+                        <button type="button" className="w-full" onClick={() => void openPreview(videoSelected)} disabled={previewBusy} title="预览">
+                          <ShortDramaVariantThumb variant={videoSelected} className="h-40 w-full" />
+                        </button>
                       </div>
                     ) : null}
 
@@ -917,6 +1264,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                         slot={videoSlot}
                         onAdopt={(vid) => setDraft((prev) => setSlotSelectedVariant(prev, videoSlot.id, vid))}
                         onRemove={(vid) => setDraft((prev) => removeVariantFromSlot(prev, videoSlot.id, vid))}
+                        onPreview={(v) => void openPreview(v)}
                         disabled={videoBusy}
                       />
                     </div>
@@ -927,6 +1275,8 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
           </div>
         </div>
       </div>
+
+      <MediaPreviewModal open={previewOpen} url={previewUrl} type={previewType} onClose={() => setPreviewOpen(false)} />
     </div>
   )
 }

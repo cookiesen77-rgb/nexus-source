@@ -331,6 +331,9 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
                 if (config?.sizes?.length > 0) {
                   const defaultSize = config.defaultParams?.size || config.sizes[0]?.key
                   setSize(defaultSize)
+                } else {
+                  // 清理旧模型残留的 size（否则会把 720p 带给不需要 size 的模型）
+                  setSize('')
                 }
                 debouncedUpdateStore({ 
                   model: newModel, 

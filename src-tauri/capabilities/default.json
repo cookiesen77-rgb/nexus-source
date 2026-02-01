@@ -22,6 +22,12 @@
         { "url": "https://**" },
         { "url": "http://**" }
       ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "ffmpeg", "cmd": "ffmpeg", "sidecar": true, "args": true }
+      ]
     }
   ]
 }

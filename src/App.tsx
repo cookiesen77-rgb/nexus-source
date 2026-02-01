@@ -4,6 +4,7 @@ import Home from './routes/Home'
 import Canvas from './routes/Canvas'
 import Assistant from './routes/Assistant'
 import Editor from './routes/Editor'
+import ShortDramaStudioPage from './routes/ShortDramaStudioPage'
 import UpdateChecker from './components/UpdateChecker'
 import { useAssetsStore } from '@/store/assets'
 
@@ -24,6 +25,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/canvas/:id?" element={<Canvas />} />
+        <Route path="/short-drama/:projectId" element={<ShortDramaStudioPage />} />
         <Route path="/assistant" element={<Assistant />} />
         <Route path="/edit/:projectId" element={<Editor />} />
         <Route path="*" element={<Navigate to="/" replace />} />

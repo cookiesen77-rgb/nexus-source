@@ -4,11 +4,13 @@ use base64::{engine::general_purpose, Engine as _};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::sync::mpsc::{Receiver, Sender, channel, RecvTimeoutError};
 use std::thread;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 
@@ -47,6 +49,35 @@ struct CanvasSaveRequest {
 }
 
 static CANVAS_SAVE_SENDER: OnceLock<Sender<CanvasSaveRequest>> = OnceLock::new();
+
+// ======== Editor export jobs (FFmpeg sidecar) ========
+
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct EditorExportClip {
+  #[serde(default)]
+  input: String, // local path preferred; fallback: http(s) url
+  #[serde(default)]
+  in_sec: f64,
+  #[serde(default)]
+  out_sec: Option<f64>,
+  #[serde(default)]
+  shot_id: String,
+  #[serde(default)]
+  video_variant_id: String,
+}
+
+#[derive(Clone)]
+struct EditorExportJobState {
+  cancel: Arc<AtomicBool>,
+  child: Arc<Mutex<Option<tauri_plugin_shell::process::CommandChild>>>,
+}
+
+static EDITOR_EXPORT_JOBS: OnceLock<Mutex<HashMap<String, EditorExportJobState>>> = OnceLock::new();
+
+fn editor_export_jobs() -> &'static Mutex<HashMap<String, EditorExportJobState>> {
+  EDITOR_EXPORT_JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn ensure_canvas_save_worker(app: tauri::AppHandle) -> Sender<CanvasSaveRequest> {
   if let Some(sender) = CANVAS_SAVE_SENDER.get() {
@@ -849,6 +880,376 @@ async fn cache_remote_media(
   Ok(target.to_string_lossy().to_string())
 }
 
+#[derive(serde::Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+struct EditorExportProgressPayload {
+  job_id: String,
+  status: String,   // running | done | error | cancelled
+  progress: u32,    // 0..100
+  phase: String,    // prepare | segment | concat | finalize
+  message: String,
+  output_path: Option<String>,
+}
+
+fn emit_editor_export(app: &tauri::AppHandle, payload: EditorExportProgressPayload) {
+  // ignore errors when no listeners
+  let _ = app.emit("nexus:editor-export-progress", payload);
+}
+
+fn sanitize_seconds(v: f64) -> f64 {
+  if !v.is_finite() || v < 0.0 { 0.0 } else { v }
+}
+
+async fn run_ffmpeg_sidecar(app: &tauri::AppHandle, job: &EditorExportJobState, args: Vec<String>) -> Result<(), String> {
+  let command = app
+    .shell()
+    .sidecar("ffmpeg")
+    .map_err(|e| format!("未找到 FFmpeg sidecar：{e}"))?;
+
+  // spawn and keep child handle for cancellation
+  let (mut rx, child) = command.args(args).spawn().map_err(|e| e.to_string())?;
+  {
+    let mut guard = job.child.lock().map_err(|_| "导出任务锁异常".to_string())?;
+    *guard = Some(child);
+  }
+
+  let mut exit_code: Option<i32> = None;
+  while let Some(event) = rx.recv().await {
+    match event {
+      CommandEvent::Terminated(payload) => {
+        exit_code = payload.code;
+        break;
+      }
+      _ => {}
+    }
+  }
+
+  {
+    let mut guard = job.child.lock().map_err(|_| "导出任务锁异常".to_string())?;
+    *guard = None;
+  }
+
+  match exit_code {
+    Some(0) => Ok(()),
+    Some(code) => Err(format!("FFmpeg 退出码：{code}")),
+    None => Err("FFmpeg 进程异常结束".to_string()),
+  }
+}
+
+async fn editor_export_worker(
+  app: tauri::AppHandle,
+  job_id: String,
+  project_id: String,
+  output_path: String,
+  mode: String,
+  clips: Vec<EditorExportClip>,
+  auth_token: Option<String>,
+  job: EditorExportJobState,
+) -> Result<(), String> {
+  let total = clips.len().max(1);
+
+  emit_editor_export(
+    &app,
+    EditorExportProgressPayload {
+      job_id: job_id.clone(),
+      status: "running".to_string(),
+      progress: 0,
+      phase: "prepare".to_string(),
+      message: format!("准备导出（{total} 段）..."),
+      output_path: Some(output_path.clone()),
+    },
+  );
+
+  // temp dir
+  let tmp_root = app
+    .path()
+    .app_cache_dir()
+    .map_err(|e| e.to_string())?
+    .join("nexus-editor-export")
+    .join(&job_id);
+  std::fs::create_dir_all(&tmp_root).map_err(|e| e.to_string())?;
+
+  // ensure output dir exists
+  if let Some(parent) = Path::new(&output_path).parent() {
+    if !parent.as_os_str().is_empty() {
+      std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+  }
+
+  let token = auth_token.clone();
+  let mut segment_paths: Vec<PathBuf> = Vec::new();
+
+  for (idx, clip) in clips.iter().enumerate() {
+    if job.cancel.load(Ordering::Relaxed) {
+      emit_editor_export(
+        &app,
+        EditorExportProgressPayload {
+          job_id: job_id.clone(),
+          status: "cancelled".to_string(),
+          progress: 0,
+          phase: "finalize".to_string(),
+          message: "已取消导出".to_string(),
+          output_path: Some(output_path.clone()),
+        },
+      );
+      let _ = std::fs::remove_dir_all(&tmp_root);
+      return Ok(());
+    }
+
+    let progress = ((idx as f64) / (total as f64) * 80.0).round() as u32;
+    emit_editor_export(
+      &app,
+      EditorExportProgressPayload {
+        job_id: job_id.clone(),
+        status: "running".to_string(),
+        progress,
+        phase: "segment".to_string(),
+        message: format!("切片 {}/{}（mode: {}）", idx + 1, total, mode),
+        output_path: Some(output_path.clone()),
+      },
+    );
+
+    let mut input = String::from(clip.input.trim());
+    if input.is_empty() {
+      return Err(format!("第 {} 段输入为空（shotId={}, variantId={}）", idx + 1, clip.shot_id, clip.video_variant_id));
+    }
+
+    // If input is http(s), cache it first (stable for FFmpeg)
+    if input.starts_with("http://") || input.starts_with("https://") {
+      input = cache_remote_media(app.clone(), input, token.clone()).await?;
+    }
+
+    if input.starts_with("data:") || input.starts_with("blob:") || input.starts_with("asset://") {
+      return Err("导出仅支持本地文件路径或 http(s) URL（请先缓存为本地文件）".to_string());
+    }
+
+    if !Path::new(&input).exists() {
+      return Err(format!("输入文件不存在：{input}"));
+    }
+
+    let start = sanitize_seconds(clip.in_sec);
+    let end = clip.out_sec.map(sanitize_seconds);
+    let dur = match end {
+      Some(v) if v > start => Some(v - start),
+      _ => None,
+    };
+
+    let seg_path = tmp_root.join(format!("segment_{:03}.mp4", idx));
+    let mut args: Vec<String> = Vec::new();
+    args.push("-y".into());
+
+    if mode == "accurate" {
+      args.push("-i".into());
+      args.push(input.clone());
+      args.push("-ss".into());
+      args.push(format!("{start:.3}"));
+      if let Some(d) = dur {
+        args.push("-t".into());
+        args.push(format!("{d:.3}"));
+      }
+      // Re-encode for precise cuts & uniform codec
+      args.push("-c:v".into());
+      args.push("libx264".into());
+      args.push("-preset".into());
+      args.push("veryfast".into());
+      args.push("-crf".into());
+      args.push("18".into());
+      args.push("-pix_fmt".into());
+      args.push("yuv420p".into());
+      args.push("-c:a".into());
+      args.push("aac".into());
+      args.push("-b:a".into());
+      args.push("192k".into());
+      args.push("-movflags".into());
+      args.push("+faststart".into());
+    } else {
+      // fast (lossless-ish): stream copy, may snap to keyframes
+      args.push("-ss".into());
+      args.push(format!("{start:.3}"));
+      args.push("-i".into());
+      args.push(input.clone());
+      if let Some(d) = dur {
+        args.push("-t".into());
+        args.push(format!("{d:.3}"));
+      }
+      args.push("-c".into());
+      args.push("copy".into());
+      args.push("-avoid_negative_ts".into());
+      args.push("make_zero".into());
+    }
+
+    args.push(seg_path.to_string_lossy().to_string());
+    run_ffmpeg_sidecar(&app, &job, args).await?;
+    segment_paths.push(seg_path);
+  }
+
+  if job.cancel.load(Ordering::Relaxed) {
+    emit_editor_export(
+      &app,
+      EditorExportProgressPayload {
+        job_id: job_id.clone(),
+        status: "cancelled".to_string(),
+        progress: 0,
+        phase: "finalize".to_string(),
+        message: "已取消导出".to_string(),
+        output_path: Some(output_path.clone()),
+      },
+    );
+    let _ = std::fs::remove_dir_all(&tmp_root);
+    return Ok(());
+  }
+
+  emit_editor_export(
+    &app,
+    EditorExportProgressPayload {
+      job_id: job_id.clone(),
+      status: "running".to_string(),
+      progress: 90,
+      phase: "concat".to_string(),
+      message: "合并片段...".to_string(),
+      output_path: Some(output_path.clone()),
+    },
+  );
+
+  // concat demuxer list
+  let list_path = tmp_root.join("list.txt");
+  let mut list_txt = String::new();
+  for p in &segment_paths {
+    let s = p.to_string_lossy().replace('\\', "/");
+    list_txt.push_str(&format!("file '{}'\n", s.replace('\'', "\\'")));
+  }
+  std::fs::write(&list_path, list_txt).map_err(|e| e.to_string())?;
+
+  // concat
+  let mut args: Vec<String> = Vec::new();
+  args.push("-y".into());
+  args.push("-f".into());
+  args.push("concat".into());
+  args.push("-safe".into());
+  args.push("0".into());
+  args.push("-i".into());
+  args.push(list_path.to_string_lossy().to_string());
+  args.push("-c".into());
+  args.push("copy".into());
+  args.push(output_path.clone());
+  run_ffmpeg_sidecar(&app, &job, args).await?;
+
+  emit_editor_export(
+    &app,
+    EditorExportProgressPayload {
+      job_id: job_id.clone(),
+      status: "done".to_string(),
+      progress: 100,
+      phase: "finalize".to_string(),
+      message: format!("导出完成：{output_path}"),
+      output_path: Some(output_path.clone()),
+    },
+  );
+
+  // best-effort cleanup
+  let _ = std::fs::remove_dir_all(&tmp_root);
+  log::info!("[editor_export] done, project_id={}, job_id={}, output={}", project_id, job_id, output_path);
+  Ok(())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn editor_export_start(
+  app: tauri::AppHandle,
+  project_id: String,
+  output_path: String,
+  mode: String,
+  clips: Vec<EditorExportClip>,
+  auth_token: Option<String>,
+) -> Result<String, String> {
+  if project_id.trim().is_empty() {
+    return Err("projectId 不能为空".to_string());
+  }
+  if output_path.trim().is_empty() {
+    return Err("outputPath 不能为空".to_string());
+  }
+  if clips.is_empty() {
+    return Err("时间线为空，无法导出".to_string());
+  }
+
+  let mode_norm = if mode.trim().eq_ignore_ascii_case("accurate") { "accurate" } else { "fast" }.to_string();
+  let now = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis();
+  let job_id = format!("export-{}-{}", hash_key(&project_id), now);
+
+  let state = EditorExportJobState {
+    cancel: Arc::new(AtomicBool::new(false)),
+    child: Arc::new(Mutex::new(None)),
+  };
+
+  {
+    let mut map = editor_export_jobs().lock().map_err(|_| "导出任务锁异常".to_string())?;
+    map.insert(job_id.clone(), state.clone());
+  }
+
+  let app_clone = app.clone();
+  let job_id_clone = job_id.clone();
+  let project_id_clone = project_id.clone();
+  let output_clone = output_path.clone();
+  let clips_clone = clips.clone();
+  let auth_clone = auth_token.clone();
+  let state_clone = state.clone();
+
+  tauri::async_runtime::spawn(async move {
+    let res = editor_export_worker(
+      app_clone.clone(),
+      job_id_clone.clone(),
+      project_id_clone,
+      output_clone,
+      mode_norm,
+      clips_clone,
+      auth_clone,
+      state_clone,
+    )
+    .await;
+
+    if let Err(err) = res {
+      emit_editor_export(
+        &app_clone,
+        EditorExportProgressPayload {
+          job_id: job_id_clone.clone(),
+          status: "error".to_string(),
+          progress: 0,
+          phase: "finalize".to_string(),
+          message: format!("导出失败：{err}"),
+          output_path: None,
+        },
+      );
+    }
+
+    // cleanup job registry
+    if let Ok(mut map) = editor_export_jobs().lock() {
+      map.remove(&job_id_clone);
+    }
+  });
+
+  Ok(job_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn editor_export_cancel(job_id: String) -> Result<(), String> {
+  if job_id.trim().is_empty() {
+    return Ok(());
+  }
+  let map = editor_export_jobs().lock().map_err(|_| "导出任务锁异常".to_string())?;
+  if let Some(job) = map.get(job_id.trim()) {
+    job.cancel.store(true, Ordering::Relaxed);
+    // best-effort kill current child
+    if let Ok(mut guard) = job.child.lock() {
+      if let Some(child) = guard.take() {
+        let _ = child.kill();
+      }
+    }
+  }
+  Ok(())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn log_frontend(level: String, message: String, context: Option<String>) {
   let detail = if let Some(ctx) = context {
@@ -877,6 +1278,7 @@ pub fn run() {
     .plugin(tauri_plugin_http::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_fs::init())
+    .plugin(tauri_plugin_shell::init())
     .setup(|app| {
       let level = if cfg!(debug_assertions) {
         log::LevelFilter::Debug
@@ -895,6 +1297,8 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       cache_remote_image,
       cache_remote_media,
+      editor_export_start,
+      editor_export_cancel,
       log_frontend,
       save_project_canvas,
       enqueue_save_project_canvas,

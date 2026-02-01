@@ -2,12 +2,31 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ArrowDown, ArrowUp, Download, FileDown, Pause, Play, Plus, SkipBack, SkipForward, Trash2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Download, FileDown, Film, Loader2, Pause, Play, Plus, SkipBack, SkipForward, Trash2 } from 'lucide-react'
 import { getMedia } from '@/lib/mediaStorage'
 import { downloadFile } from '@/lib/download'
+import { tauriInvoke } from '@/lib/tauri'
 import { loadShortDramaDraftV2 } from '@/lib/shortDrama/draftStorage'
 import { loadShortDramaEditorProjectV1, saveShortDramaEditorProjectV1 } from '@/lib/editor/editorStorage'
+import { useAssetsStore } from '@/store/assets'
 import type { ShortDramaEditorClipV1 } from '@/lib/editor/editorTypes'
+
+// 检测 Tauri 环境（导出成片仅在桌面端提供）
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
+
+function extractLocalPathFromAssetUrl(assetUrl: string): string | null {
+  const u = String(assetUrl || '').trim()
+  if (!u.startsWith('asset://')) return null
+  try {
+    const parsed = new URL(u)
+    const p = decodeURIComponent(parsed.pathname || '')
+    // Windows: asset://localhost/C:/Users/... -> /C:/Users/...（去掉前导斜杠）
+    if (/^\/[A-Za-z]:\//.test(p)) return p.slice(1)
+    return p
+  } catch {
+    return null
+  }
+}
 
 export default function Editor() {
   const navigate = useNavigate()
@@ -21,10 +40,10 @@ export default function Editor() {
 
   const backToWorkbenchUrl = useMemo(() => {
     const params = new URLSearchParams()
-    params.set('openShortDrama', '1')
     if (shotId) params.set('shotId', shotId)
     if (videoVariantId) params.set('videoVariantId', videoVariantId)
-    return `/canvas/${projectId}?${params.toString()}`
+    const qs = params.toString()
+    return `/short-drama/${projectId}${qs ? `?${qs}` : ''}`
   }, [projectId, shotId, videoVariantId])
 
   const makeId = useCallback(() => globalThis.crypto?.randomUUID?.() || `ed_${Date.now()}_${Math.random().toString(16).slice(2)}`, [])
@@ -49,6 +68,80 @@ export default function Editor() {
   const clips = editor.timeline?.clips || []
   const clipsRef = useRef<ShortDramaEditorClipV1[]>(clips)
   clipsRef.current = clips
+
+  type ExportMode = 'fast' | 'accurate'
+  type ExportStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled'
+
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportMode, setExportMode] = useState<ExportMode>('fast')
+  const [exportJobId, setExportJobId] = useState('')
+  const exportJobIdRef = useRef('')
+  const [exportStatus, setExportStatus] = useState<ExportStatus>('idle')
+  const [exportProgress, setExportProgress] = useState(0)
+  const [exportMessage, setExportMessage] = useState('')
+  const [exportOutputPath, setExportOutputPath] = useState('')
+
+  // 监听后端导出进度事件（仅 Tauri）
+  useEffect(() => {
+    if (!isTauri) return
+    let unlisten: null | (() => void) = null
+    ;(async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event')
+        unlisten = await listen<any>('nexus:editor-export-progress', (event) => {
+          const payload: any = (event as any)?.payload || {}
+          const jobId = String(payload?.jobId || '').trim()
+          if (!jobId) return
+          const current = String(exportJobIdRef.current || '').trim()
+          if (current && jobId !== current) return
+
+          exportJobIdRef.current = jobId
+          setExportJobId(jobId)
+          setExportStatus(String(payload?.status || 'running') as ExportStatus)
+          setExportProgress(Number(payload?.progress || 0))
+          setExportMessage(String(payload?.message || '').trim())
+          setExportOutputPath(String(payload?.outputPath || '').trim())
+        })
+      } catch (err) {
+        console.warn('[Editor] 导出进度监听初始化失败:', err)
+      }
+    })()
+
+    return () => {
+      try {
+        unlisten?.()
+      } catch {
+        // ignore
+      }
+    }
+  }, [])
+
+  // 导出成片完成后：同步到历史素材（桌面端）
+  const exportAddedRef = useRef<string>('')
+  useEffect(() => {
+    if (!isTauri) return
+    if (exportStatus !== 'done') return
+    const out = String(exportOutputPath || '').trim()
+    if (!out) return
+    if (exportAddedRef.current === out) return
+    exportAddedRef.current = out
+
+    void (async () => {
+      try {
+        const { convertFileSrc } = await import('@tauri-apps/api/core')
+        const src = convertFileSrc(out)
+        useAssetsStore.getState().addAsset({
+          type: 'video',
+          src,
+          title: `剪辑成片 · ${projectId}`.slice(0, 80),
+          model: 'editor-export',
+          localFilePath: out,
+        })
+      } catch {
+        // ignore
+      }
+    })()
+  }, [exportOutputPath, exportStatus, projectId])
 
   const selectedClipId = String(editor.ui?.selectedClipId || '').trim()
   const selectedIndex = useMemo(() => clips.findIndex((c) => c.id === selectedClipId), [clips, selectedClipId])
@@ -239,6 +332,39 @@ export default function Editor() {
     }
   }, [])
 
+  // 进入/选择片段时：自动加载到预览区（不自动播放，便于做剪辑任务）
+  useEffect(() => {
+    if (!selectedClip) {
+      setActiveSrc('')
+      return
+    }
+    if (playbackRef.current.mode !== 'idle') return
+    let cancelled = false
+    void (async () => {
+      const url = await ensureClipUrl(selectedClip)
+      if (cancelled) return
+      if (playbackRef.current.mode !== 'idle') return
+      if (url) setActiveSrc(url)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [ensureClipUrl, selectedClip?.id])
+
+  const handleBackToWorkbench = useCallback(() => {
+    try {
+      stopPlayback()
+    } catch {
+      // ignore
+    }
+    try {
+      saveShortDramaEditorProjectV1(projectId, editorRef.current as any)
+    } catch {
+      // ignore
+    }
+    navigate(backToWorkbenchUrl)
+  }, [backToWorkbenchUrl, navigate, projectId, stopPlayback])
+
   const startPlayback = useCallback(
     async (mode: 'clip' | 'timeline', index: number) => {
       const token = ++playTokenRef.current
@@ -392,6 +518,51 @@ export default function Editor() {
     updateClip(selectedClip.id, { outSec: Math.max(t, inn) })
   }, [selectedClip, updateClip])
 
+  const duplicateSelectedClip = useCallback(() => {
+    if (!selectedClip) {
+      window.$message?.warning?.('请先选择一个片段')
+      return
+    }
+    const idx = selectedIndex >= 0 ? selectedIndex : 0
+    setEditor((p) => {
+      const arr = [...(p.timeline?.clips || [])]
+      if (!arr[idx]) return p
+      const copied: ShortDramaEditorClipV1 = { ...arr[idx], id: makeId(), createdAt: Date.now() }
+      arr.splice(idx + 1, 0, copied)
+      return { ...p, timeline: { clips: arr }, ui: { ...(p.ui || {}), selectedClipId: copied.id } }
+    })
+  }, [makeId, selectedClip, selectedIndex])
+
+  const splitSelectedClipAtPlayhead = useCallback(() => {
+    const v = videoRef.current
+    if (!v || !selectedClip) {
+      window.$message?.warning?.('请先选择片段并播放/定位到时间点')
+      return
+    }
+    const t = Math.max(0, Number(v.currentTime || 0))
+    const inn = Math.max(0, Number(selectedClip.inSec || 0))
+    const out = selectedClip.outSec == null ? null : Math.max(0, Number(selectedClip.outSec))
+    if (t <= inn + 0.05) {
+      window.$message?.warning?.('播放头过于靠近入点，无法切分')
+      return
+    }
+    if (out != null && t >= out - 0.05) {
+      window.$message?.warning?.('播放头过于靠近出点，无法切分')
+      return
+    }
+    const idx = selectedIndex >= 0 ? selectedIndex : 0
+    setEditor((p) => {
+      const arr = [...(p.timeline?.clips || [])]
+      const cur = arr[idx]
+      if (!cur) return p
+      const first: ShortDramaEditorClipV1 = { ...cur, outSec: t }
+      const second: ShortDramaEditorClipV1 = { ...cur, id: makeId(), inSec: t, outSec: out, createdAt: Date.now() }
+      arr[idx] = first
+      arr.splice(idx + 1, 0, second)
+      return { ...p, timeline: { clips: arr }, ui: { ...(p.ui || {}), selectedClipId: second.id } }
+    })
+  }, [makeId, selectedClip, selectedIndex])
+
   // 下载当前选中片段（原视频）
   const downloadSelectedClip = useCallback(async () => {
     if (!selectedClip) {
@@ -430,6 +601,96 @@ export default function Editor() {
     }
   }, [projectId])
 
+  const startExportFinalVideo = useCallback(async () => {
+    if (!isTauri) {
+      window.$message?.warning?.('导出成片仅在桌面端（Tauri）提供')
+      return
+    }
+    if (exportStatus === 'running') return
+    if (!clipsRef.current.length) {
+      window.$message?.warning?.('时间线为空，无法导出')
+      return
+    }
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog')
+      const defaultName = `nexus_${projectId}_${Date.now()}.mp4`
+      const outputPath = await save({
+        defaultPath: defaultName,
+        filters: [{ name: 'MP4 视频', extensions: ['mp4'] }],
+      })
+      if (!outputPath) return
+
+      const token = (() => {
+        try {
+          return localStorage.getItem('apiKey') || ''
+        } catch {
+          return ''
+        }
+      })()
+
+      const exportClips = (clipsRef.current || []).map((c) => {
+        const shot = (draft.shots || []).find((s: any) => String(s?.id || '') === String(c.shotId || ''))
+        const variant = (shot?.video?.variants || []).find((v: any) => String(v?.id || '') === String(c.videoVariantId || '')) || null
+        const localPath = String(variant?.localPath || '').trim()
+        const displayUrl = String(variant?.displayUrl || c.displayUrl || '').trim()
+        const sourceUrl = String(variant?.sourceUrl || c.sourceUrl || '').trim()
+
+        let input = localPath
+        if (!input) {
+          const p = extractLocalPathFromAssetUrl(displayUrl)
+          if (p) input = p
+        }
+        if (!input) input = sourceUrl || displayUrl
+
+        return {
+          input,
+          inSec: Number(c.inSec || 0),
+          outSec: c.outSec == null ? null : Number(c.outSec),
+          shotId: String(c.shotId || ''),
+          videoVariantId: String(c.videoVariantId || ''),
+        }
+      })
+
+      exportJobIdRef.current = ''
+      setExportStatus('running')
+      setExportProgress(0)
+      setExportMessage('已启动导出…')
+      setExportOutputPath(String(outputPath))
+      setExportOpen(true)
+
+      const jobId = await tauriInvoke<string>('editor_export_start', {
+        projectId,
+        outputPath,
+        mode: exportMode,
+        clips: exportClips,
+        authToken: token || null,
+      })
+      const jid = String(jobId || '').trim()
+      if (!jid) throw new Error('启动导出失败（未返回 jobId）')
+      exportJobIdRef.current = jid
+      setExportJobId(jid)
+    } catch (err: any) {
+      setExportStatus('error')
+      setExportMessage(err?.message || '导出失败')
+      window.$message?.error?.(err?.message || '导出失败')
+    }
+  }, [draft.shots, exportMode, exportStatus, projectId])
+
+  const cancelExport = useCallback(async () => {
+    const jid = String(exportJobIdRef.current || exportJobId || '').trim()
+    if (!jid) {
+      setExportOpen(false)
+      return
+    }
+    try {
+      await tauriInvoke('editor_export_cancel', { jobId: jid })
+      setExportStatus('cancelled')
+      setExportMessage('已请求取消…')
+    } catch (err) {
+      console.warn('[Editor] 取消导出失败:', err)
+    }
+  }, [exportJobId])
+
   const title = selectedClip?.label || '剪辑台'
 
   return (
@@ -444,7 +705,7 @@ export default function Editor() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={() => navigate(backToWorkbenchUrl)}>
+            <Button variant="secondary" onClick={handleBackToWorkbench}>
               返回
             </Button>
             <Button onClick={() => navigate(`/canvas/${projectId}`)}>回到画布</Button>
@@ -490,6 +751,10 @@ export default function Editor() {
                 <Button variant="secondary" onClick={exportProjectJson}>
                   <FileDown className="mr-2 h-4 w-4" />
                   导出工程
+                </Button>
+                <Button variant="secondary" onClick={() => setExportOpen(true)} disabled={!clips.length}>
+                  <Film className="mr-2 h-4 w-4" />
+                  导出成片
                 </Button>
                 <Button variant="secondary" onClick={downloadSelectedClip} disabled={!selectedClip}>
                   <Download className="mr-2 h-4 w-4" />
@@ -547,8 +812,14 @@ export default function Editor() {
                   <Button variant="secondary" onClick={setOutToCurrentTime} disabled={!selectedClip || !activeSrc}>
                     设为出点
                   </Button>
+                  <Button variant="secondary" onClick={splitSelectedClipAtPlayhead} disabled={!selectedClip || !activeSrc}>
+                    切分
+                  </Button>
+                  <Button variant="secondary" onClick={duplicateSelectedClip} disabled={!selectedClip}>
+                    复制片段
+                  </Button>
                   <div className="text-xs text-[var(--text-secondary)]">
-                    提示：当前支持裁切预览、排序、下载片段与导出工程（JSON）；“合成导出为一个完整视频”仍在规划中。
+                    提示：当前支持裁切预览、排序、切分/复制、下载片段、导出工程（JSON），以及桌面端导出成片（MP4）。
                   </div>
                 </div>
               </div>
@@ -649,6 +920,93 @@ export default function Editor() {
           </div>
         </div>
       </div>
+
+      {exportOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={(e) => e.target === e.currentTarget && exportStatus !== 'running' && setExportOpen(false)}
+        >
+          <div
+            className="flex w-[min(760px,96vw)] flex-col overflow-hidden rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[var(--border-color)] px-5 py-4">
+              <div>
+                <div className="text-sm font-semibold text-[var(--text-primary)]">导出成片（MP4）</div>
+                <div className="mt-1 text-xs text-[var(--text-secondary)]">将时间线片段合并导出为一个视频文件（桌面端）。</div>
+              </div>
+              <Button variant="secondary" onClick={() => setExportOpen(false)} disabled={exportStatus === 'running'}>
+                关闭
+              </Button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                  <div className="text-xs text-[var(--text-secondary)]">导出模式</div>
+                  <select
+                    value={exportMode}
+                    onChange={(e) => setExportMode(e.target.value as any)}
+                    disabled={exportStatus === 'running'}
+                    className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                  >
+                    <option value="fast">极速（尽量无损，可能受关键帧影响）</option>
+                    <option value="accurate">精确（重编码，时间点更准确）</option>
+                  </select>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <div className="text-xs text-[var(--text-secondary)]">片段数</div>
+                  <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)]">
+                    {clips.length}
+                  </div>
+                </div>
+              </div>
+
+              {exportStatus !== 'idle' ? (
+                <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium text-[var(--text-primary)]">导出进度</div>
+                    <div className="text-xs text-[var(--text-secondary)]">{Math.round(exportProgress)}%</div>
+                  </div>
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-black/10">
+                    <div
+                      className="h-full bg-[var(--accent-color)]"
+                      style={{ width: `${Math.min(100, Math.max(0, exportProgress))}%` }}
+                    />
+                  </div>
+                  {exportMessage ? <div className="mt-2 text-xs text-[var(--text-secondary)]">{exportMessage}</div> : null}
+                  {exportOutputPath ? (
+                    <div className="mt-1 break-all text-[11px] text-[var(--text-tertiary)]">输出：{exportOutputPath}</div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {!isTauri ? (
+                <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-4 text-sm text-[var(--text-secondary)]">
+                  当前环境不是桌面端，无法导出成片。
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-[var(--border-color)] px-5 py-3">
+              <Button variant="secondary" onClick={() => setExportOpen(false)} disabled={exportStatus === 'running'}>
+                取消
+              </Button>
+              {exportStatus === 'running' ? (
+                <Button variant="secondary" className="text-red-500" onClick={() => void cancelExport()}>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  取消导出
+                </Button>
+              ) : (
+                <Button onClick={() => void startExportFinalVideo()} disabled={!clips.length}>
+                  <Film className="mr-2 h-4 w-4" />
+                  选择保存位置并开始
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

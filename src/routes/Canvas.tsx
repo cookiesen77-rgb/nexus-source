@@ -24,7 +24,6 @@ import DownloadModal from '@/components/canvas/DownloadModal'
 import HistoryPanel from '@/components/canvas/HistoryPanel'
 import PromptLibraryModal from '@/components/canvas/PromptLibraryModal'
 import WorkflowTemplatesModal from '@/components/canvas/WorkflowTemplatesModal'
-import ShortDramaStudioModal from '@/components/canvas/ShortDramaStudioModal'
 import DirectorConsole from '@/components/canvas/DirectorConsole'
 import SketchEditor from '@/components/canvas/SketchEditor'
 import SonicStudio from '@/components/canvas/SonicStudio'
@@ -68,7 +67,6 @@ export default function Canvas() {
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false)
   const [workflowTemplatesOpen, setWorkflowTemplatesOpen] = useState(false)
-  const [shortDramaOpen, setShortDramaOpen] = useState(false)
   const [directorOpen, setDirectorOpen] = useState(false)
   const [sketchOpen, setSketchOpen] = useState(false)
   const [audioOpen, setAudioOpen] = useState(false)
@@ -78,21 +76,20 @@ export default function Canvas() {
   const [saveTemplateName, setSaveTemplateName] = useState('')
   const [saveTemplateDesc, setSaveTemplateDesc] = useState('')
   
-  // 支持从剪辑台返回时自动打开“短剧制作”工作台（并清理 URL 参数）
+  // 兼容：从剪辑台返回时自动打开“短剧制作”（已从 Modal 升级为全屏页面）
   useEffect(() => {
     const search = String(location.search || '')
     if (!search) return
     const sp = new URLSearchParams(search)
     const open = String(sp.get('openShortDrama') || '').trim()
     if (open !== '1' && open.toLowerCase() !== 'true') return
-
-    setShortDramaOpen(true)
+    const pid = String(id || '').trim() || 'default'
 
     sp.delete('openShortDrama')
     const next = sp.toString()
-    const nextUrl = `${location.pathname}${next ? `?${next}` : ''}`
-    nav(nextUrl, { replace: true })
-  }, [location.pathname, location.search, nav])
+    const target = `/short-drama/${pid}${next ? `?${next}` : ''}`
+    nav(target, { replace: true })
+  }, [id, location.search, nav])
 
   // 右键菜单状态（画布空白处）
   const [canvasContextMenu, setCanvasContextMenu] = useState<{
@@ -1518,7 +1515,7 @@ export default function Canvas() {
               canUndo={canUndo}
               canRedo={canRedo}
               onOpenWorkflow={() => setWorkflowTemplatesOpen(true)}
-              onOpenShortDrama={() => setShortDramaOpen(true)}
+              onOpenShortDrama={() => nav(`/short-drama/${String(projectId || '').trim() || 'default'}`)}
               onOpenDirector={() => setDirectorOpen(true)}
               onOpenSketch={() => setSketchOpen(true)}
               onOpenAudio={() => setAudioOpen(true)}
@@ -1617,11 +1614,6 @@ export default function Canvas() {
         }}
       />
 
-      <ShortDramaStudioModal
-        open={shortDramaOpen}
-        onClose={() => setShortDramaOpen(false)}
-      />
-      
       <DirectorConsole
         open={directorOpen}
         onClose={() => setDirectorOpen(false)}

@@ -49,6 +49,40 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Prepare FFmpeg sidecar (macOS Intel)
+        if: matrix.name == 'macOS-Intel'
+        run: |
+          mkdir -p src-tauri/binaries
+          curl -L --retry 3 --retry-delay 2 -o ffmpeg.zip "https://ffmpeg.martin-riedl.de/download/macos/amd64/1767299902_N-122320-g38e89fe502/ffmpeg.zip"
+          rm -rf ffmpeg-bin && mkdir -p ffmpeg-bin
+          unzip -q ffmpeg.zip -d ffmpeg-bin
+          mv ffmpeg-bin/ffmpeg "src-tauri/binaries/ffmpeg-x86_64-apple-darwin"
+          chmod +x "src-tauri/binaries/ffmpeg-x86_64-apple-darwin"
+
+      - name: Prepare FFmpeg sidecar (macOS ARM)
+        if: matrix.name == 'macOS-ARM'
+        run: |
+          mkdir -p src-tauri/binaries
+          curl -L --retry 3 --retry-delay 2 -o ffmpeg.zip "https://ffmpeg.martin-riedl.de/download/macos/arm64/1769883472_N-122609-g364d5dda91/ffmpeg.zip"
+          rm -rf ffmpeg-bin && mkdir -p ffmpeg-bin
+          unzip -q ffmpeg.zip -d ffmpeg-bin
+          mv ffmpeg-bin/ffmpeg "src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+          chmod +x "src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
+
+      - name: Prepare FFmpeg sidecar (Windows)
+        if: matrix.name == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri\binaries | Out-Null
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          $zip = "ffmpeg.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          if (Test-Path ffmpeg-bin) { Remove-Item ffmpeg-bin -Recurse -Force }
+          Expand-Archive -Path $zip -DestinationPath ffmpeg-bin -Force
+          $ff = Get-ChildItem -Path ffmpeg-bin -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ff) { throw "ffmpeg.exe not found in zip" }
+          Copy-Item $ff.FullName -Destination src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe -Force
+
       - name: Build Tauri app
         run: npm run tauri build -- ${{ matrix.args }}
 
@@ -134,15 +168,13 @@ jobs:
             - **Windows**: `Nexus_${{ steps.version.outputs.version }}_x64-setup.exe` / `.msi`
             
             ### 本次更新（重点）
+            - 短剧制作：全屏工作台（路由化），自动/手动双模式
+            - 自动模式：默认模型可选；一致性流水线优化（先角色/场景参考 → 再首/尾关键帧 → 再视频）
+            - 工作台：图片/视频一键预览；返回/切换路由不丢版本
+            - 剪辑台：进入即预览（无需先点播放）；导出工程/导出成片（FFmpeg sidecar）；返回前强制保存
+            - 历史素材：画布/短剧/剪辑台产物全链路同步
             - 仅使用云雾官方图床（imageproxy）上传垫图
-            - Grok 在 Tauri 下遇到“官方负载过大”时增加退避重试
-            - Windows/Tauri：图片缓存失败时自动兜底下载为 dataURL，避免生成成功但画布不显示
-            - Tauri 生图回写加速：非鉴权公网图片不再等待缓存/落库，先回写 url，落库在后台进行
-            - 参考图顺序调整立即生效，并同步图片节点的“参考图1/2”标识（兼容旧画布缺失 imageOrder）
-            - 新增“生成加速模式”：稳定/平衡/极速；极速模式下图片/视频优先直链回写，失败再缓存兜底
-            - 新增绘画模型：豆包 Seedream 4.5（`doubao-seedream-4-5-251128`），按云雾文档适配请求字段（支持 1K/2K/4K 或像素尺寸；可接 1 张参考图 http URL）
-            - 下线视频模型 `veo_3_1-fast-components-4K`（旧工程自动迁移到 `veo3.1-fast-components`）
-            - 剪辑台：新增“导出工程（JSON）”与“下载片段”按钮（Tauri/Web 通用）
+            - 修复 Veo 3.1 Components（openai-video）size 参数不合法导致 400
             
             ### 获取 API Key
             访问 [nexusapi.cn](https://nexusapi.cn/) 获取 API Key

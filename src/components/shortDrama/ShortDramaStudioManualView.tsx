@@ -5,6 +5,8 @@ import { CHAT_MODELS, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MOD
 import * as modelsConfig from '@/config/models'
 import { useAssetsStore } from '@/store/assets'
 import { getMedia, saveMedia } from '@/lib/mediaStorage'
+import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
+import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
 import { generateShortDramaImage, generateShortDramaVideo } from '@/lib/shortDrama/generateMedia'
 import { buildEffectiveStyle, getShortDramaStylePresetById, SHORT_DRAMA_STYLE_PRESETS } from '@/lib/shortDrama/stylePresets'
 import {
@@ -14,13 +16,13 @@ import {
   setSlotSelectedVariant,
   updateVariantInSlot,
 } from '@/lib/shortDrama/draftOps'
-import { createEmptyImageSlot, createEmptyShot } from '@/lib/shortDrama/draftStorage'
+import { createEmptyImageSlot, createEmptyShot, saveShortDramaDraftV2 } from '@/lib/shortDrama/draftStorage'
 import { getShortDramaTaskQueue } from '@/lib/shortDrama/taskQueue'
 import ShortDramaMediaPickerModal, { type ShortDramaPickedImage } from '@/components/shortDrama/ShortDramaMediaPickerModal'
 import type { ShortDramaDraftV2, ShortDramaMediaSlot, ShortDramaMediaVariant } from '@/lib/shortDrama/types'
-import type { ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
+import { saveShortDramaPrefs, type ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
 import { cn } from '@/lib/utils'
-import { Check, Image as ImageIcon, Loader2, Plus, Trash2, Upload, Video as VideoIcon } from 'lucide-react'
+import { Check, Eye, Image as ImageIcon, Loader2, Plus, Trash2, Upload, Video as VideoIcon } from 'lucide-react'
 
 interface Props {
   projectId: string
@@ -33,6 +35,9 @@ interface Props {
 const SUPPORTED_VIDEO_FORMATS = new Set<string>(['sora-unified', 'veo-unified', 'kling-video', 'unified-video'])
 
 const makeId = () => globalThis.crypto?.randomUUID?.() || `sd_${Date.now()}_${Math.random().toString(16).slice(2)}`
+
+// 检测 Tauri 环境（用于更稳定的视频预览/导出等能力）
+const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
 const readFileAsDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -110,11 +115,13 @@ function SlotVersions({
   slot,
   onAdopt,
   onRemove,
+  onPreview,
   disabled,
 }: {
   slot: ShortDramaMediaSlot
   onAdopt: (variantId: string) => void
   onRemove: (variantId: string) => void
+  onPreview?: (variant: ShortDramaMediaVariant) => void
   disabled?: boolean
 }) {
   if (!slot.variants || slot.variants.length === 0) {
@@ -127,9 +134,18 @@ function SlotVersions({
         .reverse()
         .map((v) => {
           const adopted = slot.selectedVariantId === v.id
+          const canPreview = !!onPreview && v.status === 'success'
           return (
             <div key={v.id} className="flex items-center gap-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-2">
-              <VariantThumb variant={v} />
+              <button
+                type="button"
+                className={cn('shrink-0', canPreview ? 'cursor-pointer' : 'cursor-default')}
+                onClick={() => (canPreview ? onPreview?.(v) : undefined)}
+                disabled={!canPreview || disabled}
+                title={canPreview ? '预览' : undefined}
+              >
+                <VariantThumb variant={v} />
+              </button>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <div className="truncate text-xs font-medium text-[var(--text-primary)]">
@@ -142,6 +158,16 @@ function SlotVersions({
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!canPreview || disabled}
+                  onClick={() => onPreview?.(v)}
+                  className="h-8 w-8 px-0"
+                  title="预览"
+                >
+                  <Eye className="h-4 w-4" />
+                </Button>
                 <Button size="sm" variant="ghost" disabled={disabled || adopted || v.status !== 'success'} onClick={() => onAdopt(v.id)}>
                   <Check className="mr-1 h-4 w-4" />
                   采用
@@ -160,6 +186,11 @@ function SlotVersions({
 
 export default function ShortDramaStudioManualView({ projectId, draft, setDraft, prefs, setPrefs }: Props) {
   const navigate = useNavigate()
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [previewType, setPreviewType] = useState<'image' | 'video'>('image')
+  const [previewBusy, setPreviewBusy] = useState(false)
+
   const [busySlotIds, setBusySlotIds] = useState<Record<string, boolean>>({})
   const busySlotsRef = useRef(busySlotIds)
   busySlotsRef.current = busySlotIds
@@ -174,6 +205,52 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
       analysisConcurrency: 1,
     })
   }, [queue, prefs.imageConcurrency, prefs.videoConcurrency])
+
+  const resolveVariantPreviewUrl = useCallback(async (variant: ShortDramaMediaVariant | undefined): Promise<string> => {
+    if (!variant) return ''
+    const display = String(variant.displayUrl || '').trim()
+    if (display) return display
+    if (variant.mediaId) {
+      try {
+        const rec = await getMedia(variant.mediaId)
+        const dataUrl = String(rec?.data || '').trim()
+        if (dataUrl) return dataUrl
+      } catch {
+        // ignore
+      }
+    }
+    return String(variant.sourceUrl || '').trim()
+  }, [])
+
+  const openPreview = useCallback(
+    async (variant: ShortDramaMediaVariant | undefined) => {
+      if (!variant) return
+      if (variant.status !== 'success') return
+      if (previewBusy) return
+      setPreviewBusy(true)
+      try {
+        let url = await resolveVariantPreviewUrl(variant)
+        if (!url) throw new Error('暂无可预览的地址')
+
+        if (variant.kind === 'video' && isTauri) {
+          const isAlreadyLocal = url.startsWith('asset://') || url.startsWith('data:') || url.startsWith('blob:')
+          if (!isAlreadyLocal) {
+            const cached = await resolveCachedMediaUrl(url)
+            if (cached?.displayUrl) url = cached.displayUrl
+          }
+        }
+
+        setPreviewType(variant.kind === 'video' ? 'video' : 'image')
+        setPreviewUrl(url)
+        setPreviewOpen(true)
+      } catch (err: any) {
+        window.$message?.error?.(err?.message || '预览失败')
+      } finally {
+        setPreviewBusy(false)
+      }
+    },
+    [previewBusy, resolveVariantPreviewUrl]
+  )
 
   type PickerTarget =
     | { kind: 'character_refs'; characterId: string }
@@ -542,6 +619,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
         const displayUrl = String(result.displayUrl || '').trim()
         const sourceUrl = String(result.imageUrl || '').trim()
+        const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : ''
         let mediaId: string | undefined
         if (displayUrl.startsWith('data:')) {
           mediaId = await saveMedia({
@@ -549,7 +627,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
             projectId,
             type: 'image',
             data: displayUrl,
-            sourceUrl: sourceUrl && sourceUrl !== displayUrl ? sourceUrl : undefined,
+            sourceUrl: safeSourceUrl && safeSourceUrl !== displayUrl ? safeSourceUrl : undefined,
             model: draft.models.imageModelKey,
           })
         }
@@ -557,12 +635,24 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
         setDraft((prev) =>
           updateVariantInSlot(prev, slotId, running.id, {
             status: 'success',
-            sourceUrl: sourceUrl || undefined,
+            sourceUrl: safeSourceUrl || undefined,
             displayUrl: mediaId ? '' : displayUrl || undefined,
             localPath: result.localPath || '',
             mediaId,
           })
         )
+
+        // 同步到历史素材（角色设定图）
+        try {
+          useAssetsStore.getState().addAsset({
+            type: 'image',
+            src: displayUrl || safeSourceUrl,
+            title: `${String(c.name || '角色').trim()} · 设定图`.slice(0, 80),
+            model: draft.models.imageModelKey,
+          })
+        } catch {
+          // ignore
+        }
         window.$message?.success?.('角色设定图已生成（新增版本）')
       } catch (err: any) {
         const msg = err instanceof Error ? err.message : String(err || '生成失败')
@@ -618,6 +708,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
         // Always persist generated data urls into IndexedDB to avoid bloating localStorage.
         const displayUrl = String(result.displayUrl || '').trim()
         const sourceUrl = String(result.imageUrl || '').trim()
+        const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : ''
         let mediaId: string | undefined
         if (displayUrl.startsWith('data:')) {
           mediaId = await saveMedia({
@@ -625,7 +716,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
             projectId,
             type: 'image',
             data: displayUrl,
-            sourceUrl: sourceUrl && sourceUrl !== displayUrl ? sourceUrl : undefined,
+            sourceUrl: safeSourceUrl && safeSourceUrl !== displayUrl ? safeSourceUrl : undefined,
             model: draft.models.imageModelKey,
           })
         }
@@ -633,7 +724,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
         setDraft((prev) =>
           updateVariantInSlot(prev, slotId, running.id, {
             status: 'success',
-            sourceUrl: sourceUrl || undefined,
+            sourceUrl: safeSourceUrl || undefined,
             displayUrl: mediaId ? '' : displayUrl || undefined,
             localPath: result.localPath || '',
             mediaId,
@@ -642,7 +733,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
         useAssetsStore.getState().addAsset({
           type: 'image',
-          src: mediaId ? displayUrl : displayUrl,
+          src: displayUrl || safeSourceUrl,
           title: `${shot.title || '镜头'} · ${role === 'start' ? '首帧' : '尾帧'}`.slice(0, 80),
           model: draft.models.imageModelKey,
         })
@@ -1265,6 +1356,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                           slot={c.sheet}
                           onAdopt={(vid) => adoptVariant(c.sheet.id, vid)}
                           onRemove={(vid) => removeVariant(c.sheet.id, vid)}
+                          onPreview={(v) => void openPreview(v)}
                           disabled={!!busySlotsRef.current[c.sheet.id]}
                         />
                       </div>
@@ -1399,6 +1491,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                                   slot={slot}
                                   onAdopt={(vid) => adoptVariant(slot.id, vid)}
                                   onRemove={(vid) => removeVariant(slot.id, vid)}
+                                  onPreview={(v) => void openPreview(v)}
                                   disabled={!!busySlotsRef.current[slot.id]}
                                 />
                               </div>
@@ -1478,7 +1571,9 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                       </div>
                       {selected ? (
                         <div className="mt-2">
-                          <VariantThumb variant={selected} className="h-24 w-full" />
+                          <button type="button" className="w-full" onClick={() => void openPreview(selected)} disabled={previewBusy} title="预览">
+                            <VariantThumb variant={selected} className="h-24 w-full" />
+                          </button>
                         </div>
                       ) : null}
                       <div className="mt-2">
@@ -1486,6 +1581,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                           slot={slot}
                           onAdopt={(vid) => adoptVariant(slot.id, vid)}
                           onRemove={(vid) => removeVariant(slot.id, vid)}
+                          onPreview={(v) => void openPreview(v)}
                           disabled={!!busySlotsRef.current[slot.id]}
                         />
                       </div>
@@ -1610,6 +1706,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                                 slot={refSlot}
                                 onAdopt={(vid) => adoptVariant(refSlot.id, vid)}
                                 onRemove={(vid) => removeVariant(refSlot.id, vid)}
+                                onPreview={(v) => void openPreview(v)}
                                 disabled={!!busySlotsRef.current[refSlot.id]}
                               />
                             </div>
@@ -1811,7 +1908,9 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                     </div>
                     {startSelected ? (
                       <div className="mt-2">
-                        <VariantThumb variant={startSelected} className="h-28 w-full" />
+                        <button type="button" className="w-full" onClick={() => void openPreview(startSelected)} disabled={previewBusy} title="预览">
+                          <VariantThumb variant={startSelected} className="h-28 w-full" />
+                        </button>
                       </div>
                     ) : null}
                     <div className="mt-2">
@@ -1819,6 +1918,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                         slot={startSlot}
                         onAdopt={(vid) => adoptVariant(startSlot.id, vid)}
                         onRemove={(vid) => removeVariant(startSlot.id, vid)}
+                        onPreview={(v) => void openPreview(v)}
                         disabled={startBusy}
                       />
                     </div>
@@ -1877,7 +1977,9 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                     </div>
                     {endSelected ? (
                       <div className="mt-2">
-                        <VariantThumb variant={endSelected} className="h-28 w-full" />
+                        <button type="button" className="w-full" onClick={() => void openPreview(endSelected)} disabled={previewBusy} title="预览">
+                          <VariantThumb variant={endSelected} className="h-28 w-full" />
+                        </button>
                       </div>
                     ) : null}
                     <div className="mt-2">
@@ -1885,6 +1987,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                         slot={endSlot}
                         onAdopt={(vid) => adoptVariant(endSlot.id, vid)}
                         onRemove={(vid) => removeVariant(endSlot.id, vid)}
+                        onPreview={(v) => void openPreview(v)}
                         disabled={endBusy}
                       />
                     </div>
@@ -1911,7 +2014,20 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                         size="sm"
                         variant="ghost"
                         disabled={!videoSelected || videoSelected.status !== 'success'}
-                        onClick={() => navigate(`/edit/${projectId}?shotId=${shot.id}&videoVariantId=${videoSelected?.id || ''}`)}
+                        onClick={() => {
+                          // 跳转前强制落盘（避免 debounced 保存窗口导致“返回后版本消失”）
+                          try {
+                            void saveShortDramaDraftV2(projectId, draft)
+                          } catch {
+                            // ignore
+                          }
+                          try {
+                            void saveShortDramaPrefs(projectId, prefs)
+                          } catch {
+                            // ignore
+                          }
+                          navigate(`/edit/${projectId}?shotId=${shot.id}&videoVariantId=${videoSelected?.id || ''}`)
+                        }}
                       >
                         进入剪辑台
                       </Button>
@@ -1928,7 +2044,9 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                   </div>
                   {videoSelected ? (
                     <div className="mt-2">
-                      <VariantThumb variant={videoSelected} className="h-40 w-full" />
+                      <button type="button" className="w-full" onClick={() => void openPreview(videoSelected)} disabled={previewBusy} title="预览">
+                        <VariantThumb variant={videoSelected} className="h-40 w-full" />
+                      </button>
                     </div>
                   ) : null}
                   <div className="mt-2">
@@ -1936,6 +2054,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                       slot={videoSlot}
                       onAdopt={(vid) => adoptVariant(videoSlot.id, vid)}
                       onRemove={(vid) => removeVariant(videoSlot.id, vid)}
+                      onPreview={(v) => void openPreview(v)}
                       disabled={videoBusy}
                     />
                   </div>
@@ -1963,6 +2082,8 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
           void handlePickedImages(items)
         }}
       />
+
+      <MediaPreviewModal open={previewOpen} url={previewUrl} type={previewType} onClose={() => setPreviewOpen(false)} />
     </>
   )
 }
