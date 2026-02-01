@@ -78,6 +78,24 @@ const backoffMs = (attempt: number) => {
   return Math.min(8000, base + jitter)
 }
 
+// 解析 Retry-After（秒或 HTTP-date），返回毫秒；无则返回 0
+const getRetryAfterMs = (res: Response) => {
+  try {
+    const raw = String(res?.headers?.get?.('retry-after') || '').trim()
+    if (!raw) return 0
+    const secs = Number(raw)
+    if (Number.isFinite(secs) && secs > 0) return Math.min(60000, Math.round(secs * 1000))
+    const ts = Date.parse(raw)
+    if (!Number.isNaN(ts)) {
+      const ms = ts - Date.now()
+      if (ms > 0) return Math.min(60000, ms)
+    }
+    return 0
+  } catch {
+    return 0
+  }
+}
+
 // 502 Bad Gateway 专用退避：更长的等待时间（服务器过载常见）
 const get502BackoffMs = (attempt: number) => {
   const base = 2000 * Math.pow(2, Math.max(0, attempt)) // 2s, 4s, 8s...
@@ -293,7 +311,9 @@ export const postJson = async <T,>(endpoint: string, body: any, opts?: { authMod
       const shouldRetry = attempt < maxRetries && isRetryableStatus(res.status)
       if (shouldRetry) {
         // 502 Bad Gateway 使用更长的退避时间
-        const wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        let wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        const retryAfter = getRetryAfterMs(res)
+        if (retryAfter > 0) wait = Math.max(wait, retryAfter)
         console.warn('[postJson] 可重试失败，准备重试:', { 
           status: res.status, 
           attempt: attempt + 1, 
@@ -412,7 +432,9 @@ export const postFormData = async <T,>(endpoint: string, body: FormData, opts?: 
       const shouldRetry = attempt < maxRetries && isRetryableStatus(res.status)
       if (shouldRetry) {
         // 502 Bad Gateway 使用更长的退避时间
-        const wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        let wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        const retryAfter = getRetryAfterMs(res)
+        if (retryAfter > 0) wait = Math.max(wait, retryAfter)
         console.warn('[postFormData] 可重试失败，准备重试:', { 
           status: res.status, 
           attempt: attempt + 1, 
@@ -521,7 +543,9 @@ export const getJson = async <T,>(endpoint: string, query?: Record<string, any>,
       const shouldRetry = attempt < maxRetries && isRetryableStatus(res.status)
       if (shouldRetry) {
         // 502 Bad Gateway 使用更长的退避时间
-        const wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        let wait = res.status === 502 ? get502BackoffMs(attempt) : backoffMs(attempt)
+        const retryAfter = getRetryAfterMs(res)
+        if (retryAfter > 0) wait = Math.max(wait, retryAfter)
         console.warn('[getJson] 可重试失败，准备重试:', { 
           url: url.slice(0, 100), 
           status: res.status, 

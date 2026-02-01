@@ -665,7 +665,9 @@ const findConnectedOutputVideoNode = (configId: string) => {
 
 const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNodeId?: string) => {
   const maxAttempts = 300  // 增加到 300 次（15 分钟）
-  const interval = 3000    // 3 秒间隔
+  // 轮询间隔：极速模式更快拿到完成态；稳定模式更保守减少 429/过载
+  const perfMode = useSettingsStore.getState().performanceMode || 'off'
+  const interval = perfMode === 'ultra' ? 2000 : perfMode === 'normal' ? 3000 : 3500
   const maxConsecutiveErrors = 10 // 连续错误次数限制
   
   console.log('[pollVideoTask] 开始轮询, 任务 ID:', id, 'nodeId:', nodeId, '最大尝试:', maxAttempts)
@@ -1098,10 +1100,12 @@ export const generateVideoFromConfigNode = async (
       const finalDuration = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 8)
       payload.duration = finalDuration
       console.log('[generateVideo] veo-unified duration:', { userSelected: duration, final: finalDuration })
+      const perfMode = useSettingsStore.getState().performanceMode || 'off'
+      const forceFast = perfMode === 'ultra'
       const ep = modelCfg.defaultParams?.enhancePrompt
-      if (typeof ep === 'boolean') payload.enhance_prompt = ep
+      if (typeof ep === 'boolean') payload.enhance_prompt = forceFast ? false : ep
       const up = modelCfg.defaultParams?.enableUpsample
-      if (typeof up === 'boolean') payload.enable_upsample = up
+      if (typeof up === 'boolean') payload.enable_upsample = forceFast ? false : up
     } else if (modelCfg.format === 'sora-unified') {
       const orientation = ratio === '9:16' ? 'portrait' : 'landscape'
       const size = overrides?.size || d.size || modelCfg.defaultParams?.size || 'large'
@@ -1756,6 +1760,51 @@ export const generateVideoFromConfigNode = async (
     console.log('[generateVideo] 获取到视频 URL:', videoUrl?.slice(0, 100))
 
     // 4. 成功：更新视频节点
+    const perfMode = useSettingsStore.getState().performanceMode || 'off'
+    const preferFastWriteback = isTauriEnv && perfMode === 'ultra'
+
+    // Tauri 极速模式：先回写远程 URL（结束 loading），缓存/下载在后台进行
+    if (preferFastWriteback && isHttpUrl(videoUrl)) {
+      const latestStore = useGraphStore.getState()
+      try {
+        latestStore.updateNode(videoNodeId, {
+          data: {
+            url: videoUrl,
+            sourceUrl: videoUrl,
+            loading: false,
+            error: '',
+            label: '视频',
+            model: modelKey,
+            updatedAt: Date.now()
+          }
+        } as any)
+      } catch {
+        // ignore
+      }
+
+      void (async () => {
+        try {
+          const cached = await resolveCachedMediaUrl(videoUrl) as { displayUrl: string; localPath: string; error?: string }
+          const storeNow = useGraphStore.getState()
+          const stillExists = storeNow.nodes.some((n) => n.id === videoNodeId)
+          if (!stillExists) return
+          const nextUrl = String(cached.displayUrl || '').trim()
+          if (nextUrl && nextUrl !== videoUrl) {
+            storeNow.updateNode(videoNodeId, {
+              data: { url: nextUrl, localPath: cached.localPath, sourceUrl: videoUrl, loading: false, error: '', updatedAt: Date.now() }
+            } as any)
+          }
+        } catch {
+          // ignore
+        }
+      })()
+
+      if (selectOutput) latestStore.setSelected(videoNodeId)
+      if (markConfigExecuted) latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: videoNodeId } } as any)
+      errorStage = 'finalize'
+      return
+    }
+
     const cached = await resolveCachedMediaUrl(videoUrl) as { displayUrl: string; localPath: string; error?: string }
     const latestStore = useGraphStore.getState()
     const displayUrl = cached.displayUrl

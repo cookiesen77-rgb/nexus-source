@@ -12,6 +12,7 @@ import { Trash2, Download, Expand, Loader2, Copy, ImageIcon, Crop, Eye, Video, R
 import { useGraphStore } from '@/graph/store'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
 import { downloadFile } from '@/lib/download'
+import { cacheMedia } from '@/lib/workflow/cache'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import { useInView } from '@/hooks/useInView'
 import ImageCropModal from '@/components/canvas/ImageCropModal'
@@ -38,6 +39,7 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   const [cropModalOpen, setCropModalOpen] = useState(false)
   const [previewModalOpen, setPreviewModalOpen] = useState(false)
   const persistAttemptedRef = React.useRef<string>('')
+  const loadErrorFallbackRef = React.useRef<string>('')
   
   // 计算此图片作为参考图时的序号
   const [refIndex, setRefIndex] = useState<number | null>(null)
@@ -181,6 +183,11 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     
     loadMedia()
   }, [id, nodeData?.url, nodeData?.mediaId, nodeData?.sourceUrl, nodeData?.loading, nodeData?.error, inView])
+
+  // 当 sourceUrl 变化时，允许重新触发一次“直链失败 -> 缓存兜底”
+  useEffect(() => {
+    loadErrorFallbackRef.current = ''
+  }, [nodeData?.sourceUrl])
 
   // 若当前 url 为 dataURL/纯 base64 且尚未落库，则写入 IndexedDB 并写回 mediaId（跨重启）
   useEffect(() => {
@@ -563,8 +570,42 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
               loading="lazy"
               onError={() => {
                 try {
-                  // 当 URL 无效或图片加载失败时，给出明确错误提示，避免用户误以为“没有呈现在画布上”
-                  useGraphStore.getState().updateNode(id, { data: { loading: false, error: '图片加载失败（URL 无效或已过期）' } } as any)
+                  const store = useGraphStore.getState()
+                  const cur = store.nodes.find((n) => n.id === id)
+                  const curUrl = String((cur?.data as any)?.url || '').trim()
+                  const sourceUrl = String((cur?.data as any)?.sourceUrl || '').trim()
+
+                  // Tauri：优先直链（最快），若直链失败再走缓存兜底（可携带 Bearer 下载）
+                  if (
+                    isTauri &&
+                    sourceUrl &&
+                    /^https?:\/\//i.test(sourceUrl) &&
+                    loadErrorFallbackRef.current !== sourceUrl
+                  ) {
+                    loadErrorFallbackRef.current = sourceUrl
+                    void (async () => {
+                      try {
+                        const cached = await cacheMedia(sourceUrl, 'general', { forceRefresh: true })
+                        const nextUrl = String(cached.displayUrl || '').trim()
+                        if (nextUrl && nextUrl !== curUrl) {
+                          useGraphStore.getState().updateNode(id, {
+                            data: { url: nextUrl, localPath: cached.localPath, error: '' }
+                          } as any)
+                          return
+                        }
+                      } catch {
+                        // ignore
+                      }
+                      // 当 URL 无效或图片加载失败时，给出明确错误提示，避免用户误以为“没有呈现在画布上”
+                      useGraphStore.getState().updateNode(id, {
+                        data: { loading: false, error: '图片加载失败（URL 无效或已过期）' }
+                      } as any)
+                    })()
+                    return
+                  }
+
+                  // 非 Tauri / 已兜底过：直接报错
+                  store.updateNode(id, { data: { loading: false, error: '图片加载失败（URL 无效或已过期）' } } as any)
                 } catch {
                   // ignore
                 }

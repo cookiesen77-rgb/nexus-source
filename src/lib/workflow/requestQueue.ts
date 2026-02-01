@@ -29,6 +29,8 @@ export interface QueueStats {
   total: number
 }
 
+type PerformanceMode = 'off' | 'normal' | 'ultra'
+
 type TaskExecutor = (task: QueueTask) => Promise<any>
 
 interface QueueConfig {
@@ -402,6 +404,33 @@ export const requestQueue = new RequestQueue({
   maxConcurrency: 3,
   defaultPriority: 10
 })
+
+// 将“生成性能模式”映射到并发数（更快 vs 更稳）
+const concurrencyByPerformanceMode = (mode: PerformanceMode) => {
+  if (mode === 'ultra') return 5
+  if (mode === 'normal') return 3
+  return 2
+}
+
+// 自动跟随 Settings 的 performanceMode 调整并发（不影响历史素材缩略图的独立 performanceMode）
+try {
+  // 动态 import 避免在纯 Node 环境/测试环境下报错
+  // eslint-disable-next-line @typescript-eslint/no-floating-promises
+  ;(async () => {
+    const mod = await import('@/store/settings')
+    const useSettingsStore = (mod as any)?.useSettingsStore
+    if (!useSettingsStore?.getState || !useSettingsStore?.subscribe) return
+    const cur = String(useSettingsStore.getState().performanceMode || 'off') as PerformanceMode
+    requestQueue.setMaxConcurrency(concurrencyByPerformanceMode(cur))
+    useSettingsStore.subscribe((state: any, prev: any) => {
+      const next = String(state?.performanceMode || 'off') as PerformanceMode
+      const prevMode = String(prev?.performanceMode || 'off') as PerformanceMode
+      if (next !== prevMode) requestQueue.setMaxConcurrency(concurrencyByPerformanceMode(next))
+    })
+  })()
+} catch {
+  // ignore
+}
 
 // 便捷函数
 export const enqueueTask = requestQueue.enqueue.bind(requestQueue)

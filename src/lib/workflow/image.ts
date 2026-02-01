@@ -505,9 +505,12 @@ export const generateImageFromConfigNode = async (
     }
 
     // 5. 成功：更新图片节点
-    // 快速回写：对于非鉴权公网图片，先把 URL 写回画布，避免后续缓存/落库阻塞“出图”
     const latestStore = useGraphStore.getState()
-    if (isHttpUrl(imageUrl) && !/nexusapi\.cn/i.test(imageUrl)) {
+    const perfMode = useSettingsStore.getState().performanceMode || 'off'
+    const preferFastWriteback = isTauri && perfMode === 'ultra'
+
+    // Tauri 极速模式：先回写 URL（让画布立刻结束 loading），缓存/落库改为后台进行
+    if (preferFastWriteback && isHttpUrl(imageUrl)) {
       try {
         latestStore.updateNode(imageNodeId, {
           data: {
@@ -523,6 +526,59 @@ export const generateImageFromConfigNode = async (
       } catch {
         // ignore
       }
+
+      // 后台：解析为可渲染的本地路径/dataURL（需要鉴权时）并写回
+      void (async () => {
+        try {
+          const cacheT1 = Date.now()
+          const cached = await resolveCachedImageUrl(imageUrl)
+          console.log('[generateImage] resolveCachedImageUrl 耗时(ms):', Date.now() - cacheT1, '总耗时(ms):', Date.now() - t0)
+
+          const storeNow = useGraphStore.getState()
+          const stillExists = storeNow.nodes.some((n) => n.id === imageNodeId)
+          if (!stillExists) return
+
+          const displayUrl = cached.displayUrl
+          if (displayUrl && displayUrl !== imageUrl) {
+            storeNow.updateNode(imageNodeId, {
+              data: {
+                url: displayUrl,
+                localPath: cached.localPath,
+                sourceUrl: imageUrl,
+                loading: false,
+                error: '',
+                updatedAt: Date.now()
+              }
+            } as any)
+          }
+
+          // 极速模式：避免后台再“二次下载 -> base64 转存”，防止与前台 <img> 争抢带宽
+          // 如需跨重启持久化，可切到“平衡/稳定”模式
+        } catch {
+          // ignore
+        }
+      })()
+
+      // 选中新创建的图片节点
+      if (selectOutput) {
+        latestStore.setSelected(imageNodeId)
+      }
+      // 同步到历史素材（先用原始 URL；若后续缓存成功会更新节点 url，但历史不强制回写）
+      try {
+        useAssetsStore.getState().addAsset({
+          type: 'image',
+          src: imageUrl,
+          title: prompt?.slice(0, 50) || '画布生成',
+          model: modelKey
+        })
+      } catch {
+        // ignore
+      }
+      // 标记配置节点已执行
+      if (markConfigExecuted) {
+        latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: imageNodeId } } as any)
+      }
+      return
     }
 
     const cacheT1 = Date.now()

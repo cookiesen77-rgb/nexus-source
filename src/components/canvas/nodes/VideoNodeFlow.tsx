@@ -11,6 +11,7 @@ import { Trash2, Copy, Expand, Video, Image, Eye, Download, X, RefreshCw } from 
 import { useGraphStore } from '@/graph/store'
 import { getMedia, getMediaByNodeId, saveMedia } from '@/lib/mediaStorage'
 import { downloadFile } from '@/lib/download'
+import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
 import { useInView } from '@/hooks/useInView'
 import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
 
@@ -44,6 +45,7 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
   const [corsMode, setCorsMode] = useState<'anonymous' | 'none'>('anonymous')
   const videoRef = useRef<HTMLVideoElement>(null)
   const persistAttemptedRef = useRef<string>('')
+  const loadErrorFallbackRef = useRef<string>('')
   
   // 懒加载：只有节点进入可视区域时才加载视频
   const { ref: inViewRef, inView } = useInView({
@@ -57,6 +59,7 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
   useEffect(() => {
     setVideoError('')
     setCorsMode('anonymous')
+    loadErrorFallbackRef.current = ''
   }, [displayUrl])
 
   // 如果没有 url，尝试从 IndexedDB 或 sourceUrl 恢复
@@ -424,8 +427,30 @@ export const VideoNodeComponent = memo(function VideoNode({ id, data, selected }
       setCorsMode('none')
       return
     }
+    // Tauri：若直链播放失败，尝试用 cache_remote_media 下载到本地后再播放
+    const sourceUrl = String(nodeData?.sourceUrl || '').trim()
+    if (isTauri && sourceUrl && /^https?:\/\//i.test(sourceUrl) && loadErrorFallbackRef.current !== sourceUrl) {
+      loadErrorFallbackRef.current = sourceUrl
+      void (async () => {
+        try {
+          const cached = await resolveCachedMediaUrl(sourceUrl)
+          const nextUrl = String(cached.displayUrl || '').trim()
+          if (nextUrl && nextUrl !== url) {
+            useGraphStore.getState().updateNode(id, {
+              data: { url: nextUrl, localPath: cached.localPath, error: '', loading: false }
+            } as any)
+            setVideoError('')
+            return
+          }
+        } catch {
+          // ignore
+        }
+        setVideoError('视频加载失败')
+      })()
+      return
+    }
     setVideoError('视频加载失败')
-  }, [corsMode, displayUrl])
+  }, [corsMode, displayUrl, id, nodeData?.sourceUrl])
 
   return (
     // ref 用于懒加载检测

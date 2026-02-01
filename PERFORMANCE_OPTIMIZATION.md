@@ -1,5 +1,26 @@
 # Nexus 性能优化计划
 
+## AI 生成链路（云雾 API）性能策略（2026-02-01）
+
+本节关注“生成完成后尽快回写到画布显示”（TTFR），而不是模型侧的推理耗时。
+
+### 云雾视频统一格式关键字段
+
+- 创建视频：`POST /v1/video/create`
+  - 常用字段：`model`、`prompt`、`images[]`、`aspect_ratio`
+  - 性能相关开关：`enhance_prompt`、`enable_upsample`
+  - 任务返回：`{ id, status, status_update_time }`
+  - 参考：[创建视频（视频统一格式）](https://yunwu.apifox.cn/api-311044999)
+- 查询任务：`GET /v1/video/query`
+  - 关键字段：`status`、`video_url`、`status_update_time`、（可选）`enhanced_prompt`
+  - 参考：[查询任务（视频统一格式）](https://yunwu.apifox.cn/api-311081757)
+
+### TTFR 策略（Tauri 优先）
+
+1. **先回写 URL、再缓存/落库**：当拿到 `image_url/video_url` 后，先把节点 `loading=false` + `url=...` 写回画布，确保 UI 不因缓存/落库而“卡在生成中”。
+2. **直链优先，失败再缓存**：Tauri 下优先尝试直链展示；若 `<img>/<video>` 直链加载失败，再触发 `cache_remote_image/media` 下载到本地（或转 dataURL）作为兜底。
+3. **减少二次下载竞争**：极速模式下避免后台立即做“HTTP -> base64 转存”，防止与前台资源加载争抢带宽导致“看起来更慢”。
+
 ## 已完成的优化 (2026-01-23)
 
 ### 1. Culling 机制修复 - 解决节点消失问题

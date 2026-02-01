@@ -48,10 +48,22 @@ const blobToDataUrl = async (blob: Blob) => {
 const isLikelyAuthRequiredUrl = (url: string) => {
   const u = String(url || '').trim()
   if (!u) return false
-  // 主要：nexusapi.cn 域名资源通常需要 Authorization
-  if (/^https?:\/\/[^/]*nexusapi\.cn\b/i.test(u)) return true
-  // 兼容一些相对路径（已在上游被 absolutize）
+  // 相对路径：这些后端接口基本都需要 Authorization
   if (u.startsWith('/v1/') || u.startsWith('/v1beta') || u.startsWith('/kling') || u.startsWith('/tencent-vod')) return true
+
+  // 绝对 URL：仅把“接口路径”视为需要鉴权；静态/下载链接先按“可直链”处理（失败再走缓存兜底）
+  try {
+    const parsed = new URL(u)
+    const host = String(parsed.hostname || '').toLowerCase()
+    const path = String(parsed.pathname || '')
+    if (host.endsWith('nexusapi.cn')) {
+      if (path.startsWith('/v1/') || path.startsWith('/v1beta') || path.startsWith('/kling') || path.startsWith('/tencent-vod')) return true
+      return false
+    }
+  } catch {
+    // ignore
+  }
+
   return false
 }
 

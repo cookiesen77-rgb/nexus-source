@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { ExternalLink, KeyRound, Bot, RefreshCw, Plus, Trash2, Ban, Clock, Zap, ChevronDown, ChevronRight } from 'lucide-react'
 import { openExternal } from '@/lib/openExternal'
-import { useSettingsStore, AI_ASSISTANT_MODELS, RegenerateMode, BlacklistEntry, PauseEntry } from '@/store/settings'
+import { useSettingsStore, AI_ASSISTANT_MODELS, RegenerateMode, PerformanceMode, BlacklistEntry, PauseEntry } from '@/store/settings'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { getKeyStats } from '@/lib/workflow/keyManager'
@@ -46,6 +46,8 @@ export default function SettingsDialog({ open, onClose }: Props) {
   const setAiAssistantModel = useSettingsStore((s) => s.setAiAssistantModel)
   const regenerateMode = useSettingsStore((s) => s.regenerateMode)
   const setRegenerateMode = useSettingsStore((s) => s.setRegenerateMode)
+  const performanceMode = useSettingsStore((s) => s.performanceMode)
+  const setPerformanceMode = useSettingsStore((s) => s.setPerformanceMode)
   
   // 多 Key 管理
   const apiKeys = useSettingsStore((s) => s.apiKeys)
@@ -63,6 +65,7 @@ export default function SettingsDialog({ open, onClose }: Props) {
   const [draft, setDraft] = useState(apiKey)
   const [draftAiModel, setDraftAiModel] = useState(aiAssistantModel)
   const [draftRegenMode, setDraftRegenMode] = useState<RegenerateMode>(regenerateMode)
+  const [draftPerfMode, setDraftPerfMode] = useState<PerformanceMode>(performanceMode)
   
   // Key 管理 UI 状态
   const [newKeyDraft, setNewKeyDraft] = useState('')
@@ -74,7 +77,8 @@ export default function SettingsDialog({ open, onClose }: Props) {
     setDraft(apiKey)
     setDraftAiModel(aiAssistantModel)
     setDraftRegenMode(regenerateMode)
-  }, [apiKey, aiAssistantModel, regenerateMode])
+    setDraftPerfMode(performanceMode)
+  }, [apiKey, aiAssistantModel, regenerateMode, performanceMode])
   
   // 更新 Key 统计
   useEffect(() => {
@@ -97,6 +101,7 @@ export default function SettingsDialog({ open, onClose }: Props) {
     setApiKey(draft)
     setAiAssistantModel(draftAiModel)
     setRegenerateMode(draftRegenMode)
+    setPerformanceMode(draftPerfMode)
     onClose()
   }
 
@@ -350,6 +355,53 @@ export default function SettingsDialog({ open, onClose }: Props) {
               {draftRegenMode === 'create' 
                 ? '重新生成时创建新节点，原内容保留' 
                 : '重新生成时替换原节点内容，原内容保存到历史记录'}
+            </div>
+          </div>
+
+          {/* 生成加速模式（速度/稳定性） */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+              <Zap className="h-4 w-4" />
+              生成加速模式
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDraftPerfMode('off')}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition-colors ${
+                  draftPerfMode === 'off'
+                    ? 'border-[var(--accent-color)] bg-[var(--accent-color)]/10 text-[var(--accent-color)]'
+                    : 'border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:border-[var(--accent-color)]/50'
+                }`}
+              >
+                稳定
+              </button>
+              <button
+                onClick={() => setDraftPerfMode('normal')}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition-colors ${
+                  draftPerfMode === 'normal'
+                    ? 'border-[var(--accent-color)] bg-[var(--accent-color)]/10 text-[var(--accent-color)]'
+                    : 'border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:border-[var(--accent-color)]/50'
+                }`}
+              >
+                平衡
+              </button>
+              <button
+                onClick={() => setDraftPerfMode('ultra')}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition-colors ${
+                  draftPerfMode === 'ultra'
+                    ? 'border-[var(--accent-color)] bg-[var(--accent-color)]/10 text-[var(--accent-color)]'
+                    : 'border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:border-[var(--accent-color)]/50'
+                }`}
+              >
+                极速
+              </button>
+            </div>
+            <div className="text-xs text-[var(--text-tertiary)]">
+              {draftPerfMode === 'ultra'
+                ? '更快出图/出视频：优先直链回写，缓存/落库后台进行；并发更高（可能更容易触发上游限流）'
+                : draftPerfMode === 'normal'
+                  ? '默认推荐：速度与稳定性平衡'
+                  : '更稳：并发更低，适合网络不稳定/上游易过载时使用'}
             </div>
           </div>
 
