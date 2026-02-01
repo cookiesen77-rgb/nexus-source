@@ -714,8 +714,9 @@ export const generateImageFromConfigNode = async (
         }
 
         // 若返回的是 HTTP 图片 URL：最佳努力转存为 dataURL 写入 IndexedDB
+        // Web 环境经常会被第三方图床 CORS 限制；该转存主要用于 Tauri（绕过 CORS，且可跨重启持久化）
         // 该步骤可能涉及再次下载图片，不应阻塞画布渲染
-        if (isHttpUrl(displayUrl)) {
+        if (isTauri && isHttpUrl(displayUrl)) {
           const inline = await resolveImageToInlineData(displayUrl)
           if (inline?.data) {
             const dataUrl = toDataUrl(inline.data, inline.mimeType || 'image/png')
