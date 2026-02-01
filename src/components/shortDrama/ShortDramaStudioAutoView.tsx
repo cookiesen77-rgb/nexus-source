@@ -8,12 +8,14 @@ import { analyzeShortDramaScriptToDraftV2 } from '@/lib/shortDrama/ai'
 import { getShortDramaTaskQueue } from '@/lib/shortDrama/taskQueue'
 import { buildEffectiveStyle, getShortDramaStylePresetById, SHORT_DRAMA_STYLE_PRESETS } from '@/lib/shortDrama/stylePresets'
 import { generateShortDramaImage, generateShortDramaVideo } from '@/lib/shortDrama/generateMedia'
-import { appendVariantToSlot, removeVariantFromSlot, setSlotSelectionLocked, setSlotSelectedVariant, updateVariantInSlot } from '@/lib/shortDrama/draftOps'
+import { appendVariantToSlot, removeVariantFromSlot, setSlotSelectionLocked, setSlotSelectedVariant, updateSlotById, updateVariantInSlot } from '@/lib/shortDrama/draftOps'
 import { saveShortDramaDraftV2 } from '@/lib/shortDrama/draftStorage'
 import { getMedia, saveMedia } from '@/lib/mediaStorage'
 import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
+import { useGraphStore } from '@/graph/store'
 import { useAssetsStore } from '@/store/assets'
 import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
+import ShortDramaMediaPickerModal, { type ShortDramaPickKind, type ShortDramaPickedMedia } from '@/components/shortDrama/ShortDramaMediaPickerModal'
 import { ShortDramaSlotVersions, ShortDramaVariantThumb } from '@/components/shortDrama/ShortDramaSlotVersions'
 import type { ShortDramaDraftV2, ShortDramaMediaSlot, ShortDramaMediaVariant } from '@/lib/shortDrama/types'
 import { saveShortDramaPrefs, type ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
@@ -109,13 +111,94 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
   const [previewType, setPreviewType] = useState<'image' | 'video'>('image')
   const [previewBusy, setPreviewBusy] = useState(false)
 
+  type PickerTarget = { slotId: string; label?: string }
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerInitialTab, setPickerInitialTab] = useState<'history' | 'canvas'>('history')
+  const [pickerKinds, setPickerKinds] = useState<ShortDramaPickKind[]>(['image'])
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null)
+  const pickerTargetRef = useRef<PickerTarget | null>(null)
+  pickerTargetRef.current = pickerTarget
+
   const [busySlotIds, setBusySlotIds] = useState<Record<string, boolean>>({})
+  const [staleTick, setStaleTick] = useState(0)
   const busySlotsRef = useRef(busySlotIds)
   busySlotsRef.current = busySlotIds
 
   const setSlotBusy = useCallback((slotId: string, busy: boolean) => {
     setBusySlotIds((prev) => ({ ...prev, [slotId]: busy }))
   }, [])
+
+  // 修复“任务已完成但 UI 仍显示生成中”的异常状态：
+  // 若某个 slot 没有正在运行的任务（busy=false），但 variants 里仍存在 running，则将其标记为 error，
+  // 避免批量逻辑误判为“已采用”而跳过，同时引导用户重新生成或从历史/画布导入补齐。
+  const markSlotStaleRunning = useCallback(
+    (slotId: string, minAgeMs = 3000) => {
+      if (!slotId) return
+      if (busySlotsRef.current[slotId]) return
+      const now = Date.now()
+      setDraft((prev) =>
+        updateSlotById(prev, slotId, (slot) => {
+          const variants = slot?.variants || []
+          if (variants.length === 0) return slot
+          let changed = false
+          const nextVariants = variants.map((v) => {
+            if (v.status !== 'running') return v
+            const age = now - Number(v.createdAt || 0)
+            if (minAgeMs > 0 && age < minAgeMs) return v
+            changed = true
+            return {
+              ...v,
+              status: 'error',
+              error:
+                v.error ||
+                '生成状态异常：未检测到运行任务（可能已中断，或已完成但未写回）。请重新生成，或用“从历史/画布导入”补齐。',
+            } as ShortDramaMediaVariant
+          })
+          if (!changed) return slot
+          return { ...slot, variants: nextVariants }
+        })
+      )
+    },
+    [setDraft]
+  )
+
+  // 自动清理“无任务在跑但仍显示 running”的陈旧版本（例如：刷新/重启后遗留的状态）。
+  useEffect(() => {
+    const minAgeMs = 20_000
+    const now = Date.now()
+    const dueTimes: number[] = []
+
+    const inspectSlot = (slot: ShortDramaMediaSlot, busy: boolean) => {
+      if (busy) return
+      const running = (slot.variants || []).filter((v) => v.status === 'running')
+      if (running.length === 0) return
+      const oldest = Math.min(...running.map((v) => Number(v.createdAt || 0) || now))
+      const age = now - oldest
+      if (age >= minAgeMs) {
+        markSlotStaleRunning(slot.id, minAgeMs)
+      } else {
+        dueTimes.push(oldest + minAgeMs)
+      }
+    }
+
+    try {
+      for (const c of draft.characters) inspectSlot(c.sheet, !!busySlotIds[c.sheet.id])
+      for (const s of draft.scenes) inspectSlot(s.ref, !!busySlotIds[s.ref.id])
+      for (const sh of draft.shots) {
+        inspectSlot(sh.frames.start.slot, !!busySlotIds[sh.frames.start.slot.id])
+        inspectSlot(sh.frames.end.slot, !!busySlotIds[sh.frames.end.slot.id])
+        inspectSlot(sh.video, !!busySlotIds[sh.video.id])
+      }
+    } catch {
+      // ignore
+    }
+
+    if (dueTimes.length === 0) return
+    const nextDue = Math.min(...dueTimes.filter((t) => Number.isFinite(t)))
+    const waitMs = Math.max(200, Math.min(10_000, nextDue - Date.now() + 50))
+    const t = window.setTimeout(() => setStaleTick((x) => x + 1), waitMs)
+    return () => window.clearTimeout(t)
+  }, [busySlotIds, draft.characters, draft.scenes, draft.shots, markSlotStaleRunning, staleTick])
 
   const getSelectedVariant = useCallback((slot: ShortDramaMediaSlot) => {
     const id = slot.selectedVariantId
@@ -184,6 +267,132 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
       }
     },
     [previewBusy, resolveVariantPreviewUrl]
+  )
+
+  const openPickerForSlot = useCallback((slot: ShortDramaMediaSlot, label: string, initialTab: 'history' | 'canvas') => {
+    setPickerTarget({ slotId: slot.id, label })
+    setPickerKinds([slot.kind])
+    setPickerInitialTab(initialTab)
+    setPickerOpen(true)
+  }, [])
+
+  const variantFromPicked = useCallback(
+    async (slotId: string, picked: ShortDramaPickedMedia): Promise<ShortDramaMediaVariant> => {
+      const variantId = makeId()
+      const label = String(picked.label || '').trim()
+      const src0 = String(picked.sourceUrl || '').trim()
+      const display0 = String(picked.displayUrl || '').trim()
+      const kind = picked.kind === 'video' ? 'video' : 'image'
+
+      let sourceUrl = src0 && isHttp(src0) ? src0 : ''
+      let displayUrl = display0
+      let mediaId = String(picked.mediaId || '').trim()
+
+      // If we have a large inline dataURL and no mediaId, persist it (avoid bloating localStorage).
+      const isDataUrl = displayUrl.startsWith('data:')
+      const isHugeInline = isDataUrl || (!sourceUrl && displayUrl && displayUrl.length > 50000)
+      if (!mediaId && isHugeInline) {
+        try {
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:slot:${slotId}:picked:${picked.origin}:${picked.id}:${variantId}`,
+            projectId,
+            type: kind,
+            data: displayUrl,
+            sourceUrl: sourceUrl || undefined,
+            model: `pick:${picked.origin}`,
+          })
+          if (mediaId) displayUrl = ''
+        } catch {
+          // ignore
+        }
+      }
+
+      // Canvas/history http url could be stored as sourceUrl only.
+      if (!sourceUrl && isHttp(displayUrl)) {
+        sourceUrl = displayUrl
+        displayUrl = ''
+      }
+
+      return {
+        id: variantId,
+        kind,
+        status: 'success',
+        createdAt: Date.now(),
+        createdBy: 'manual',
+        modelKey: `pick:${picked.origin}`,
+        promptSnapshot: label ? `picked:${label}` : undefined,
+        sourceUrl: sourceUrl || undefined,
+        displayUrl: displayUrl || undefined,
+        mediaId: mediaId || undefined,
+      }
+    },
+    [projectId]
+  )
+
+  const handlePickedMedia = useCallback(
+    async (items: ShortDramaPickedMedia[]) => {
+      const target = pickerTargetRef.current
+      if (!target) return
+      if (!Array.isArray(items) || items.length === 0) return
+
+      const slotId = target.slotId
+      const expectedKind = (pickerKinds && pickerKinds[0]) || 'image'
+      const filtered = items.filter((it) => it.kind === expectedKind)
+      if (filtered.length === 0) {
+        window.$message?.warning?.(expectedKind === 'video' ? '请选择视频' : '请选择图片')
+        return
+      }
+
+      const variants: ShortDramaMediaVariant[] = []
+      for (const it of filtered) variants.push(await variantFromPicked(slotId, it))
+
+      setDraft((prev) => {
+        let cur = prev
+        for (const v of variants) cur = appendVariantToSlot(cur, slotId, v)
+        return { ...cur, updatedAt: Date.now() }
+      })
+      window.$message?.success?.(`已添加 ${variants.length} 个版本`)
+    },
+    [appendVariantToSlot, pickerKinds, setDraft, variantFromPicked]
+  )
+
+  const sendVariantToCanvas = useCallback(
+    async (variant: ShortDramaMediaVariant | null, label: string) => {
+      if (!variant || variant.status !== 'success') {
+        window.$message?.warning?.('请先选择成功的版本')
+        return
+      }
+      const url = await resolveVariantInput(variant || undefined)
+      if (!url) {
+        window.$message?.error?.('素材没有可用的地址')
+        return
+      }
+
+      const gs = useGraphStore.getState()
+      const vp: any = (gs as any).viewport || { x: 0, y: 0, zoom: 1 }
+      const z = Number(vp.zoom || 1) || 1
+      const x = (-Number(vp.x || 0) + 560) / z
+      const y = (-Number(vp.y || 0) + 320) / z
+
+      const nodeType = variant.kind === 'video' ? 'video' : 'image'
+      const data: Record<string, unknown> = {
+        label: String(label || (variant.kind === 'video' ? '视频' : '图片')).slice(0, 80),
+        url,
+      }
+      const src = String(variant.sourceUrl || '').trim()
+      if (src && isHttp(src)) data.sourceUrl = src
+      if (variant.mediaId) data.mediaId = variant.mediaId
+      if (variant.modelKey) data.model = variant.modelKey
+
+      const id = gs.addNode(nodeType as any, { x, y }, data)
+      try {
+        ;(gs as any).setSelected?.(id)
+      } catch {
+        // ignore
+      }
+      window.$message?.success?.('已上板到画布')
+    },
+    [resolveVariantInput]
   )
 
   const buildCharacterSheetPrompt = useCallback(
@@ -549,8 +758,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
     // 1) Character sheets
     const charTasks = draft.characters.map(async (c) => {
       const slotId = c.sheet.id
-      const hasSelected = !!getSelectedVariant(c.sheet)
-      if (hasSelected) return
+      markSlotStaleRunning(slotId)
+      const selected = getSelectedVariant(c.sheet)
+      if (selected?.status === 'success') return
       const prompt = buildCharacterSheetPrompt(c.id)
       const refImages = await collectRefImagesForCharacter(c.id)
       await runGenerateSlotImage(slotId, prompt, refImages, 'auto')
@@ -559,8 +769,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
     // 2) Scene refs (primary)
     const sceneTasks = draft.scenes.map(async (s) => {
       const slotId = s.ref.id
-      const hasSelected = !!getSelectedVariant(s.ref)
-      if (hasSelected) return
+      markSlotStaleRunning(slotId)
+      const selected = getSelectedVariant(s.ref)
+      if (selected?.status === 'success') return
       const prompt = buildScenePrompt(s.id)
       await runGenerateSlotImage(slotId, prompt, [], 'auto')
     })
@@ -573,6 +784,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
     draft.characters,
     draft.scenes,
     getSelectedVariant,
+    markSlotStaleRunning,
     runGenerateSlotImage,
   ])
 
@@ -600,8 +812,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
       // Shot frames (start & end) — 依赖角色/场景参考图（已在“分析并搭建”后优先生成）
       const shotStartTasks = draft.shots.map(async (sh) => {
         const slotId = sh.frames.start.slot.id
-        const hasSelected = !!getSelectedVariant(sh.frames.start.slot)
-        if (hasSelected) return
+        markSlotStaleRunning(slotId)
+        const selected = getSelectedVariant(sh.frames.start.slot)
+        if (selected?.status === 'success') return
         const prompt = buildFramePrompt(sh.id, 'start')
         const refs = await collectRefImagesForShot(sh.id, 'start')
         await runGenerateSlotImage(slotId, prompt, refs, 'auto')
@@ -609,8 +822,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
 
       const shotEndTasks = draft.shots.map(async (sh) => {
         const slotId = sh.frames.end.slot.id
-        const hasSelected = !!getSelectedVariant(sh.frames.end.slot)
-        if (hasSelected) return
+        markSlotStaleRunning(slotId)
+        const selected = getSelectedVariant(sh.frames.end.slot)
+        if (selected?.status === 'success') return
         const prompt = buildFramePrompt(sh.id, 'end')
         const refs = await collectRefImagesForShot(sh.id, 'end')
         await runGenerateSlotImage(slotId, prompt, refs, 'auto')
@@ -631,6 +845,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
     draft.scenes,
     draft.shots,
     getSelectedVariant,
+    markSlotStaleRunning,
     runGenerateSlotImage,
   ])
 
@@ -888,7 +1103,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                 {/* Step 1 */}
                 <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
                       <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-[var(--accent-color)] text-[11px] font-bold text-white">
                         1
                       </div>
@@ -897,7 +1112,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                         <div className="mt-0.5 text-xs text-[var(--text-secondary)]">生成角色/场景/镜头与首尾帧提示词，并自动搭建草稿结构。</div>
                       </div>
                     </div>
-                    <Button size="sm" className="gap-1" disabled={analysisBusy || prepBusy} onClick={() => void runAnalysis()}>
+                    <Button size="sm" className="shrink-0 gap-1 whitespace-nowrap" disabled={analysisBusy || prepBusy} onClick={() => void runAnalysis()}>
                       {analysisBusy || prepBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
                       分析并搭建
                     </Button>
@@ -918,7 +1133,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                 {/* Step 2 */}
                 <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
                       <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/10 text-[11px] font-bold text-[var(--text-secondary)]">
                         2
                       </div>
@@ -927,7 +1142,13 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                         <div className="mt-0.5 text-xs text-[var(--text-secondary)]">批量生成每个镜头的首帧/尾帧（会新增版本）。</div>
                       </div>
                     </div>
-                    <Button variant="secondary" size="sm" disabled={analysisBusy || prepBusy || keyframesBusy} onClick={() => void runBatchGenerateKeyframes()}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="shrink-0 whitespace-nowrap"
+                      disabled={analysisBusy || prepBusy || keyframesBusy}
+                      onClick={() => void runBatchGenerateKeyframes()}
+                    >
                       批量生成首/尾
                     </Button>
                   </div>
@@ -936,7 +1157,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                 {/* Step 3 */}
                 <div className="rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
                       <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/10 text-[11px] font-bold text-[var(--text-secondary)]">
                         3
                       </div>
@@ -945,7 +1166,13 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                         <div className="mt-0.5 text-xs text-[var(--text-secondary)]">基于“已采用”的首/尾帧批量生成视频（会新增版本）。</div>
                       </div>
                     </div>
-                    <Button variant="secondary" size="sm" disabled={analysisBusy || prepBusy || keyframesBusy || videosBusy} onClick={() => void runBatchGenerateVideos()}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="shrink-0 whitespace-nowrap"
+                      disabled={analysisBusy || prepBusy || keyframesBusy || videosBusy}
+                      onClick={() => void runBatchGenerateVideos()}
+                    >
                       批量生成视频
                     </Button>
                   </div>
@@ -988,6 +1215,12 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                         />
                         锁定采用
                       </label>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => openPickerForSlot(slot, `${c.name} · 设定图`, 'history')}>
+                        从历史导入
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => openPickerForSlot(slot, `${c.name} · 设定图`, 'canvas')}>
+                        从画布导入
+                      </Button>
                       <Button
                         size="sm"
                         variant="ghost"
@@ -1009,6 +1242,11 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                       <button type="button" className="w-full" onClick={() => void openPreview(selected)} disabled={previewBusy} title="预览">
                         <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
                       </button>
+                      <div className="mt-2 flex items-center justify-end">
+                        <Button size="sm" variant="ghost" disabled={selected.status !== 'success'} onClick={() => void sendVariantToCanvas(selected, `${c.name} · 设定图`)}>
+                          上板
+                        </Button>
+                      </div>
                     </div>
                   ) : null}
                   <div className="mt-2">
@@ -1047,6 +1285,12 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                         />
                         锁定采用
                       </label>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => openPickerForSlot(slot, `${s.name} · 场景参考`, 'history')}>
+                        从历史导入
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => openPickerForSlot(slot, `${s.name} · 场景参考`, 'canvas')}>
+                        从画布导入
+                      </Button>
                       <Button size="sm" variant="ghost" disabled={busy} onClick={() => void runGenerateSlotImage(slot.id, buildScenePrompt(s.id), [], 'auto')}>
                         {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <FileText className="mr-1 h-4 w-4" />}
                         生成参考图
@@ -1058,6 +1302,11 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                       <button type="button" className="w-full" onClick={() => void openPreview(selected)} disabled={previewBusy} title="预览">
                         <ShortDramaVariantThumb variant={selected} className="h-24 w-full" />
                       </button>
+                      <div className="mt-2 flex items-center justify-end">
+                        <Button size="sm" variant="ghost" disabled={selected.status !== 'success'} onClick={() => void sendVariantToCanvas(selected, `${s.name} · 场景参考`)}>
+                          上板
+                        </Button>
+                      </div>
                     </div>
                   ) : null}
                   <div className="mt-2">
@@ -1113,6 +1362,12 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                             />
                             锁定采用
                           </label>
+                          <Button size="sm" variant="ghost" disabled={startBusy} onClick={() => openPickerForSlot(startSlot, `${sh.title || '镜头'} · 首帧`, 'history')}>
+                            从历史导入
+                          </Button>
+                          <Button size="sm" variant="ghost" disabled={startBusy} onClick={() => openPickerForSlot(startSlot, `${sh.title || '镜头'} · 首帧`, 'canvas')}>
+                            从画布导入
+                          </Button>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1134,6 +1389,16 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                           <button type="button" className="w-full" onClick={() => void openPreview(startSelected)} disabled={previewBusy} title="预览">
                             <ShortDramaVariantThumb variant={startSelected} className="h-24 w-full" />
                           </button>
+                          <div className="mt-2 flex items-center justify-end">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={startSelected.status !== 'success'}
+                              onClick={() => void sendVariantToCanvas(startSelected, `${sh.title || '镜头'} · 首帧`)}
+                            >
+                              上板
+                            </Button>
+                          </div>
                         </div>
                       ) : null}
                       <div className="mt-2">
@@ -1159,6 +1424,12 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                             />
                             锁定采用
                           </label>
+                          <Button size="sm" variant="ghost" disabled={endBusy} onClick={() => openPickerForSlot(endSlot, `${sh.title || '镜头'} · 尾帧`, 'history')}>
+                            从历史导入
+                          </Button>
+                          <Button size="sm" variant="ghost" disabled={endBusy} onClick={() => openPickerForSlot(endSlot, `${sh.title || '镜头'} · 尾帧`, 'canvas')}>
+                            从画布导入
+                          </Button>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1180,6 +1451,11 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                           <button type="button" className="w-full" onClick={() => void openPreview(endSelected)} disabled={previewBusy} title="预览">
                             <ShortDramaVariantThumb variant={endSelected} className="h-24 w-full" />
                           </button>
+                          <div className="mt-2 flex items-center justify-end">
+                            <Button size="sm" variant="ghost" disabled={endSelected.status !== 'success'} onClick={() => void sendVariantToCanvas(endSelected, `${sh.title || '镜头'} · 尾帧`)}>
+                              上板
+                            </Button>
+                          </div>
                         </div>
                       ) : null}
                       <div className="mt-2">
@@ -1206,6 +1482,12 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                           />
                           锁定采用
                         </label>
+                        <Button size="sm" variant="ghost" disabled={videoBusy} onClick={() => openPickerForSlot(videoSlot, `${sh.title || '镜头'} · 视频`, 'history')}>
+                          从历史导入
+                        </Button>
+                        <Button size="sm" variant="ghost" disabled={videoBusy} onClick={() => openPickerForSlot(videoSlot, `${sh.title || '镜头'} · 视频`, 'canvas')}>
+                          从画布导入
+                        </Button>
                         <Button
                           size="sm"
                           variant="secondary"
@@ -1256,6 +1538,11 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                         <button type="button" className="w-full" onClick={() => void openPreview(videoSelected)} disabled={previewBusy} title="预览">
                           <ShortDramaVariantThumb variant={videoSelected} className="h-40 w-full" />
                         </button>
+                        <div className="mt-2 flex items-center justify-end">
+                          <Button size="sm" variant="ghost" disabled={videoSelected.status !== 'success'} onClick={() => void sendVariantToCanvas(videoSelected, `${sh.title || '镜头'} · 视频`)}>
+                            上板
+                          </Button>
+                        </div>
                       </div>
                     ) : null}
 
@@ -1275,6 +1562,18 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
           </div>
         </div>
       </div>
+
+      <ShortDramaMediaPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        title={pickerTarget?.label ? `选择素材添加到 ${pickerTarget.label}` : undefined}
+        initialTab={pickerInitialTab}
+        kinds={pickerKinds}
+        multiple
+        onConfirm={(items) => {
+          void handlePickedMedia(items)
+        }}
+      />
 
       <MediaPreviewModal open={previewOpen} url={previewUrl} type={previewType} onClose={() => setPreviewOpen(false)} />
     </div>

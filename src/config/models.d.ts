@@ -28,4 +28,3 @@ export const DEFAULT_CHAT_MODEL: string
  * Resolve model config with backward-compatible aliases.
  */
 export const getModelByName: (key: string) => AnyModel
-

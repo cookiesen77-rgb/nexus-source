@@ -61,6 +61,22 @@ function normalizeGatewayUrl(url: string): string {
   return u
 }
 
+const getApiKeySafe = () => {
+  try {
+    return localStorage.getItem('apiKey') || ''
+  } catch {
+    return ''
+  }
+}
+
+const shouldAttachBearer = (u: string) => {
+  const url = String(u || '').trim()
+  if (!url) return false
+  if (url.includes('nexusapi.cn')) return true
+  if (url.startsWith('/v1/') || url.startsWith('/v1beta') || url.startsWith('/kling') || url.startsWith('/tencent-vod') || url.startsWith('/video')) return true
+  return false
+}
+
 /**
  * 获取文件数据
  */
@@ -102,14 +118,18 @@ async function fetchFileData(url: string): Promise<Uint8Array> {
       const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http')
       const resolvedUrl = normalizeGatewayUrl(url)
       console.log('[download] Tauri fetch:', resolvedUrl.slice(0, 100))
-      const response = await tauriFetch(resolvedUrl)
+      const token = getApiKeySafe()
+      const headers = shouldAttachBearer(resolvedUrl) && token ? { Authorization: `Bearer ${token}` } : undefined
+      const response = await tauriFetch(resolvedUrl, { method: 'GET', headers } as any)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
       const arrayBuffer = await response.arrayBuffer()
       return new Uint8Array(arrayBuffer)
     } else {
-      const response = await fetch(url)
+      const token = getApiKeySafe()
+      const headers = shouldAttachBearer(url) && token ? { Authorization: `Bearer ${token}` } : undefined
+      const response = await fetch(url, headers ? { headers } : undefined)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
@@ -117,6 +137,13 @@ async function fetchFileData(url: string): Promise<Uint8Array> {
       return new Uint8Array(arrayBuffer)
     }
   }
+}
+
+/**
+ * 对外暴露：读取 URL 为 bytes（用于 PDF 导出等场景）
+ */
+export async function fetchUrlAsBytes(url: string): Promise<Uint8Array> {
+  return await fetchFileData(url)
 }
 
 /**
@@ -141,8 +168,50 @@ function getFileTypeName(ext: string): string {
     jpeg: 'JPEG 图片',
     gif: 'GIF 图片',
     webp: 'WebP 图片',
+    pdf: 'PDF 文档',
   }
   return types[ext] || ext.toUpperCase()
+}
+
+export async function saveBytesAsFile(opts: { data: Uint8Array; filename: string; mimeType?: string }): Promise<boolean> {
+  const { data, filename } = opts
+
+  if (isTauri) {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeFile } = await import('@tauri-apps/plugin-fs')
+
+    const ext = getExtension(filename)
+    const filePath = await save({
+      defaultPath: filename,
+      filters: [
+        {
+          name: getFileTypeName(ext),
+          extensions: [ext],
+        },
+      ],
+    })
+
+    if (!filePath) return false
+    await writeFile(filePath, data)
+    return true
+  }
+
+  const blob = new Blob([data], { type: opts.mimeType || '' })
+  const blobUrl = URL.createObjectURL(blob)
+
+  const link = document.createElement('a')
+  link.href = blobUrl
+  link.download = filename
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  link.click()
+
+  setTimeout(() => {
+    document.body.removeChild(link)
+    URL.revokeObjectURL(blobUrl)
+  }, 1000)
+
+  return true
 }
 
 /**
@@ -154,54 +223,8 @@ export async function downloadFile(options: DownloadOptions): Promise<boolean> {
   const { url, filename } = options
 
   try {
-    // 获取文件数据
-    const data = await fetchFileData(url)
-    
-    if (isTauri) {
-      // Tauri 环境：使用 dialog 选择保存路径
-      const { save } = await import('@tauri-apps/plugin-dialog')
-      const { writeFile } = await import('@tauri-apps/plugin-fs')
-      
-      const ext = getExtension(filename)
-      
-      // 弹出保存对话框
-      const filePath = await save({
-        defaultPath: filename,
-        filters: [{
-          name: getFileTypeName(ext),
-          extensions: [ext]
-        }]
-      })
-      
-      if (!filePath) {
-        // 用户取消了保存
-        return false
-      }
-      
-      // 写入文件
-      await writeFile(filePath, data)
-      
-      return true
-    } else {
-      // Web 环境：使用 blob URL + anchor
-      const blob = new Blob([data])
-      const blobUrl = URL.createObjectURL(blob)
-      
-      const link = document.createElement('a')
-      link.href = blobUrl
-      link.download = filename
-      link.style.display = 'none'
-      document.body.appendChild(link)
-      link.click()
-      
-      // 清理
-      setTimeout(() => {
-        document.body.removeChild(link)
-        URL.revokeObjectURL(blobUrl)
-      }, 1000)
-
-      return true
-    }
+    const data = await fetchUrlAsBytes(url)
+    return await saveBytesAsFile({ data, filename, mimeType: options.mimeType })
   } catch (err: any) {
     console.error('[download] 下载失败:', err)
     // 提供更详细的错误信息

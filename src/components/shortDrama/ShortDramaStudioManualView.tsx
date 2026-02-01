@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { CHAT_MODELS, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
 import * as modelsConfig from '@/config/models'
 import { useAssetsStore } from '@/store/assets'
+import { useGraphStore } from '@/graph/store'
 import { getMedia, saveMedia } from '@/lib/mediaStorage'
 import { resolveCachedMediaUrl } from '@/lib/workflow/cache'
 import MediaPreviewModal from '@/components/canvas/MediaPreviewModal'
@@ -18,7 +19,7 @@ import {
 } from '@/lib/shortDrama/draftOps'
 import { createEmptyImageSlot, createEmptyShot, saveShortDramaDraftV2 } from '@/lib/shortDrama/draftStorage'
 import { getShortDramaTaskQueue } from '@/lib/shortDrama/taskQueue'
-import ShortDramaMediaPickerModal, { type ShortDramaPickedImage } from '@/components/shortDrama/ShortDramaMediaPickerModal'
+import ShortDramaMediaPickerModal, { type ShortDramaPickKind, type ShortDramaPickedMedia, type ShortDramaPickedImage } from '@/components/shortDrama/ShortDramaMediaPickerModal'
 import type { ShortDramaDraftV2, ShortDramaMediaSlot, ShortDramaMediaVariant } from '@/lib/shortDrama/types'
 import { saveShortDramaPrefs, type ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
 import { cn } from '@/lib/utils'
@@ -116,12 +117,14 @@ function SlotVersions({
   onAdopt,
   onRemove,
   onPreview,
+  onSendToCanvas,
   disabled,
 }: {
   slot: ShortDramaMediaSlot
   onAdopt: (variantId: string) => void
   onRemove: (variantId: string) => void
   onPreview?: (variant: ShortDramaMediaVariant) => void
+  onSendToCanvas?: (slot: ShortDramaMediaSlot, variant: ShortDramaMediaVariant) => void
   disabled?: boolean
 }) {
   if (!slot.variants || slot.variants.length === 0) {
@@ -135,6 +138,7 @@ function SlotVersions({
         .map((v) => {
           const adopted = slot.selectedVariantId === v.id
           const canPreview = !!onPreview && v.status === 'success'
+          const canSend = !!onSendToCanvas && v.status === 'success'
           return (
             <div key={v.id} className="flex items-center gap-2 rounded-lg border border-[var(--border-color)] bg-[var(--bg-secondary)] p-2">
               <button
@@ -167,6 +171,9 @@ function SlotVersions({
                   title="预览"
                 >
                   <Eye className="h-4 w-4" />
+                </Button>
+                <Button size="sm" variant="ghost" disabled={!canSend || disabled} onClick={() => onSendToCanvas?.(slot, v)}>
+                  上板
                 </Button>
                 <Button size="sm" variant="ghost" disabled={disabled || adopted || v.status !== 'success'} onClick={() => onAdopt(v.id)}>
                   <Check className="mr-1 h-4 w-4" />
@@ -252,6 +259,62 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
     [previewBusy, resolveVariantPreviewUrl]
   )
 
+  const resolveVariantInput = useCallback(async (variant: ShortDramaMediaVariant | undefined): Promise<string> => {
+    if (!variant) return ''
+    const s = String(variant.sourceUrl || '').trim()
+    if (s && /^https?:\/\//i.test(s)) return s
+    if (variant.mediaId) {
+      try {
+        const rec = await getMedia(variant.mediaId)
+        const dataUrl = String(rec?.data || '').trim()
+        if (dataUrl) return dataUrl
+      } catch {
+        // ignore
+      }
+    }
+    return String(variant.displayUrl || '').trim()
+  }, [])
+
+  const sendVariantToCanvas = useCallback(
+    async (slot: ShortDramaMediaSlot, variant: ShortDramaMediaVariant) => {
+      if (!variant || variant.status !== 'success') {
+        window.$message?.warning?.('请先选择成功的版本')
+        return
+      }
+      const url = await resolveVariantInput(variant || undefined)
+      if (!url) {
+        window.$message?.error?.('素材没有可用的地址')
+        return
+      }
+
+      const label = String(slot.label || (variant.kind === 'video' ? '视频' : '图片')).trim() || (variant.kind === 'video' ? '视频' : '图片')
+      const gs = useGraphStore.getState()
+      const vp: any = (gs as any).viewport || { x: 0, y: 0, zoom: 1 }
+      const z = Number(vp.zoom || 1) || 1
+      const x = (-Number(vp.x || 0) + 560) / z
+      const y = (-Number(vp.y || 0) + 320) / z
+
+      const nodeType = variant.kind === 'video' ? 'video' : 'image'
+      const data: Record<string, unknown> = {
+        label: label.slice(0, 80),
+        url,
+      }
+      const src = String(variant.sourceUrl || '').trim()
+      if (src && /^https?:\/\//i.test(src)) data.sourceUrl = src
+      if (variant.mediaId) data.mediaId = variant.mediaId
+      if (variant.modelKey) data.model = variant.modelKey
+
+      const id = gs.addNode(nodeType as any, { x, y }, data)
+      try {
+        ;(gs as any).setSelected?.(id)
+      } catch {
+        // ignore
+      }
+      window.$message?.success?.('已上板到画布')
+    },
+    [resolveVariantInput]
+  )
+
   type PickerTarget =
     | { kind: 'character_refs'; characterId: string }
     | { kind: 'scene_refs'; sceneId: string }
@@ -259,9 +322,17 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerInitialTab, setPickerInitialTab] = useState<'history' | 'canvas'>('history')
+  const [pickerKinds, setPickerKinds] = useState<ShortDramaPickKind[]>(['image'])
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null)
   const pickerTargetRef = useRef<PickerTarget | null>(null)
   pickerTargetRef.current = pickerTarget
+
+  const openPickerForSlot = useCallback((slot: ShortDramaMediaSlot, label: string, initialTab: 'history' | 'canvas') => {
+    setPickerTarget({ kind: 'slot_variants', slotId: slot.id, label })
+    setPickerKinds([slot.kind])
+    setPickerInitialTab(initialTab)
+    setPickerOpen(true)
+  }, [])
 
   const imageModels = useMemo(() => getImageModels(), [])
   const chatModels = useMemo(() => getChatModels(), [])
@@ -407,23 +478,6 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
   const setSlotBusy = useCallback((slotId: string, busy: boolean) => {
     setBusySlotIds((prev) => ({ ...prev, [slotId]: busy }))
-  }, [])
-
-  const resolveVariantInput = useCallback(async (variant: ShortDramaMediaVariant | undefined): Promise<string> => {
-    if (!variant) return ''
-    const s = String(variant.sourceUrl || '').trim()
-    if (s && /^https?:\/\//i.test(s)) return s
-    if (variant.mediaId) {
-      try {
-        const rec = await getMedia(variant.mediaId)
-        const dataUrl = String(rec?.data || '').trim()
-        if (dataUrl) return dataUrl
-      } catch {
-        // ignore
-      }
-    }
-    const d = String(variant.displayUrl || '').trim()
-    return d
   }, [])
 
   const getSelectedVariant = useCallback((slot: ShortDramaMediaSlot) => {
@@ -867,11 +921,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
   )
 
   const variantFromPicked = useCallback(
-    async (slotId: string, picked: ShortDramaPickedImage): Promise<ShortDramaMediaVariant> => {
+    async (slotId: string, picked: ShortDramaPickedMedia): Promise<ShortDramaMediaVariant> => {
       const variantId = makeId()
       const label = String(picked.label || '').trim()
       const src0 = String(picked.sourceUrl || '').trim()
       const display0 = String(picked.displayUrl || '').trim()
+      const kind = picked.kind === 'video' ? 'video' : 'image'
       let sourceUrl = src0 && /^https?:\/\//i.test(src0) ? src0 : ''
       let displayUrl = display0
       let mediaId = String(picked.mediaId || '').trim()
@@ -884,7 +939,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
           mediaId = await saveMedia({
             nodeId: `short_drama:${projectId}:slot:${slotId}:picked:${picked.origin}:${picked.id}:${variantId}`,
             projectId,
-            type: 'image',
+            type: kind,
             data: displayUrl,
             sourceUrl: sourceUrl || undefined,
             model: `pick:${picked.origin}`,
@@ -903,7 +958,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
       return {
         id: variantId,
-        kind: 'image',
+        kind,
         status: 'success',
         createdAt: Date.now(),
         createdBy: 'manual',
@@ -918,15 +973,20 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
   )
 
   const handlePickedImages = useCallback(
-    async (items: ShortDramaPickedImage[]) => {
+    async (items: ShortDramaPickedMedia[]) => {
       const target = pickerTargetRef.current
       if (!target) return
       if (!Array.isArray(items) || items.length === 0) return
 
       if (target.kind === 'character_refs') {
+        const images = items.filter((it): it is ShortDramaPickedImage => it.kind === 'image')
+        if (images.length === 0) {
+          window.$message?.warning?.('请选择图片')
+          return
+        }
         const slots: ShortDramaMediaSlot[] = []
         const baseCount = (draft.characters.find((c) => c.id === target.characterId)?.refs || []).length
-        for (const it of items) {
+        for (const it of images) {
           const label = String(it.label || '').trim() || `参考图 ${baseCount + slots.length + 1}`
           const slot = createEmptyImageSlot(label)
           const v = await variantFromPicked(slot.id, it)
@@ -950,8 +1010,13 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
       }
 
       if (target.kind === 'scene_refs') {
+        const images = items.filter((it): it is ShortDramaPickedImage => it.kind === 'image')
+        if (images.length === 0) {
+          window.$message?.warning?.('请选择图片')
+          return
+        }
         const slots: ShortDramaMediaSlot[] = []
-        for (const it of items) {
+        for (const it of images) {
           const label = String(it.label || '').trim() || `参考图 ${slots.length + 1}`
           const slot = createEmptyImageSlot(label)
           const v = await variantFromPicked(slot.id, it)
@@ -974,8 +1039,29 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
       if (target.kind === 'slot_variants') {
         const slotId = target.slotId
+        const expectedKind = (() => {
+          for (const c of draft.characters) {
+            if (c.sheet.id === slotId) return c.sheet.kind
+            for (const r of c.refs || []) if (r.id === slotId) return r.kind
+          }
+          for (const s of draft.scenes) {
+            if (s.ref.id === slotId) return s.ref.kind
+            for (const r of (s.refs || []) as any[]) if (r?.id === slotId) return r.kind
+          }
+          for (const sh of draft.shots) {
+            if (sh.frames.start.slot.id === slotId) return sh.frames.start.slot.kind
+            if (sh.frames.end.slot.id === slotId) return sh.frames.end.slot.kind
+            if (sh.video.id === slotId) return sh.video.kind
+          }
+          return 'image'
+        })()
+        const filtered = items.filter((it) => it.kind === expectedKind)
+        if (filtered.length === 0) {
+          window.$message?.warning?.(expectedKind === 'video' ? '请选择视频' : '请选择图片')
+          return
+        }
         const variants: ShortDramaMediaVariant[] = []
-        for (const it of items) {
+        for (const it of filtered) {
           variants.push(await variantFromPicked(slotId, it))
         }
         setDraft((prev) => {
@@ -986,7 +1072,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
         window.$message?.success?.(`已添加 ${variants.length} 个版本`)
       }
     },
-    [appendVariantToSlot, createEmptyImageSlot, draft.characters, setDraft, variantFromPicked]
+    [appendVariantToSlot, createEmptyImageSlot, draft.characters, draft.scenes, draft.shots, setDraft, variantFromPicked]
   )
 
   const removeVariant = useCallback(
@@ -1345,6 +1431,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                             <Upload className="mr-1 h-4 w-4" />
                             上传
                           </Button>
+                          <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(c.sheet, `${c.name || '角色'} · 设定图`, 'history')}>
+                            从历史导入
+                          </Button>
+                          <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(c.sheet, `${c.name || '角色'} · 设定图`, 'canvas')}>
+                            从画布导入
+                          </Button>
                           <Button size="sm" variant="ghost" disabled={!!busySlotsRef.current[c.sheet.id]} onClick={() => void runGenerateCharacterSheet(c.id)}>
                             {!!busySlotsRef.current[c.sheet.id] ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ImageIcon className="mr-1 h-4 w-4" />}
                             生成
@@ -1357,6 +1449,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                           onAdopt={(vid) => adoptVariant(c.sheet.id, vid)}
                           onRemove={(vid) => removeVariant(c.sheet.id, vid)}
                           onPreview={(v) => void openPreview(v)}
+                          onSendToCanvas={(slot, v) => void sendVariantToCanvas(slot, v)}
                           disabled={!!busySlotsRef.current[c.sheet.id]}
                         />
                       </div>
@@ -1372,6 +1465,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                             type="button"
                             onClick={() => {
                               setPickerTarget({ kind: 'character_refs', characterId: c.id })
+                              setPickerKinds(['image'])
                               setPickerInitialTab('history')
                               setPickerOpen(true)
                             }}
@@ -1384,6 +1478,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                             type="button"
                             onClick={() => {
                               setPickerTarget({ kind: 'character_refs', characterId: c.id })
+                              setPickerKinds(['image'])
                               setPickerInitialTab('canvas')
                               setPickerOpen(true)
                             }}
@@ -1492,6 +1587,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                                   onAdopt={(vid) => adoptVariant(slot.id, vid)}
                                   onRemove={(vid) => removeVariant(slot.id, vid)}
                                   onPreview={(v) => void openPreview(v)}
+                                  onSendToCanvas={(slot, v) => void sendVariantToCanvas(slot, v)}
                                   disabled={!!busySlotsRef.current[slot.id]}
                                 />
                               </div>
@@ -1567,6 +1663,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                             <Upload className="mr-1 h-4 w-4" />
                             上传
                           </Button>
+                          <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(slot, `${s.name || '场景'} · 主参考`, 'history')}>
+                            从历史导入
+                          </Button>
+                          <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(slot, `${s.name || '场景'} · 主参考`, 'canvas')}>
+                            从画布导入
+                          </Button>
                         </div>
                       </div>
                       {selected ? (
@@ -1582,6 +1684,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                           onAdopt={(vid) => adoptVariant(slot.id, vid)}
                           onRemove={(vid) => removeVariant(slot.id, vid)}
                           onPreview={(v) => void openPreview(v)}
+                          onSendToCanvas={(slot, v) => void sendVariantToCanvas(slot, v)}
                           disabled={!!busySlotsRef.current[slot.id]}
                         />
                       </div>
@@ -1597,6 +1700,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                             type="button"
                             onClick={() => {
                               setPickerTarget({ kind: 'scene_refs', sceneId: s.id })
+                              setPickerKinds(['image'])
                               setPickerInitialTab('history')
                               setPickerOpen(true)
                             }}
@@ -1609,6 +1713,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                             type="button"
                             onClick={() => {
                               setPickerTarget({ kind: 'scene_refs', sceneId: s.id })
+                              setPickerKinds(['image'])
                               setPickerInitialTab('canvas')
                               setPickerOpen(true)
                             }}
@@ -1707,6 +1812,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                                 onAdopt={(vid) => adoptVariant(refSlot.id, vid)}
                                 onRemove={(vid) => removeVariant(refSlot.id, vid)}
                                 onPreview={(v) => void openPreview(v)}
+                                onSendToCanvas={(slot, v) => void sendVariantToCanvas(slot, v)}
                                 disabled={!!busySlotsRef.current[refSlot.id]}
                               />
                             </div>
@@ -1894,6 +2000,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                           <Upload className="h-4 w-4" />
                           上传
                         </Button>
+                        <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(startSlot, `${shot.title || '镜头'} · 首帧`, 'history')}>
+                          从历史导入
+                        </Button>
+                        <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(startSlot, `${shot.title || '镜头'} · 首帧`, 'canvas')}>
+                          从画布导入
+                        </Button>
                         <Button
                           size="sm"
                           variant="ghost"
@@ -1919,6 +2031,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                         onAdopt={(vid) => adoptVariant(startSlot.id, vid)}
                         onRemove={(vid) => removeVariant(startSlot.id, vid)}
                         onPreview={(v) => void openPreview(v)}
+                        onSendToCanvas={(slot, v) => void sendVariantToCanvas(slot, v)}
                         disabled={startBusy}
                       />
                     </div>
@@ -1963,6 +2076,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                           <Upload className="h-4 w-4" />
                           上传
                         </Button>
+                        <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(endSlot, `${shot.title || '镜头'} · 尾帧`, 'history')}>
+                          从历史导入
+                        </Button>
+                        <Button size="sm" variant="ghost" type="button" onClick={() => openPickerForSlot(endSlot, `${shot.title || '镜头'} · 尾帧`, 'canvas')}>
+                          从画布导入
+                        </Button>
                         <Button
                           size="sm"
                           variant="ghost"
@@ -1988,6 +2107,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                         onAdopt={(vid) => adoptVariant(endSlot.id, vid)}
                         onRemove={(vid) => removeVariant(endSlot.id, vid)}
                         onPreview={(v) => void openPreview(v)}
+                        onSendToCanvas={(slot, v) => void sendVariantToCanvas(slot, v)}
                         disabled={endBusy}
                       />
                     </div>
@@ -2006,6 +2126,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                         />
                         锁定采用
                       </label>
+                      <Button size="sm" variant="ghost" disabled={videoBusy} onClick={() => openPickerForSlot(videoSlot, `${shot.title || '镜头'} · 视频`, 'history')}>
+                        从历史导入
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={videoBusy} onClick={() => openPickerForSlot(videoSlot, `${shot.title || '镜头'} · 视频`, 'canvas')}>
+                        从画布导入
+                      </Button>
                       <Button size="sm" variant="secondary" className="gap-1" disabled={videoBusy} onClick={() => void runGenerateShotVideo(shot.id)}>
                         {videoBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <VideoIcon className="h-4 w-4" />}
                         生成视频（新增版本）
@@ -2055,6 +2181,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
                       onAdopt={(vid) => adoptVariant(videoSlot.id, vid)}
                       onRemove={(vid) => removeVariant(videoSlot.id, vid)}
                       onPreview={(v) => void openPreview(v)}
+                      onSendToCanvas={(slot, v) => void sendVariantToCanvas(slot, v)}
                       disabled={videoBusy}
                     />
                   </div>
@@ -2074,9 +2201,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
             ? '选择图片添加到角色参考'
             : pickerTarget?.kind === 'scene_refs'
               ? '选择图片添加到场景参考'
-              : '选择图片'
+              : pickerTarget?.label
+                ? `选择素材添加到 ${pickerTarget.label}`
+                : undefined
         }
         initialTab={pickerInitialTab}
+        kinds={pickerKinds}
         multiple
         onConfirm={(items) => {
           void handlePickedImages(items)
