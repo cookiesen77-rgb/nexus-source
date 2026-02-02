@@ -7,6 +7,7 @@ import React, { useState, useMemo, useCallback } from 'react'
 import { downloadFile } from '@/lib/download'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import HistoryExportPdfModal, { type ExportPdfImageItem } from '@/components/canvas/HistoryExportPdfModal'
 import {
   X,
   Download,
@@ -33,7 +34,70 @@ interface DownloadItem {
   type: AssetType
   src: string
   title?: string
+  remark?: string
   selected: boolean
+}
+
+const trimStr = (v: unknown) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim())
+
+const sanitizeFilenameBase = (name: string) => {
+  // Windows illegal: \ / : * ? " < > |  + control chars
+  let s = String(name || '').replace(/[\u0000-\u001F]/g, '').replace(/[\\/:*?"<>|]/g, '_')
+  s = s.replace(/\s+/g, ' ').trim()
+  // Windows: no trailing dot or space
+  s = s.replace(/[. ]+$/g, '').trim()
+  if (!s) return ''
+  return s.slice(0, 80)
+}
+
+const inferExtFromUrl = (src: string, type: AssetType) => {
+  const s = String(src || '').trim()
+  if (s.startsWith('data:')) {
+    const m = s.slice(5, 64)
+    const mime = m.split(';')[0]
+    if (mime === 'image/jpeg') return 'jpg'
+    if (mime === 'image/png') return 'png'
+    if (mime === 'image/webp') return 'webp'
+    if (mime === 'image/gif') return 'gif'
+    if (mime === 'video/mp4') return 'mp4'
+    if (mime === 'video/webm') return 'webm'
+    if (mime === 'audio/mpeg') return 'mp3'
+    if (mime === 'audio/mp3') return 'mp3'
+    if (mime === 'audio/wav') return 'wav'
+  }
+  try {
+    const u = new URL(s, 'http://localhost')
+    const p = u.pathname || ''
+    const ext = p.split('.').pop() || ''
+    const ok = /^[a-z0-9]{2,5}$/i.test(ext) ? ext.toLowerCase() : ''
+    if (ok) return ok
+  } catch {
+    // ignore
+  }
+  return type === 'image' ? 'png' : type === 'video' ? 'mp4' : 'mp3'
+}
+
+const pickBaseName = (item: DownloadItem) => {
+  const remark = trimStr(item.remark)
+  if (remark) return remark
+  const title = trimStr(item.title)
+  if (title) return title
+  return item.type === 'image' ? `Image_${item.id}` : item.type === 'video' ? `Video_${item.id}` : `Audio_${item.id}`
+}
+
+const buildUniqueFilenames = (items: DownloadItem[]) => {
+  const used = new Map<string, number>()
+  const out = new Map<string, string>()
+  for (const item of items) {
+    const ext = inferExtFromUrl(item.src, item.type)
+    const base0 = sanitizeFilenameBase(pickBaseName(item)) || (item.type === 'image' ? 'image' : item.type === 'video' ? 'video' : 'audio')
+    const key = `${base0.toLowerCase()}.${ext.toLowerCase()}`
+    const n = (used.get(key) || 0) + 1
+    used.set(key, n)
+    const base = n === 1 ? base0 : `${base0}-${n}`
+    out.set(item.id, `${base}.${ext}`)
+  }
+  return out
 }
 
 export default function DownloadModal({ open, onClose, nodes: propNodes }: Props) {
@@ -46,6 +110,8 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
   const [downloadProgress, setDownloadProgress] = useState(0)
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
   const [selectAll, setSelectAll] = useState(true)
+  const [pdfOpen, setPdfOpen] = useState(false)
+  const [pdfItems, setPdfItems] = useState<ExportPdfImageItem[]>([])
 
   // Extract downloadable items from nodes
   // 支持 url 和 src 两种字段名（不同来源的节点可能使用不同字段）
@@ -53,13 +119,16 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
     const items: DownloadItem[] = []
 
     nodes.forEach((node) => {
-      const url = node.data?.url || node.data?.src
+      const d: any = node.data || {}
+      const url = d?.url || d?.src
+      const remark = trimStr(d?.remark)
       if (node.type === 'image' && url) {
         items.push({
           id: node.id,
           type: 'image',
           src: url,
-          title: node.data?.title || node.data?.label || `Image_${node.id}`,
+          title: d?.title || d?.label || `Image_${node.id}`,
+          remark: remark || undefined,
           selected: true
         })
       } else if (node.type === 'video' && url) {
@@ -67,7 +136,8 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
           id: node.id,
           type: 'video',
           src: url,
-          title: node.data?.title || node.data?.label || `Video_${node.id}`,
+          title: d?.title || d?.label || `Video_${node.id}`,
+          remark: remark || undefined,
           selected: true
         })
       } else if (node.type === 'audio' && url) {
@@ -75,7 +145,8 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
           id: node.id,
           type: 'audio',
           src: url,
-          title: node.data?.title || node.data?.label || `Audio_${node.id}`,
+          title: d?.title || d?.label || `Audio_${node.id}`,
+          remark: remark || undefined,
           selected: true
         })
       }
@@ -146,10 +217,10 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
     setIsDownloading(true)
     setDownloadProgress(0)
 
+    const filenameMap = buildUniqueFilenames(itemsToDownload)
     let completed = 0
     for (const item of itemsToDownload) {
-      const extension = item.type === 'image' ? 'png' : item.type === 'video' ? 'mp4' : 'mp3'
-      const filename = `${item.title}.${extension}`
+      const filename = filenameMap.get(item.id) || `${sanitizeFilenameBase(pickBaseName(item)) || 'asset'}.${inferExtFromUrl(item.src, item.type)}`
 
       await doDownload(item.src, filename)
       completed++
@@ -172,6 +243,11 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
   }
 
   const selectedCount = filteredItems.filter((item) => selectedItems.has(item.id)).length
+  const selectedImageItems = useMemo(
+    () => filteredItems.filter((item) => item.type === 'image' && selectedItems.has(item.id)),
+    [filteredItems, selectedItems]
+  )
+  const selectedImageCount = selectedImageItems.length
 
   if (!open) return null
 
@@ -265,7 +341,7 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
                   {/* Thumbnail */}
                   <div className="aspect-square bg-[var(--bg-primary)]">
                     {item.type === 'image' ? (
-                      <img src={item.src} alt={item.title} className="h-full w-full object-cover" />
+                      <img src={item.src} alt={item.remark || item.title} className="h-full w-full object-cover" />
                     ) : item.type === 'video' ? (
                       <video src={item.src} className="h-full w-full object-cover" muted />
                     ) : (
@@ -294,7 +370,7 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
 
                   {/* Title */}
                   <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-2">
-                    <div className="truncate text-xs text-white/90">{item.title}</div>
+                    <div className="truncate text-xs text-white/90">{pickBaseName(item)}</div>
                   </div>
                 </div>
               ))}
@@ -318,6 +394,23 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
             <Button variant="ghost" onClick={onClose}>
               取消
             </Button>
+            <Button
+              variant="secondary"
+              disabled={selectedImageCount === 0}
+              onClick={() => {
+                const list: ExportPdfImageItem[] = selectedImageItems.map((it) => ({
+                  id: it.id,
+                  src: it.src,
+                  previewSrc: it.src,
+                  title: pickBaseName(it),
+                }))
+                setPdfItems(list)
+                setPdfOpen(true)
+              }}
+              title="仅支持图片导出"
+            >
+              导出 PDF ({selectedImageCount})
+            </Button>
             <Button onClick={handleDownload} disabled={isDownloading || selectedCount === 0}>
               <Download className="mr-2 h-4 w-4" />
               {isDownloading ? '下载中...' : `下载 (${selectedCount})`}
@@ -325,6 +418,15 @@ export default function DownloadModal({ open, onClose, nodes: propNodes }: Props
           </div>
         </div>
       </div>
+
+      <HistoryExportPdfModal
+        open={pdfOpen}
+        items={pdfItems}
+        onClose={() => {
+          setPdfOpen(false)
+          setPdfItems([])
+        }}
+      />
     </div>
   )
 }

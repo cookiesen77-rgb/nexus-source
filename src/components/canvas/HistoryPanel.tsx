@@ -16,12 +16,16 @@ import {
   type HistoryPerformanceMode
 } from '@/store/assets'
 import { syncAssetHistoryFromCanvasNodes } from '@/lib/assets/syncFromCanvas'
+import { downloadFile } from '@/lib/download'
+import HistoryExportPdfModal, { type ExportPdfImageItem } from '@/components/canvas/HistoryExportPdfModal'
 import {
   X,
   Image as ImageIcon,
   Video,
   Music,
-  Trash2
+  Trash2,
+  Check,
+  Pencil
 } from 'lucide-react'
 
 interface Props {
@@ -35,12 +39,22 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>('image')
   const [visibleCount, setVisibleCount] = useState(40)
   const [localCacheFailures, setLocalCacheFailures] = useState<Set<string>>(new Set())
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({})
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 })
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameId, setRenameId] = useState<string>('')
+  const [renameValue, setRenameValue] = useState<string>('')
+  const [pdfOpen, setPdfOpen] = useState(false)
+  const [pdfItems, setPdfItems] = useState<ExportPdfImageItem[]>([])
 
   const assets = useAssetsStore((s) => s.assets)
   const historyPerformanceMode = useAssetsStore((s) => s.historyPerformanceMode)
   const localCacheEnabled = useAssetsStore((s) => s.localCacheEnabled)
   const setHistoryPerformanceMode = useAssetsStore((s) => s.setHistoryPerformanceMode)
   const removeAsset = useAssetsStore((s) => s.removeAsset)
+  const updateAsset = useAssetsStore((s) => s.updateAsset)
 
   // One-way: sync current canvas nodes into history
   useEffect(() => {
@@ -63,7 +77,92 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
   // Reset visible count when tab changes
   useEffect(() => {
     setVisibleCount(40)
+    // 切换 tab 时退出选择模式，避免误操作
+    setSelectionMode(false)
+    setSelectedIds({})
+    setPdfOpen(false)
+    setPdfItems([])
   }, [activeTab])
+
+  const toggleSelected = useCallback((id: string) => {
+    if (!id) return
+    setSelectedIds((prev) => ({ ...prev, [id]: !prev[id] }))
+  }, [])
+
+  const selectedCount = useMemo(() => Object.values(selectedIds).filter(Boolean).length, [selectedIds])
+  const selectedAssets = useMemo(() => filteredAssets.filter((a) => !!selectedIds[a.id]), [filteredAssets, selectedIds])
+
+  const sanitizeFilenameBase = (name: string) => {
+    let s = String(name || '').replace(/[\u0000-\u001F]/g, '').replace(/[\\/:*?"<>|]/g, '_')
+    s = s.replace(/\s+/g, ' ').trim()
+    s = s.replace(/[. ]+$/g, '').trim()
+    return s.slice(0, 80)
+  }
+
+  const inferExtFromUrl = (src: string, type: AssetType) => {
+    const s = String(src || '').trim()
+    if (s.startsWith('data:')) {
+      const m = s.slice(5, 64)
+      const mime = m.split(';')[0]
+      if (mime === 'image/jpeg') return 'jpg'
+      if (mime === 'image/png') return 'png'
+      if (mime === 'image/webp') return 'webp'
+      if (mime === 'image/gif') return 'gif'
+      if (mime === 'video/mp4') return 'mp4'
+      if (mime === 'video/webm') return 'webm'
+      if (mime === 'audio/mpeg') return 'mp3'
+      if (mime === 'audio/mp3') return 'mp3'
+      if (mime === 'audio/wav') return 'wav'
+    }
+    try {
+      const u = new URL(s, 'http://localhost')
+      const p = u.pathname || ''
+      const ext = p.split('.').pop() || ''
+      const ok = /^[a-z0-9]{2,5}$/i.test(ext) ? ext.toLowerCase() : ''
+      if (ok) return ok
+    } catch {
+      // ignore
+    }
+    return type === 'image' ? 'png' : type === 'video' ? 'mp4' : 'mp3'
+  }
+
+  const buildUniqueFilenames = (items: Asset[]) => {
+    const used = new Map<string, number>()
+    const out = new Map<string, string>()
+    for (const a of items) {
+      const ext = inferExtFromUrl(a.src, a.type)
+      const base0 = sanitizeFilenameBase(String(a.title || '').trim() || (a.type === 'video' ? '视频' : a.type === 'audio' ? '音频' : '图片')) || 'asset'
+      const key = `${base0.toLowerCase()}.${ext.toLowerCase()}`
+      const n = (used.get(key) || 0) + 1
+      used.set(key, n)
+      const base = n === 1 ? base0 : `${base0}-${n}`
+      out.set(a.id, `${base}.${ext}`)
+    }
+    return out
+  }
+
+  const doBatchDownload = useCallback(async () => {
+    if (batchBusy) return
+    if (selectedAssets.length === 0) return
+    setBatchBusy(true)
+    setBatchProgress({ done: 0, total: selectedAssets.length })
+    try {
+      const filenameMap = buildUniqueFilenames(selectedAssets)
+      let done = 0
+      for (const a of selectedAssets) {
+        const url = String((a.localCacheUrl || a.src) || '').trim()
+        if (url) {
+          const filename = filenameMap.get(a.id) || `${sanitizeFilenameBase(String(a.title || '').trim() || 'asset') || 'asset'}.${inferExtFromUrl(url, a.type)}`
+          await downloadFile({ url, filename })
+        }
+        done += 1
+        setBatchProgress({ done, total: selectedAssets.length })
+      }
+    } finally {
+      setBatchBusy(false)
+      setBatchProgress({ done: 0, total: 0 })
+    }
+  }, [batchBusy, selectedAssets])
 
   // Enqueue thumbnails and local cache
   useEffect(() => {
@@ -170,6 +269,28 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
               ))}
             </div>
             <button
+              onClick={() => {
+                setSelectionMode((v) => {
+                  const next = !v
+                  if (!next) {
+                    setSelectedIds({})
+                    setPdfOpen(false)
+                    setPdfItems([])
+                  }
+                  return next
+                })
+              }}
+              className={cn(
+                'rounded px-2 py-1 text-[11px] transition-colors',
+                selectionMode
+                  ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
+              )}
+              title={selectionMode ? '退出选择模式' : '进入选择模式'}
+            >
+              {selectionMode ? `完成${selectedCount ? `(${selectedCount})` : ''}` : '选择'}
+            </button>
+            <button
               onClick={onClose}
               className="rounded p-1 transition-colors hover:bg-[var(--bg-tertiary)]"
             >
@@ -217,8 +338,9 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
               <div
                 key={asset.id}
                 className="group cursor-grab rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] p-3 transition-colors hover:border-[var(--accent-color)] active:cursor-grabbing"
-                draggable
-                onDragStart={(e) => handleDragStart(e, asset)}
+                draggable={!selectionMode}
+                onDragStart={(e) => (!selectionMode ? handleDragStart(e, asset) : undefined)}
+                onClick={() => (selectionMode ? toggleSelected(asset.id) : undefined)}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
@@ -235,14 +357,32 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
                   <div className="flex shrink-0 items-center gap-2">
                     <button
                       className="rounded-md border border-[var(--border-color)] px-2 py-1 text-[11px] transition-colors hover:border-[var(--accent-color)]"
-                      onClick={() => onAddToCanvas(asset)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onAddToCanvas(asset)
+                      }}
                     >
                       上板
                     </button>
                     <button
+                      className="rounded-md border border-[var(--border-color)] px-2 py-1 text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--accent-color)] hover:text-[var(--text-primary)]"
+                      title="改名"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setRenameId(asset.id)
+                        setRenameValue(String(asset.title || '').trim())
+                        setRenameOpen(true)
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
                       className="rounded-md bg-[var(--bg-tertiary)] p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-red-500/20 hover:text-red-500"
                       title="删除"
-                      onClick={() => handleDelete(asset.id)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDelete(asset.id)
+                      }}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -259,9 +399,9 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
               <div
                 key={asset.id}
                 className="group relative aspect-square cursor-grab overflow-hidden rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)] transition-colors hover:border-[var(--accent-color)] active:cursor-grabbing"
-                draggable
-                onDragStart={(e) => handleDragStart(e, asset)}
-                onClick={() => onAddToCanvas(asset)}
+                draggable={!selectionMode}
+                onDragStart={(e) => (!selectionMode ? handleDragStart(e, asset) : undefined)}
+                onClick={() => (selectionMode ? toggleSelected(asset.id) : onAddToCanvas(asset))}
               >
                 {asset.type === 'image' ? (
                   <img
@@ -287,17 +427,41 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
                   />
                 )}
 
-                {/* Delete button */}
-                <button
-                  className="absolute right-2 top-2 rounded-lg bg-black/40 p-1.5 text-white opacity-0 transition-opacity hover:bg-black/60 group-hover:opacity-100"
-                  title="删除"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDelete(asset.id)
-                  }}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                {/* Top controls */}
+                {selectionMode ? (
+                  <div
+                    className={cn(
+                      'absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border-2 transition-colors',
+                      selectedIds[asset.id] ? 'border-[var(--accent-color)] bg-[var(--accent-color)]' : 'border-white/70 bg-black/30'
+                    )}
+                  >
+                    {selectedIds[asset.id] ? <Check className="h-3 w-3 text-white" /> : null}
+                  </div>
+                ) : null}
+                <div className="absolute right-2 top-2 flex items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+                  <button
+                    className="rounded-lg bg-black/40 p-1.5 text-white hover:bg-black/60"
+                    title="改名"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setRenameId(asset.id)
+                      setRenameValue(String(asset.title || '').trim())
+                      setRenameOpen(true)
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    className="rounded-lg bg-black/40 p-1.5 text-white hover:bg-black/60"
+                    title="删除"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDelete(asset.id)
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
 
                 {/* Title overlay */}
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent p-2">
@@ -322,6 +486,107 @@ export default function HistoryPanel({ onClose, onAddToCanvas }: Props) {
           </div>
         )}
       </div>
+
+      {/* Selection footer */}
+      {selectionMode ? (
+        <div className="border-t border-[var(--border-color)] p-3">
+          <div className="text-xs text-[var(--text-secondary)]">
+            已选 {selectedCount} 项{batchBusy && batchProgress.total > 0 ? ` · 下载中 ${batchProgress.done}/${batchProgress.total}` : ''}
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button
+              className={cn(
+                'rounded-lg border px-3 py-2 text-xs font-medium transition-colors',
+                selectedCount === 0 || batchBusy
+                  ? 'border-[var(--border-color)] text-[var(--text-secondary)] opacity-60'
+                  : 'border-[var(--accent-color)] text-[var(--accent-color)] hover:bg-[rgb(var(--accent-rgb)/0.10)]'
+              )}
+              disabled={selectedCount === 0 || batchBusy}
+              onClick={() => void doBatchDownload()}
+            >
+              批量下载
+            </button>
+            <button
+              className={cn(
+                'rounded-lg border px-3 py-2 text-xs font-medium transition-colors',
+                activeTab !== 'image' || selectedCount === 0
+                  ? 'border-[var(--border-color)] text-[var(--text-secondary)] opacity-60'
+                  : 'border-[var(--border-color)] text-[var(--text-primary)] hover:border-[var(--accent-color)]'
+              )}
+              disabled={activeTab !== 'image' || selectedCount === 0}
+              onClick={() => {
+                const imgs = selectedAssets.filter((a) => a.type === 'image')
+                const list: ExportPdfImageItem[] = imgs.map((a) => ({
+                  id: a.id,
+                  src: String((a.localCacheUrl || a.src) || ''),
+                  previewSrc: getDisplaySrc(a),
+                  title: a.title || '图片',
+                }))
+                setPdfItems(list)
+                setPdfOpen(true)
+              }}
+              title="仅支持图片导出"
+            >
+              导出 PDF
+            </button>
+          </div>
+          <div className="mt-2 text-[11px] text-[var(--text-secondary)]">提示：在“改名”后，批量下载会使用该名称作为真实文件名。</div>
+        </div>
+      ) : null}
+
+      {/* Rename modal */}
+      {renameOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={(e) => e.target === e.currentTarget && setRenameOpen(false)}>
+          <div
+            className="w-[520px] max-w-[95vw] overflow-hidden rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[var(--border-color)] px-5 py-4">
+              <div className="text-sm font-semibold text-[var(--text-primary)]">编辑文件名（备注）</div>
+              <button
+                onClick={() => setRenameOpen(false)}
+                className="rounded-full p-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] hover:text-[var(--text-primary)]"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-5">
+              <div className="text-xs text-[var(--text-secondary)]">该名称会用于批量下载/导出时的真实文件名（会自动清理非法字符与去重）。</div>
+              <input
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                className="mt-3 w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                placeholder="例如：镜头1-首帧-女主"
+              />
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button className="rounded-lg border border-[var(--border-color)] px-3 py-2 text-sm" onClick={() => setRenameOpen(false)}>
+                  取消
+                </button>
+                <button
+                  className="rounded-lg bg-[var(--accent-color)] px-3 py-2 text-sm font-medium text-white"
+                  onClick={() => {
+                    const next = String(renameValue || '').trim()
+                    if (renameId) updateAsset(renameId, { title: next })
+                    setRenameOpen(false)
+                    setRenameId('')
+                  }}
+                >
+                  保存
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <HistoryExportPdfModal
+        open={pdfOpen}
+        items={pdfItems}
+        onClose={() => {
+          setPdfOpen(false)
+          setPdfItems([])
+        }}
+      />
     </div>
   )
 }

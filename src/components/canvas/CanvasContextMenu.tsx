@@ -4,6 +4,7 @@ import type { GraphEdge, GraphNode, NodeType } from '@/graph/types'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '@/config/models'
 import { saveMedia } from '@/lib/mediaStorage'
+import { downloadFile } from '@/lib/download'
 
 // 检测 Tauri 环境
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
@@ -17,6 +18,13 @@ const itemClass =
   'flex w-full items-center justify-between px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
 
 const sectionSep = <div className="my-1 h-px w-full bg-[var(--border-color)]" />
+
+const sanitizeFilenameBase = (name: string) => {
+  let s = String(name || '').replace(/[\u0000-\u001F]/g, '').replace(/[\\/:*?"<>|]/g, '_')
+  s = s.replace(/\s+/g, ' ').trim()
+  s = s.replace(/[. ]+$/g, '').trim()
+  return s.slice(0, 80)
+}
 
 const guessSpawnType = (to: GraphNode | null): NodeType => {
   if (!to) return 'text'
@@ -319,17 +327,16 @@ export default function CanvasContextMenu({
             <button
               className={itemClass}
               onClick={() => {
-                try {
-                  const ext = n.type === 'video' ? 'mp4' : n.type === 'audio' ? 'mp3' : 'png'
-                  const a = document.createElement('a')
-                  a.href = url
-                  a.download = `${String((n.data as any)?.label || 'asset').trim() || 'asset'}-${Date.now()}.${ext}`
-                  document.body.appendChild(a)
-                  a.click()
-                  document.body.removeChild(a)
-                } catch {
-                  // ignore
-                }
+                const ext = n.type === 'video' ? 'mp4' : n.type === 'audio' ? 'mp3' : 'png'
+                const baseRaw = String((n.data as any)?.remark || (n.data as any)?.title || (n.data as any)?.label || 'asset').trim()
+                const base = sanitizeFilenameBase(baseRaw) || 'asset'
+                void (async () => {
+                  try {
+                    await downloadFile({ url, filename: `${base}.${ext}` })
+                  } catch (e: any) {
+                    window.$message?.error?.(e?.message || '下载失败')
+                  }
+                })()
                 onOpenChange(false)
               }}
             >

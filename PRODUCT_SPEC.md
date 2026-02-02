@@ -367,26 +367,31 @@ npm run tauri build
 
 ### 5.3 发布流程
 
-1. **更新版本号**
+0. **门禁规则（必须）**
+   - 每次新增功能/修复后：AI 助手需要先做一次严格自审（逐文件 diff + `npm run build` +（涉及 Tauri 时）`cargo check`）。
+   - 自审完成后：先交付给你测试（提供最短测试清单与预期结果）。
+   - 只有你明确回复“测试通过”后，才允许继续下面的发布步骤（版本号 / Tag / 构建 / Release / README）。
+
+1. **（通过测试后）更新版本号**
    ```bash
    # 同步更新两个文件
    sed -i '' 's/"version": "0.0.X"/"version": "0.0.Y"/g' package.json src-tauri/tauri.conf.json
    ```
 
-2. **提交代码**
+2. **（通过测试后）提交代码**
    ```bash
    git add .
    git commit -m "chore: bump version to 0.0.Y"
    git push origin main
    ```
 
-3. **创建 Tag 触发构建**
+3. **（通过测试后）创建 Tag 触发构建**
    ```bash
    git tag -a v0.0.Y -m "Release v0.0.Y"
    git push origin v0.0.Y
    ```
 
-4. **GitHub Actions 自动执行**
+4. **GitHub Actions 自动执行（CI）**
    - 构建 macOS Intel (`x86_64-apple-darwin`)
    - 构建 macOS ARM (`aarch64-apple-darwin`)
    - 构建 Windows (`windows-latest`)

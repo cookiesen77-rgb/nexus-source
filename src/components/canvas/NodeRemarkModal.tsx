@@ -58,9 +58,12 @@ export default function NodeRemarkModal({
           <Textarea
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder="为这个节点写点备注（仅文本）…"
+            placeholder="用于下载/导出时的文件名（可选）…"
             className="min-h-[180px]"
           />
+          <div className="mt-2 text-[11px] text-[var(--text-secondary)]">
+            提示：批量下载会优先使用备注作为真实文件名（会自动清理非法字符并去重）。
+          </div>
           <div className="mt-4 flex items-center justify-between">
             <Button
               variant="secondary"

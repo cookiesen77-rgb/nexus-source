@@ -6,8 +6,24 @@ export type AuthMode = 'bearer' | 'query' | undefined
 // 检测是否在 Tauri 环境中
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
-// 根据环境选择 fetch 实现
-const safeFetch = isTauri ? tauriFetch : globalThis.fetch
+// 根据环境选择 fetch 实现（带兜底）
+// 说明：少量 Windows 用户环境下，Tauri plugin-http 可能因为系统代理/证书链等原因完全无法联网，
+// 导致所有请求都失败。此处在 Tauri 下对“抛异常”的情况做一次 fallback 到 WebView 原生 fetch，
+// 以提升兼容性（WebView 会走系统网络栈/系统代理）。
+const webFetch = globalThis.fetch ? globalThis.fetch.bind(globalThis) : (async () => { throw new Error('fetch is not available') }) as any
+const safeFetch: typeof webFetch = (async (input: any, init?: any) => {
+  if (!isTauri) return await webFetch(input, init)
+  try {
+    return await (tauriFetch as any)(input, init)
+  } catch (err: any) {
+    const msg = String(err?.message || err || '')
+    console.warn('[safeFetch] tauriFetch failed, fallback to web fetch:', {
+      url: String(input || '').slice(0, 120),
+      message: msg.slice(0, 220),
+    })
+    return await webFetch(input, init)
+  }
+}) as any
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
