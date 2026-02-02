@@ -2,7 +2,7 @@
  * VideoConfigNodeFlow - React Flow 版本的视频配置节点
  * 完全对齐 Vue 版本 VideoConfigNode.vue 实现
  */
-import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
+import React, { memo, useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Trash2, Copy, Expand, Video } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
@@ -10,6 +10,7 @@ import { getNodeSize } from '@/graph/nodeSizing'
 import { generateVideoFromConfigNode } from '@/lib/workflow/video'
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from '@/config/models'
 import * as modelsConfig from '@/config/models'
+import { getVideoModelCaps } from '@/lib/modelCaps'
 
 // 模型选项
 const MODEL_OPTIONS = VIDEO_MODELS.map((m: any) => ({ key: m.key, label: m.label }))
@@ -186,9 +187,42 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     const status = getConnectionStatus()
     console.log('[VideoConfigNode] 连接状态:', status)
     
-    if (status.prompts === 0 && !status.firstFrame && !status.lastFrame && status.refs === 0) {
+    const caps = getVideoModelCaps(model)
+    const totalImages = (status.firstFrame ? 1 : 0) + (status.lastFrame ? 1 : 0) + status.refs
+
+    if (status.prompts === 0 && totalImages === 0) {
       console.warn('[VideoConfigNode] 无输入连接，退出生成')
-      window.$message?.warning?.('请连接文本节点（提示词）或图片节点（首帧/尾帧）')
+      window.$message?.warning?.('请连接文本节点（提示词）或图片节点（首帧/尾帧/参考图）')
+      return
+    }
+
+    // 模型能力校验（UI 级）
+    if (caps.requiresPrompt && status.prompts === 0) {
+      window.$message?.warning?.('当前模型需要提示词（请连接文本节点）')
+      return
+    }
+    if (!caps.supportsFirstFrame && status.firstFrame) {
+      window.$message?.warning?.('当前模型不支持首帧输入')
+      return
+    }
+    if (!caps.supportsLastFrame && status.lastFrame) {
+      window.$message?.warning?.('当前模型不支持尾帧输入')
+      return
+    }
+    if (!caps.supportsReferenceImages && status.refs > 0) {
+      window.$message?.warning?.('当前模型不支持参考图输入')
+      return
+    }
+    if (caps.supportsReferenceImages && caps.maxRefImages > 0 && status.refs > caps.maxRefImages) {
+      window.$message?.warning?.(`当前模型参考图最多支持 ${caps.maxRefImages} 张`)
+      return
+    }
+    if (caps.maxImages > 0 && totalImages > caps.maxImages) {
+      window.$message?.warning?.(`当前模型最多支持 ${caps.maxImages} 张图片输入（含首/尾帧与参考图）`)
+      return
+    }
+    if (caps.requiresFirstFrameIfLastFrame && status.lastFrame && !status.firstFrame) {
+      window.$message?.warning?.('当前模型不支持仅尾帧：有尾帧时必须同时提供首帧')
       return
     }
 
@@ -429,8 +463,15 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
             </select>
           </div>
 
+          {/* 模型提示 */}
+          {currentModelConfig?.tips && (
+            <div className="text-xs text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] rounded px-2 py-1">
+              {currentModelConfig.tips}
+            </div>
+          )}
+
           {/* 连接输入指示 */}
-          <ConnectionStatusIndicator nodeId={id} />
+          <ConnectionStatusIndicator nodeId={id} modelKey={model} />
 
           {/* 生成按钮 - 允许多次点击 */}
           <button
@@ -467,10 +508,13 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
 
 // 连接状态指示器组件 - 订阅 store 实时更新
 const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({ 
-  nodeId 
+  nodeId,
+  modelKey,
 }: { 
-  nodeId: string 
+  nodeId: string
+  modelKey: string
 }) {
+  const caps = useMemo(() => getVideoModelCaps(modelKey), [modelKey])
   // 订阅 store 的 edges 变化
   const status = useGraphStore((state) => {
     const incomingEdges = state.edges.filter((e) => e.target === nodeId)
@@ -509,27 +553,33 @@ const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({
       }`}>
         提示词 {status.prompts > 0 ? '✓' : '○'}
       </span>
-      <span className={`px-2 py-0.5 rounded-full ${
-        status.firstFrame 
-          ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' 
-          : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
-      }`}>
-        首帧 {status.firstFrame ? '✓' : '○'}
-      </span>
-      <span className={`px-2 py-0.5 rounded-full ${
-        status.lastFrame 
-          ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' 
-          : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
-      }`}>
-        尾帧 {status.lastFrame ? '✓' : '○'}
-      </span>
-      <span className={`px-2 py-0.5 rounded-full ${
-        status.refs > 0
-          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
-          : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
-      }`}>
-        参考图 {status.refs > 0 ? `✓ ${status.refs}` : '○'}
-      </span>
+      {caps.supportsFirstFrame && (
+        <span className={`px-2 py-0.5 rounded-full ${
+          status.firstFrame 
+            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' 
+            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+        }`}>
+          首帧 {status.firstFrame ? '✓' : '○'}
+        </span>
+      )}
+      {caps.supportsLastFrame && (
+        <span className={`px-2 py-0.5 rounded-full ${
+          status.lastFrame 
+            ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' 
+            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+        }`}>
+          尾帧 {status.lastFrame ? '✓' : '○'}
+        </span>
+      )}
+      {caps.supportsReferenceImages && (
+        <span className={`px-2 py-0.5 rounded-full ${
+          status.refs > 0
+            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
+            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+        }`}>
+          参考图 {status.refs > 0 ? `✓ ${status.refs}` : '○'}
+        </span>
+      )}
     </div>
   )
 })

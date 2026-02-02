@@ -4,13 +4,14 @@
  * 
  * 性能优化 - 完全不订阅 store，只使用 getState() 按需获取
  */
-import React, { memo, useState, useCallback, useRef, useEffect } from 'react'
+import React, { memo, useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
 import { Copy, Trash2, Expand, ArrowUp, ArrowDown } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { generateImageFromConfigNode } from '@/lib/workflow/image'
 import { IMAGE_MODELS, SEEDREAM_SIZE_OPTIONS, SEEDREAM_4K_SIZE_OPTIONS } from '@/config/models'
+import { getImageModelCaps } from '@/lib/modelCaps'
 
 // 默认图片模型
 const DEFAULT_IMAGE_MODEL = IMAGE_MODELS[0]?.key || 'gemini-3-pro-image-preview'
@@ -125,8 +126,25 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
     console.log('[ImageConfigNode] handleGenerate 被调用, nodeId:', id, 'model:', model, 'size:', size, 'quality:', quality, 'loopCount:', loopCount)
     
     const status = getConnectionStatus()
+    const caps = getImageModelCaps(model)
     if (status.prompts === 0 && status.images === 0) {
       window.$message?.warning?.('请连接文本节点（提示词）或图片节点（参考图）')
+      return
+    }
+    if (caps.requiresPrompt && status.prompts === 0) {
+      window.$message?.warning?.('当前模型需要提示词（请连接文本节点）')
+      return
+    }
+    if (caps.requiresReferenceImages && status.images === 0) {
+      window.$message?.warning?.('当前模型需要参考图（请连接图片节点）')
+      return
+    }
+    if (!caps.supportsReferenceImages && status.images > 0) {
+      window.$message?.warning?.('当前模型不支持参考图输入（请移除图片连接）')
+      return
+    }
+    if (caps.supportsReferenceImages && caps.maxRefImages > 0 && status.images > caps.maxRefImages) {
+      window.$message?.warning?.(`当前模型参考图最多支持 ${caps.maxRefImages} 张`)
       return
     }
 
@@ -413,7 +431,7 @@ export const ImageConfigNodeComponent = memo(function ImageConfigNode({ id, data
           )}
 
           {/* 连接输入指示 */}
-          <ConnectionStatusIndicator getConnectionStatus={getConnectionStatus} />
+          <ConnectionStatusIndicator getConnectionStatus={getConnectionStatus} modelKey={model} />
 
           {/* 参考图顺序（可调整） */}
           <ReferenceOrderEditor configNodeId={id} />
@@ -585,11 +603,14 @@ const ReferenceOrderEditor = memo(function ReferenceOrderEditor({ configNodeId }
 
 // 连接状态指示器组件
 const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({ 
-  getConnectionStatus 
+  getConnectionStatus,
+  modelKey,
 }: { 
   getConnectionStatus: () => { prompts: number; images: number } 
+  modelKey: string
 }) {
   const [status, setStatus] = useState(() => getConnectionStatus())
+  const caps = useMemo(() => getImageModelCaps(modelKey), [modelKey])
   
   // 订阅边和节点数据的变化以更新状态
   useEffect(() => {
@@ -625,22 +646,39 @@ const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({
     <div 
       className="text-xs text-[var(--text-secondary)] py-2 border-t border-[var(--border-color)]"
     >
-      <div className="mb-1.5 opacity-70">支持多张参考图 + 提示词（最多 14 张参考图）</div>
       <div className="flex items-center gap-2">
-        <span className={`px-2 py-0.5 rounded-full ${
-          status.prompts > 0 
-            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 
-            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
-        }`}>
-          提示词 {status.prompts > 0 ? '✓' : '○'}
-        </span>
-        <span className={`px-2 py-0.5 rounded-full ${
-          status.images > 0 
-            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' 
-            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
-        }`}>
-          参考图 {status.images > 0 ? `${status.images}张` : '○'}
-        </span>
+        {(() => {
+          const missingRequired = caps.requiresPrompt && status.prompts === 0
+          return (
+            <span className={`px-2 py-0.5 rounded-full ${
+              status.prompts > 0
+                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                : missingRequired
+                  ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                  : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+            }`}>
+              提示词 {status.prompts > 0 ? '✓' : '○'}
+            </span>
+          )
+        })()}
+        {(() => {
+          const hasImages = status.images > 0
+          const missingRequired = caps.requiresReferenceImages && !hasImages
+          const unsupportedButProvided = !caps.supportsReferenceImages && hasImages
+          const badge =
+            hasImages ? `${status.images}张` : '○'
+          return (
+            <span className={`px-2 py-0.5 rounded-full ${
+              unsupportedButProvided || missingRequired
+                ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                : hasImages
+                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                  : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+            }`}>
+              {caps.supportsReferenceImages ? '参考图' : '参考图(不支持)'} {badge}
+            </span>
+          )
+        })()}
       </div>
     </div>
   )

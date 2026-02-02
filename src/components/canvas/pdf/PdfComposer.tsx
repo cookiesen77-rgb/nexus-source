@@ -164,7 +164,7 @@ export default function PdfComposer({
         const h = 0.38
         const imgCount = els.filter((e: any) => e?.kind === 'image').length
         const pos = nextCascadePos(imgCount, w, h)
-        const el: any = {
+        const el: PdfImageElementDraft = {
           id: newId,
           kind: 'image',
           x: pos.x,
@@ -176,7 +176,7 @@ export default function PdfComposer({
           previewSrc: img.previewSrc || img.src,
           fallbackSrc: img.previewSrc || img.src,
           fit: 'cover',
-        } satisfies PdfImageElementDraft
+        }
         return { ...p, elements: els.concat(el as any) }
       })
       return { ...prev, pages: nextPages }
@@ -219,7 +219,10 @@ export default function PdfComposer({
 
   const addPage = () => {
     const newIndex = pages.length
-    setDoc((prev) => ({ ...prev, pages: [...(prev.pages || []), { id: uid(), elements: [] } satisfies PdfPageDraft] }))
+    setDoc((prev) => {
+      const page: PdfPageDraft = { id: uid(), elements: [] }
+      return { ...prev, pages: [...(prev.pages || []), page] }
+    })
     setSelectedId(null)
     setPageIndex(newIndex)
   }

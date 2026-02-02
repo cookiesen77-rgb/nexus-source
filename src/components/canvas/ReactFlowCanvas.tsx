@@ -35,6 +35,9 @@ import { VideoConfigNodeComponent } from './nodes/VideoConfigNodeFlow'
 import { VideoNodeComponent } from './nodes/VideoNodeFlow'
 import { AudioNodeComponent } from './nodes/AudioNodeFlow'
 import { LocalSaveNodeComponent } from './nodes/LocalSaveNodeFlow'
+import { KlingVideoToolNodeComponent } from './nodes/KlingVideoToolNodeFlow'
+import { KlingImageToolNodeComponent } from './nodes/KlingImageToolNodeFlow'
+import { KlingAudioToolNodeComponent } from './nodes/KlingAudioToolNodeFlow'
 
 // 导入自定义边组件
 import { ImageRoleEdge } from './edges/ImageRoleEdge'
@@ -48,6 +51,9 @@ const nodeTypes: NodeTypes = {
   video: VideoNodeComponent,
   audio: AudioNodeComponent,
   localSave: LocalSaveNodeComponent,
+  klingVideoTool: KlingVideoToolNodeComponent,
+  klingImageTool: KlingImageToolNodeComponent,
+  klingAudioTool: KlingAudioToolNodeComponent,
 }
 
 // 定义边类型映射

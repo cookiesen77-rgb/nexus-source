@@ -10,6 +10,7 @@ import {
   rebuildIndex,
   type SpatialIndex
 } from '@/graph/spatialIndex'
+import { coerceVideoImageRole, getVideoModelCaps } from '@/lib/modelCaps'
 
 type PersistedCanvasV1 = {
   version: 1
@@ -696,23 +697,36 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
       if (src?.type === 'image' && dst?.type === 'videoConfig') {
         type = 'imageRole'
-        const taken = new Set<string>()
+        const caps = getVideoModelCaps(String((dst?.data as any)?.model || '').trim())
+
+        let takenFirst = false
+        let takenLast = false
         for (const e of s.edges) {
           if (!e || e.target !== target || e.source === source) continue
           if (inferEdgeType(e, nodesById) !== 'imageRole') continue
           const r = String((e.data as any)?.imageRole || '').trim()
-          if (r) taken.add(r)
+          if (r === 'first_frame_image') takenFirst = true
+          else if (r === 'last_frame_image') takenLast = true
         }
 
-        const raw = String((nextData as any)?.imageRole || '').trim()
-        const desired = raw === 'last_frame_image' || raw === 'input_reference' ? raw : raw === 'first_frame_image' ? raw : ''
-        let role = desired
-        if (!role) {
-          role = !taken.has('first_frame_image') ? 'first_frame_image' : !taken.has('last_frame_image') ? 'last_frame_image' : 'input_reference'
-        } else if ((role === 'first_frame_image' || role === 'last_frame_image') && taken.has(role)) {
-          const alt = role === 'first_frame_image' ? 'last_frame_image' : 'first_frame_image'
-          role = !taken.has(alt) ? alt : 'input_reference'
+        const desiredRaw = String((nextData as any)?.imageRole || '').trim()
+        let role = coerceVideoImageRole(desiredRaw || 'first_frame_image', caps)
+
+        // 避免同一目标节点首/尾帧重复：优先分配空闲角色，否则降级为参考图
+        if (role === 'first_frame_image' && takenFirst) {
+          if (caps.supportsLastFrame && !takenLast) role = 'last_frame_image'
+          else role = 'input_reference'
+        } else if (role === 'last_frame_image' && takenLast) {
+          if (caps.supportsFirstFrame && !takenFirst) role = 'first_frame_image'
+          else role = 'input_reference'
         }
+
+        // 若模型不支持参考图，则尽量回退到首/尾帧（若仍无可用角色，保留 input_reference 以便 UI/运行时提示）
+        if (!caps.supportsReferenceImages && role === 'input_reference') {
+          if (caps.supportsFirstFrame && !takenFirst) role = 'first_frame_image'
+          else if (caps.supportsLastFrame && !takenLast) role = 'last_frame_image'
+        }
+
         nextData.imageRole = role
       } else if (src?.type === 'text' && dst?.type === 'imageConfig') {
         type = 'promptOrder'
@@ -768,7 +782,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   setEdgeImageRole: (id, role) => {
     const idx = edgeIndexById.get(id)
     if (idx === undefined) return
-    const nextRole = String(role || '').trim() || 'first_frame_image'
+    const roleRaw = String(role || '').trim()
 
     set((s) => {
       const prev = s.edges[idx]
@@ -776,26 +790,105 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
       const nodesById = new Map(s.nodes.map((n) => [n.id, n]))
       const edges = s.edges.slice()
-      const target = prev.target
-      const flipIfNeeded = (edge: GraphEdge) => {
-        if (!edge?.data) return edge
-        const r = String((edge.data as any).imageRole || '').trim()
-        if (r !== nextRole) return edge
-        if (nextRole !== 'first_frame_image' && nextRole !== 'last_frame_image') return edge
-        const opposite = nextRole === 'first_frame_image' ? 'last_frame_image' : 'first_frame_image'
-        return { ...edge, type: 'imageRole', data: { ...(edge.data || {}), imageRole: opposite } }
-      }
+      const targetId = prev.target
+      const targetNode = nodesById.get(targetId)
+      const caps = targetNode?.type === 'videoConfig' ? getVideoModelCaps(String((targetNode.data as any)?.model || '').trim()) : null
 
-      // Enforce uniqueness for first/last roles within the same target
+      // 收集同一 target 的 imageRole 边
+      const relatedIdx: number[] = []
       for (let i = 0; i < edges.length; i++) {
-        if (i === idx) continue
         const e = edges[i]
-        if (!e || e.target !== target) continue
+        if (!e || e.target !== targetId) continue
         if (inferEdgeType(e, nodesById) !== 'imageRole') continue
-        edges[i] = flipIfNeeded(e)
+        relatedIdx.push(i)
       }
 
-      edges[idx] = { ...prev, type: 'imageRole', data: { ...(prev.data || {}), imageRole: nextRole } }
+      const desired = caps ? coerceVideoImageRole(roleRaw || 'first_frame_image', caps) : (roleRaw || 'first_frame_image')
+
+      // 先写入期望角色
+      const nextRoles = new Map<string, string>()
+      for (const i of relatedIdx) {
+        const e = edges[i]
+        const cur = i === idx ? desired : String((e.data as any)?.imageRole || '').trim() || 'first_frame_image'
+        nextRoles.set(e.id, caps ? coerceVideoImageRole(cur, caps) : cur)
+      }
+
+      // 约束：首帧/尾帧唯一
+      let hasFirst = false
+      let hasLast = false
+      for (const i of relatedIdx) {
+        const e = edges[i]
+        let r = String(nextRoles.get(e.id) || '').trim()
+        if (caps) {
+          if (r === 'first_frame_image') {
+            if (!caps.supportsFirstFrame || hasFirst) r = 'input_reference'
+            else hasFirst = true
+          } else if (r === 'last_frame_image') {
+            if (!caps.supportsLastFrame || hasLast) r = 'input_reference'
+            else hasLast = true
+          } else if (r === 'input_reference') {
+            if (!caps.supportsReferenceImages) r = 'input_reference'
+          }
+        }
+        nextRoles.set(e.id, r)
+      }
+
+      // 若模型不支持参考图：尽量把 input_reference 重新分配到首/尾帧空位
+      if (caps && !caps.supportsReferenceImages) {
+        // 重新统计
+        hasFirst = false
+        hasLast = false
+        for (const i of relatedIdx) {
+          const e = edges[i]
+          const r = String(nextRoles.get(e.id) || '').trim()
+          if (r === 'first_frame_image') hasFirst = true
+          else if (r === 'last_frame_image') hasLast = true
+        }
+        for (const i of relatedIdx) {
+          const e = edges[i]
+          let r = String(nextRoles.get(e.id) || '').trim()
+          if (r !== 'input_reference') continue
+          if (caps.supportsFirstFrame && !hasFirst) {
+            r = 'first_frame_image'
+            hasFirst = true
+          } else if (caps.supportsLastFrame && !hasLast) {
+            r = 'last_frame_image'
+            hasLast = true
+          }
+          nextRoles.set(e.id, r)
+        }
+      }
+
+      // 特例：有尾帧必须有首帧（Omni-Video 等）
+      if (caps?.requiresFirstFrameIfLastFrame) {
+        hasFirst = false
+        hasLast = false
+        for (const i of relatedIdx) {
+          const e = edges[i]
+          const r = String(nextRoles.get(e.id) || '').trim()
+          if (r === 'first_frame_image') hasFirst = true
+          if (r === 'last_frame_image') hasLast = true
+        }
+        if (hasLast && !hasFirst && caps.supportsFirstFrame) {
+          // 从 input_reference 中借一个升级为首帧（尽量不改动当前边）
+          for (const i of relatedIdx) {
+            const e = edges[i]
+            if (e.id === prev.id) continue
+            const r = String(nextRoles.get(e.id) || '').trim()
+            if (r !== 'input_reference') continue
+            nextRoles.set(e.id, 'first_frame_image')
+            hasFirst = true
+            break
+          }
+        }
+      }
+
+      // 写回
+      for (const i of relatedIdx) {
+        const e = edges[i]
+        const r = String(nextRoles.get(e.id) || '').trim() || 'first_frame_image'
+        edges[i] = { ...e, type: 'imageRole', data: { ...(e.data || {}), imageRole: r } }
+      }
       rebuildEdgeIndex(edges)
       return { edges }
     })

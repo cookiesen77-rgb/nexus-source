@@ -103,6 +103,91 @@ export default defineConfig(({ mode }) => {
             })
           }
         },
+        // Volc / Seedance（豆包视频）接口
+        '/volc': {
+          target: 'https://nexusapi.cn',
+          changeOrigin: true,
+          secure: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+          agent: httpsAgent,
+          configure: (proxy) => {
+            proxy.on('error', (err) => {
+              console.log('[Proxy Error]', err.message)
+            })
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('Connection', 'keep-alive')
+            })
+          }
+        },
+        // Ali Bailian（通义万象）接口
+        '/alibailian': {
+          target: 'https://nexusapi.cn',
+          changeOrigin: true,
+          secure: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+          agent: httpsAgent,
+          configure: (proxy) => {
+            proxy.on('error', (err) => {
+              console.log('[Proxy Error]', err.message)
+            })
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('Connection', 'keep-alive')
+            })
+          }
+        },
+        // MiniMax（海螺视频）接口
+        '/minimax': {
+          target: 'https://nexusapi.cn',
+          changeOrigin: true,
+          secure: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+          agent: httpsAgent,
+          configure: (proxy) => {
+            proxy.on('error', (err) => {
+              console.log('[Proxy Error]', err.message)
+            })
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('Connection', 'keep-alive')
+            })
+          }
+        },
+        // Luma 视频接口
+        '/luma': {
+          target: 'https://nexusapi.cn',
+          changeOrigin: true,
+          secure: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+          agent: httpsAgent,
+          configure: (proxy) => {
+            proxy.on('error', (err) => {
+              console.log('[Proxy Error]', err.message)
+            })
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('Connection', 'keep-alive')
+            })
+          }
+        },
+        // Runway 视频接口
+        '/runwayml': {
+          target: 'https://nexusapi.cn',
+          changeOrigin: true,
+          secure: true,
+          timeout: 300000,
+          proxyTimeout: 300000,
+          agent: httpsAgent,
+          configure: (proxy) => {
+            proxy.on('error', (err) => {
+              console.log('[Proxy Error]', err.message)
+            })
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.setHeader('Connection', 'keep-alive')
+            })
+          }
+        },
         // Tencent VOD 接口
         '/tencent-vod': {
           target: 'https://nexusapi.cn',

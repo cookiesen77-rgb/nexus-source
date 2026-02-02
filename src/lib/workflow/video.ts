@@ -674,6 +674,7 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
   let lastErr: any = null
   let consecutiveErrors = 0
   let lastSuccessStatus = ''
+  let completedWithoutUrlCount = 0
 
   const isTransientPollError = (err: any) => {
     const msg = String(err?.message || err || '')
@@ -716,11 +717,7 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
 
     let resp: any
     try {
-      // Tencent AIGC Video 格式使用 GET 请求到 /tencent-vod/v1/query/{task_id} 查询任务状态
-      if (modelCfg.format === 'tencent-video') {
-        const queryUrl = typeof statusEndpoint === 'function' ? statusEndpoint(id) : `${statusEndpoint}/${id}`
-        resp = await getJson<any>(queryUrl, undefined, { authMode: modelCfg.authMode })
-      } else if (typeof statusEndpoint === 'function') {
+      if (typeof statusEndpoint === 'function') {
         resp = await getJson<any>(statusEndpoint(id), undefined, { authMode: modelCfg.authMode })
       } else {
         resp = await getJson<any>(statusEndpoint, { id }, { authMode: modelCfg.authMode })
@@ -792,11 +789,29 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
     }
     
     // OpenAI Sora 格式支持：output.video, downloads[0].url 等
-    const outputVideo = output?.video || resp?.output?.video || resp?.data?.output?.video
+    const outputVideoRaw = output?.video || resp?.output?.video || resp?.data?.output?.video
     const downloads = resp?.downloads || resp?.data?.downloads || output?.downloads
-    const downloadUrl = Array.isArray(downloads) && downloads.length > 0 
-      ? (downloads[0]?.url || downloads[0]?.video_url || downloads[0]) 
-      : null
+
+    const pickUrl = (v: any) => {
+      if (!v) return ''
+      if (typeof v === 'string') return v
+      if (typeof v === 'object') {
+        const cand =
+          (v as any)?.url ||
+          (v as any)?.video_url ||
+          (v as any)?.videoUrl ||
+          (v as any)?.download_url ||
+          (v as any)?.downloadUrl ||
+          (v as any)?.result_url ||
+          (v as any)?.resultUrl
+        return typeof cand === 'string' ? cand : ''
+      }
+      return ''
+    }
+
+    const outputVideo = pickUrl(outputVideoRaw)
+    const downloadUrlRaw = Array.isArray(downloads) && downloads.length > 0 ? (downloads[0]?.url || downloads[0]?.video_url || downloads[0]) : null
+    const downloadUrl = pickUrl(downloadUrlRaw)
     
     const videoUrl = videoUrlFromFileInfos || outputVideo || downloadUrl ||
                      aigcOutput?.VideoUrl || aigcOutput?.video_url ||
@@ -813,8 +828,8 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
     })
 
     // 如果直接有视频 URL，返回
-    if (videoUrl && videoUrl.startsWith('http')) {
-      console.log('[pollVideoTask] 获取到视频 URL:', videoUrl?.slice(0, 80))
+    if (typeof videoUrl === 'string' && /^https?:\/\//i.test(videoUrl)) {
+      console.log('[pollVideoTask] 获取到视频 URL:', videoUrl.slice(0, 80))
       return videoUrl
     }
 
@@ -829,6 +844,7 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
     const isCompleted = /^(finish|finished|completed|complete|success|done|ready|succeeded)$/i.test(status)
     
     if (isCompleted && !videoUrl) {
+      completedWithoutUrlCount++
       // 对于 sora-openai 格式，视频 URL 就是 /videos/{id}/content 端点
       // 使用相对路径，让请求通过 Vite 代理（避免 CORS 问题）
       if (modelCfg.format === 'sora-openai') {
@@ -850,12 +866,19 @@ const pollVideoTask = async (id: string, modelCfg: any, nodeId?: string, videoNo
         'fullResp': JSON.stringify(resp)?.slice(0, 2000)
       })
       
-      // 如果有错误码或 FileInfos 为空，说明生成失败（sora-openai 格式除外，它没有 FileInfos）
-      if (modelCfg.format !== 'sora-openai' && (errCode || errMsg || (fileInfos && fileInfos.length === 0))) {
-        const errorDetail = errMsg || errCode || '视频生成完成但未返回文件，可能是内容审核未通过或生成失败'
+      // 只在明确有错误信息时判定失败；避免误把“暂未补齐 URL”当失败
+      if (errCode || errMsg) {
+        const errorDetail = String(errMsg || errCode || '视频生成失败')
         console.error('[pollVideoTask] 视频生成失败:', errorDetail)
         throw new Error(errorDetail)
       }
+
+      // 其他格式：允许短暂延迟（上游可能异步补齐下载 URL），但不要无限等到超时
+      if (completedWithoutUrlCount >= 3) {
+        throw new Error('视频生成已完成，但未返回可用的视频 URL')
+      }
+    } else {
+      completedWithoutUrlCount = 0
     }
 
     // 检查失败状态 (支持多种格式: failed, FAILED, fail, error, FAIL)
@@ -960,7 +983,7 @@ export const generateVideoFromConfigNode = async (
   console.log('[generateVideo] 节点数据:', d)
 
   // 1. 获取连接的输入
-  const { prompt, firstFrame, lastFrame, refImages } = getConnectedInputs(configNodeId)
+  let { prompt, firstFrame, lastFrame, refImages } = getConnectedInputs(configNodeId)
   console.log('[generateVideo] 连接输入:', {
     promptLength: prompt?.length || 0,
     hasFirstFrame: !!firstFrame,
@@ -985,6 +1008,57 @@ export const generateVideoFromConfigNode = async (
     (VIDEO_MODELS as any[])[0]
   console.log('[generateVideo] 模型配置:', { modelKey, resolvedKey: String(modelCfg?.key || ''), modelCfg, fromOverrides: !!overrides?.model })
   if (!modelCfg) throw new Error('未找到模型配置')
+
+  // === 运行时输入能力校验（基于 models.js 的能力字段）===
+  // 说明：部分模型不区分“首帧/参考图”语义（只接收 images[]），这里做兼容性折叠：
+  // - 若模型不支持首/尾帧但支持参考图：把首/尾帧输入视为参考图
+  // - 若模型支持首帧但不支持参考图：允许将第一张参考图折叠为首帧（兼容旧工程/错误角色选择）
+  const supportsFirstFrame = !!(modelCfg as any)?.supportsFirstFrame
+  const supportsLastFrame = !!(modelCfg as any)?.supportsLastFrame
+  const supportsRef = !!(modelCfg as any)?.supportsReferenceImages
+  const requiresPrompt = !!(modelCfg as any)?.requiresPrompt
+  const requiresFirstFrameIfLastFrame = !!(modelCfg as any)?.requiresFirstFrameIfLastFrame
+  const maxImages = Number.isFinite(Number((modelCfg as any)?.maxImages)) ? Number((modelCfg as any).maxImages) : 2
+  const maxRefImages = supportsRef
+    ? (Number.isFinite(Number((modelCfg as any)?.maxRefImages)) ? Number((modelCfg as any).maxRefImages) : maxImages)
+    : 0
+
+  // Fold roles to match model capability
+  if (supportsRef && !supportsFirstFrame && firstFrame) {
+    refImages = [firstFrame, ...(refImages || [])]
+    firstFrame = ''
+  }
+  if (supportsRef && !supportsLastFrame && lastFrame) {
+    refImages = [...(refImages || []), lastFrame]
+    lastFrame = ''
+  }
+  if (!supportsRef && supportsFirstFrame && !firstFrame && Array.isArray(refImages) && refImages.length > 0) {
+    firstFrame = refImages[0]
+    refImages = refImages.slice(1)
+  }
+
+  const totalImages = (firstFrame ? 1 : 0) + (lastFrame ? 1 : 0) + (refImages?.length || 0)
+  if (requiresPrompt && !normalizeText(prompt)) {
+    throw new Error('当前模型需要提示词：请连接文本节点（提示词）后重试')
+  }
+  if (!supportsFirstFrame && firstFrame) {
+    throw new Error('当前模型不支持首帧输入（请移除首帧连接或更换模型）')
+  }
+  if (!supportsLastFrame && lastFrame) {
+    throw new Error('当前模型不支持尾帧输入（请移除尾帧连接或更换模型）')
+  }
+  if (!supportsRef && (refImages?.length || 0) > 0) {
+    throw new Error('当前模型不支持参考图输入（请移除参考图连接或更换模型）')
+  }
+  if (supportsRef && maxRefImages > 0 && (refImages?.length || 0) > maxRefImages) {
+    throw new Error(`当前模型参考图最多支持 ${maxRefImages} 张`)
+  }
+  if (Number.isFinite(maxImages) && maxImages > 0 && totalImages > maxImages) {
+    throw new Error(`当前模型最多支持 ${maxImages} 张图片输入（含首/尾帧与参考图）`)
+  }
+  if (requiresFirstFrameIfLastFrame && lastFrame && !firstFrame) {
+    throw new Error('当前模型不支持仅尾帧：有尾帧时必须同时提供首帧')
+  }
 
   // 优先使用 overrides 参数
   const ratio = String(overrides?.ratio || d.ratio || modelCfg.defaultParams?.ratio || modelCfg.defaultParams?.aspect_ratio || '')
@@ -1369,105 +1443,278 @@ export const generateVideoFromConfigNode = async (
         payload = { model_name: modelName, prompt, mode, duration: durValue, sound }
         if (ratio) payload.aspect_ratio = ratio
       }
-    } else if (modelCfg.format === 'tencent-video') {
-      // Tencent AIGC Video 格式 (Vidu / Hailuo / Kling)
-      // 官方文档：https://help.allapi.store/api-412862124
-      const version = modelCfg.defaultParams?.version || ''
-      const size = overrides?.size || d.size || modelCfg.defaultParams?.size || '720p'
-      const dur = Number(duration) || Number(modelCfg.defaultParams?.duration) || 4
-      
-      // 解析 model_name 和 model_version
-      // key 格式如：vidu-q2-turbo, hailuo-2.3-fast, kling-2.5
-      let modelName = 'Vidu'
-      let modelVersion = version
-      
-      const keyLower = modelCfg.key.toLowerCase()
-      if (keyLower.startsWith('vidu')) {
-        modelName = 'Vidu'
-        // version 已从 defaultParams 获取
-      } else if (keyLower.startsWith('hailuo')) {
-        modelName = 'Hailuo'
-      } else if (keyLower.startsWith('kling')) {
-        modelName = 'Kling'
+    } else if (modelCfg.format === 'kling-multi-image2video') {
+      // Kling 多图参考生视频：POST /kling/v1/videos/multi-image2video
+      // 查询：GET /kling/v1/videos/multi-image2video/{id}
+      const modelName = modelCfg.defaultParams?.model_name || 'kling-v1-6'
+      const mode = modelCfg.defaultParams?.mode || 'std'
+      const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || '5')
+      const promptText = normalizeText(prompt)
+      if (!promptText) throw new Error('Kling 多图参考生视频需要提示词：请连接文本节点（提示词）后重试')
+      if (!Array.isArray(refImages) || refImages.length === 0) {
+        throw new Error('Kling 多图参考生视频需要至少 1 张参考图（请连接图片节点并设置为“参考图”）')
       }
-      
+
+      const ensureHttpImage = async (raw: string, label: string) => {
+        let v = String(raw || '').trim()
+        if (!v) return ''
+        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+        if (v.startsWith('data:') || isBase64Like(v)) {
+          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
+          v = await uploadBase64ToImageHost(v)
+        }
+        if (/^https?:\/\//i.test(v)) return v
+        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+      }
+
+      const max = Number.isFinite(Number(modelCfg.maxImages)) ? Number(modelCfg.maxImages) : 4
+      const image_list: any[] = []
+      for (let i = 0; i < Math.min(max, refImages.length); i++) {
+        const url = await ensureHttpImage(refImages[i], `参考图${i + 1}`)
+        if (url) image_list.push({ image: url })
+      }
+      if (image_list.length === 0) throw new Error('Kling 多图参考生视频参考图为空')
+
+      payload = { model_name: modelName, image_list, prompt: promptText, mode, duration: durValue }
+      if (ratio) payload.aspect_ratio = ratio
+    } else if (modelCfg.format === 'volc-seedance-video') {
+      // doubao-seedance-1-5-pro-251215
+      // 文档：POST /volc/v1/contents/generations/tasks
+      // 返回：{ id, status: "submitted" }，查询：GET /volc/v1/contents/generations/tasks/{id}
+      const promptText = normalizeText(prompt)
+      if (!promptText) {
+        throw new Error('seedance-1-5-pro 需要提示词：请连接文本节点（提示词）后重试')
+      }
+      const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 4)
+      const ratioValue = String(ratio || modelCfg.defaultParams?.ratio || 'adaptive') || 'adaptive'
+      const watermark = typeof modelCfg.defaultParams?.watermark === 'boolean' ? modelCfg.defaultParams.watermark : false
+
+      const ensureHttpImage = async (raw: string, label: string) => {
+        let v = String(raw || '').trim()
+        if (!v) return ''
+        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+        if (v.startsWith('data:') || isBase64Like(v)) {
+          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
+          v = await uploadBase64ToImageHost(v)
+        }
+        if (/^https?:\/\//i.test(v)) return v
+        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+      }
+
+      const content: any[] = []
+      content.push({ type: 'text', text: promptText })
+
+      let firstUrl = firstFrame || refImages[0] || ''
+      let lastUrl = lastFrame || ''
+      if (firstUrl) firstUrl = await ensureHttpImage(firstUrl, '首帧')
+      if (lastUrl) lastUrl = await ensureHttpImage(lastUrl, '尾帧')
+
+      if (firstUrl) {
+        content.push({
+          type: 'image_url',
+          image_url: { url: firstUrl },
+          ...(lastUrl ? { role: 'first_frame' } : {})
+        })
+      }
+      if (lastUrl) {
+        content.push({
+          type: 'image_url',
+          image_url: { url: lastUrl },
+          role: 'last_frame'
+        })
+      }
+
       payload = {
-        model_name: modelName,
-        model_version: modelVersion,
+        model: modelCfg.key,
+        content,
+        ratio: ratioValue,
+        duration: durValue,
+        watermark
+      }
+    } else if (modelCfg.format === 'alibailian-wan-video') {
+      // 通义万象 wan2.6-i2v
+      // 端点：POST /alibailian/api/v1/services/aigc/video-generation/video-synthesis
+      // 查询：GET /alibailian/api/v1/tasks/{task_id}
+      const ensureHttpImage = async (raw: string, label: string) => {
+        let v = String(raw || '').trim()
+        if (!v) return ''
+        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+        if (v.startsWith('data:') || isBase64Like(v)) {
+          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
+          v = await uploadBase64ToImageHost(v)
+        }
+        if (/^https?:\/\//i.test(v)) return v
+        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+      }
+
+      let imageUrl = firstFrame || refImages[0] || ''
+      if (!imageUrl) throw new Error('wan2.6-i2v 需要首帧图片（请连接图片节点）')
+      imageUrl = await ensureHttpImage(imageUrl, '首帧')
+
+      const sizeValue = String(overrides?.size || d.size || modelCfg.defaultParams?.size || '1080P')
+      const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 5)
+      const promptExtend =
+        typeof (d as any)?.prompt_extend === 'boolean'
+          ? (d as any).prompt_extend
+          : typeof modelCfg.defaultParams?.prompt_extend === 'boolean'
+            ? modelCfg.defaultParams.prompt_extend
+            : true
+
+      payload = {
+        model: modelCfg.key,
+        input: {
+          prompt: prompt || '',
+          // 用户要求使用 image_url；同时附带 img_url 以兼容 DashScope / 云雾示例
+          image_url: imageUrl,
+          img_url: imageUrl,
+        },
+        parameters: {
+          resolution: sizeValue,
+          duration: durValue,
+          prompt_extend: promptExtend,
+        }
+      }
+    } else if (modelCfg.format === 'minimax-hailuo-video') {
+      // 云雾海螺（MiniMax）端点：POST /minimax/v1/video_generation
+      // 查询：GET /minimax/v1/query/video_generation?task_id=...
+      const ensureHttpImage = async (raw: string, label: string) => {
+        let v = String(raw || '').trim()
+        if (!v) return ''
+        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+        if (v.startsWith('data:') || isBase64Like(v)) {
+          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
+          v = await uploadBase64ToImageHost(v)
+        }
+        if (/^https?:\/\//i.test(v)) return v
+        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+      }
+
+      const sizeValue = String(overrides?.size || d.size || modelCfg.defaultParams?.size || '768P')
+      const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
+
+      let firstUrl = firstFrame || refImages[0] || ''
+      let lastUrl = lastFrame || ''
+      if (firstUrl) firstUrl = await ensureHttpImage(firstUrl, '首帧')
+      if (lastUrl) lastUrl = await ensureHttpImage(lastUrl, '尾帧')
+
+      payload = {
+        model: modelCfg.key,
         prompt: prompt || '',
-        enhance_prompt: 'Enabled',
-        output_config: {
-          storage_mode: 'Temporary',
-          resolution: size.toUpperCase(),  // 720P, 1080P
-          duration: dur,  // int 类型
-        }
+        duration: durValue,
+        resolution: sizeValue,
       }
-      
-      // 添加宽高比
-      if (ratio) {
-        payload.output_config.aspect_ratio = ratio
+      if (firstUrl) payload.first_frame_image = firstUrl
+      if (lastUrl) payload.last_frame_image = lastUrl
+      const po = modelCfg.defaultParams?.prompt_optimizer
+      if (typeof po === 'boolean') payload.prompt_optimizer = po
+    } else if (modelCfg.format === 'kling-omni-video') {
+      // Kling Omni-Video：POST /kling/v1/videos/omni-video
+      // 查询按用户确认：GET /kling/v1/videos/omni-video/{id}
+      const ensureHttpImage = async (raw: string, label: string) => {
+        let v = String(raw || '').trim()
+        if (!v) return ''
+        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+        if (v.startsWith('data:') || isBase64Like(v)) {
+          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
+          v = await uploadBase64ToImageHost(v)
+        }
+        if (/^https?:\/\//i.test(v)) return v
+        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
       }
-      
-      // 添加首帧图片（如果有）
-      if (firstFrame || refImages.length > 0) {
-        let imageUrl = firstFrame || refImages[0]
-        
-        // 腾讯 AIGC API 只支持公网可访问的 HTTP(S) URL
-        // 如果是 base64 或 blob，自动上传到图床获取公网 URL
-        if (imageUrl.startsWith('data:') || isBase64Like(imageUrl)) {
-          console.log('[tencent-video] 检测到 base64 图片，自动上传到图床...')
-          try {
-            if (imageUrl.startsWith('data:')) {
-              imageUrl = await compressImageBase64(imageUrl, 900 * 1024)
-            }
-            imageUrl = await uploadBase64ToImageHost(imageUrl)
-            console.log('[tencent-video] 图片已上传，公网 URL:', imageUrl)
-          } catch (uploadErr: any) {
-            console.error('[tencent-video] 图片上传失败:', uploadErr)
-            throw new Error(`图片上传失败：${uploadErr?.message || '未知错误'}。请使用公网可访问的图片 URL`)
-          }
-        }
-        if (imageUrl.startsWith('blob:')) {
-          throw new Error('腾讯 AIGC 视频模型不支持 blob 图片，请使用公网可访问的图片 URL（https://...）')
-        }
-        if (/^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/i.test(imageUrl)) {
-          throw new Error('腾讯 AIGC 视频模型不支持内网图片地址，请使用公网可访问的图片 URL')
-        }
-        if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
-          throw new Error('腾讯 AIGC 视频模型需要公网可访问的图片 URL（以 http:// 或 https:// 开头）')
-        }
-        
-        payload.file_infos = [{
-          type: 'Url',
-          url: imageUrl
-        }]
+
+      const modelName = modelCfg.defaultParams?.model_name || 'kling-video-o1'
+      const mode = modelCfg.defaultParams?.mode || 'pro'
+      const promptText = normalizeText(prompt)
+      if (!promptText) throw new Error('kling-omni-video 需要提示词：请连接文本节点（提示词）后重试')
+      const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || '5')
+
+      const image_list: any[] = []
+      if (firstFrame) {
+        const u = await ensureHttpImage(firstFrame, '首帧')
+        if (u) image_list.push({ image_url: u, type: 'first_frame' })
       }
-      
-      // 添加尾帧图片（如果有）
       if (lastFrame) {
-        let lastFrameUrl = lastFrame
-        // 如果是 base64，自动上传到图床
-        if (lastFrameUrl.startsWith('data:') || isBase64Like(lastFrameUrl)) {
-          console.log('[tencent-video] 检测到 base64 尾帧图片，自动上传到图床...')
-          try {
-            if (lastFrameUrl.startsWith('data:')) {
-              lastFrameUrl = await compressImageBase64(lastFrameUrl, 900 * 1024)
-            }
-            lastFrameUrl = await uploadBase64ToImageHost(lastFrameUrl)
-          } catch (uploadErr: any) {
-            throw new Error(`尾帧图片上传失败：${uploadErr?.message || '未知错误'}`)
-          }
-        }
-        if (lastFrameUrl.startsWith('blob:')) {
-          throw new Error('腾讯 AIGC 视频模型不支持 blob 图片作为尾帧')
-        }
-        if (!lastFrameUrl.startsWith('http://') && !lastFrameUrl.startsWith('https://')) {
-          throw new Error('腾讯 AIGC 视频模型的尾帧图片需要公网可访问的 URL')
-        }
-        payload.last_frame_url = lastFrameUrl
+        if (!firstFrame) throw new Error('kling-omni-video 不支持仅尾帧：有尾帧时必须同时提供首帧')
+        const u = await ensureHttpImage(lastFrame, '尾帧')
+        if (u) image_list.push({ image_url: u, type: 'end_frame' })
       }
-      
-      console.log('[tencent-video] 请求参数:', JSON.stringify(payload, null, 2))
+      if (Array.isArray(refImages) && refImages.length > 0) {
+        const max = Number.isFinite(Number(modelCfg.maxImages)) ? Number(modelCfg.maxImages) : 6
+        for (let i = 0; i < Math.min(max, refImages.length); i++) {
+          const u = await ensureHttpImage(refImages[i], `参考图${i + 1}`)
+          if (u) image_list.push({ image_url: u })
+        }
+      }
+
+      payload = { model_name: modelName, prompt: promptText, image_list, mode, duration: durValue }
+      if (ratio) payload.aspect_ratio = ratio
+    } else if (modelCfg.format === 'luma-video') {
+      // Luma 官方格式：POST /luma/generations, GET /luma/generations/{id}
+      const modelName = String(modelCfg.defaultParams?.model_name || 'ray-v2')
+      const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 5)
+      const durationStr = `${durValue}s`
+      const resolution = String(overrides?.size || d.size || modelCfg.defaultParams?.size || '720p')
+
+      payload = {
+        user_prompt: prompt || '',
+        model_name: modelName,
+        duration: durationStr,
+        resolution,
+      }
+    } else if (modelCfg.format === 'runway-video') {
+      // Runway：POST /runwayml/v1/image_to_video, GET /runwayml/v1/tasks/{id}
+      // 注意：Runway ratio 使用像素比（如 1280:720）
+      const ensureHttpImage = async (raw: string, label: string) => {
+        let v = String(raw || '').trim()
+        if (!v) return ''
+        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+        if (v.startsWith('data:') || isBase64Like(v)) {
+          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
+          v = await uploadBase64ToImageHost(v)
+        }
+        if (/^https?:\/\//i.test(v)) return v
+        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+      }
+
+      let imageUrl = firstFrame || refImages[0] || ''
+      if (!imageUrl) throw new Error('Runway image_to_video 需要首帧图片（请连接图片节点）')
+      imageUrl = await ensureHttpImage(imageUrl, '首帧')
+
+      const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
+      const watermark = typeof modelCfg.defaultParams?.watermark === 'boolean' ? modelCfg.defaultParams.watermark : false
+
+      const toPixelRatio = (r: string) => {
+        const rr = String(r || '').trim()
+        if (!rr) return '1280:720'
+        if (/^\d+:\d+$/.test(rr) && rr.includes(':') && rr.split(':')[0].length > 2) {
+          // 已经是像素比（如 1280:768）
+          return rr
+        }
+        // 传入的是宽高比（如 16:9）
+        switch (rr) {
+          case '16:9':
+            return '1280:720'
+          case '9:16':
+            return '720:1280'
+          case '1:1':
+            return '1024:1024'
+          case '4:3':
+            return '1024:768'
+          case '3:4':
+            return '768:1024'
+          default:
+            return '1280:720'
+        }
+      }
+
+      payload = {
+        promptImage: imageUrl,
+        model: modelCfg.key,
+        promptText: prompt || '',
+        watermark,
+        duration: durValue,
+        ratio: toPixelRatio(ratio),
+      }
     } else if (modelCfg.format === 'sora-video') {
       // Sora 2 / OpenAI Videos API 格式 (/videos/generations)
       const dur = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
@@ -1589,44 +1836,19 @@ export const generateVideoFromConfigNode = async (
 
     // 尝试从不同格式提取视频 URL
     let extractedVideoUrl = ''
-    
-    // Tencent AIGC Video 格式 (Vidu/Hailuo/Kling)
-    if (modelCfg.format === 'tencent-video') {
-      // 响应格式（PascalCase）:
-      // { Response: { TaskId, RequestId } }
-      // 或 snake_case: { task_id, request_id, output: { video_url } }
-      const response = task?.Response || task?.response || task
-      const output = response?.Output || response?.output || task?.output || task?.data?.output || task?.data || task
-      
-      // 支持 PascalCase 和 snake_case
-      const taskId = response?.TaskId || response?.task_id || 
-                     output?.TaskId || output?.task_id || output?.id ||
-                     task?.TaskId || task?.task_id || task?.id ||
-                     task?.RequestId || task?.request_id
-      const videoUrl = output?.VideoUrl || output?.video_url || output?.result_url || 
-                       response?.VideoUrl || response?.video_url ||
-                       task?.VideoUrl || task?.video_url || task?.result_url
-      const taskStatus = output?.TaskStatus || output?.task_status || output?.status ||
-                         response?.TaskStatus || response?.task_status || task?.status
-      
-      console.log('[generateVideo] Tencent Video 解析:', { 
-        taskId, 
-        taskStatus, 
-        videoUrl: videoUrl?.slice?.(0, 80),
-        responseKeys: Object.keys(response || {}),
-        outputKeys: Object.keys(output || {})
-      })
-      
-      if (videoUrl && videoUrl.startsWith('http')) {
-        extractedVideoUrl = videoUrl
-      } else if (taskId) {
-        // 需要轮询，将 task_id 存入 task 对象供后续使用
+
+    // 云雾 alibailian（DashScope 风格）：task_id 位于 output.task_id
+    if (modelCfg.format === 'alibailian-wan-video') {
+      const taskId =
+        task?.output?.task_id ||
+        task?.output?.taskId ||
+        task?.data?.output?.task_id ||
+        task?.data?.output?.taskId ||
+        task?.task_id ||
+        task?.taskId
+      if (taskId) {
         task.id = taskId
         task.task_id = taskId
-        console.log('[generateVideo] Tencent Video 需要轮询, taskId:', taskId)
-      } else {
-        // 没有 taskId 也没有 videoUrl，打印完整响应以便调试
-        console.error('[generateVideo] Tencent Video 无法解析响应:', JSON.stringify(task, null, 2))
       }
     }
     
@@ -1665,96 +1887,7 @@ export const generateVideoFromConfigNode = async (
         const polled = await pollVideoTask(String(id), { ...modelCfg, statusEndpoint: statusEndpointOverride }, configNodeId, videoNodeId)
         videoUrl = normalizeMediaUrl(polled)
       } catch (pollErr: any) {
-        const msg = String(pollErr?.message || pollErr || '')
-        const isTencent = modelCfg.format === 'tencent-video'
-        const looksLikeImageUrlNotReachable =
-          /ImageURL.*external network/i.test(msg) ||
-          /InvalidParameterValue/i.test(msg) ||
-          /\bErrCode\b.*70000/i.test(msg) ||
-          /retrieved from the external network/i.test(msg)
-
-        // Tencent AIGC：若提示 ImageURL 外网不可达，尝试重新上传到云雾图床并重试一次
-        if (isTencent && looksLikeImageUrlNotReachable) {
-          console.warn('[generateVideo] Tencent Video ImageURL 外网不可达，尝试重新上传到云雾图床并重试一次...')
-          const firstInput = String(firstFrame || refImages[0] || '').trim()
-          if (!firstInput) throw pollErr
-
-          const ensureUploadable = async (input: string) => {
-            const v = String(input || '').trim()
-            if (!v) return ''
-            if (v.startsWith('data:')) return await compressImageBase64(v, 900 * 1024)
-            if (isBase64Like(v)) return v
-            // 兜底：若是 http(s)，在 Tauri 环境尝试下载再转成 dataURL 以便重传
-            if (isHttpUrl(v) && isTauriEnv) {
-              const b = await resolveImageToBlob(v)
-              if (!b) return ''
-              const dataUrl = await new Promise<string>((resolve) => {
-                const reader = new FileReader()
-                reader.onload = () => resolve(String(reader.result || ''))
-                reader.onerror = () => resolve('')
-                reader.readAsDataURL(b)
-              })
-              if (dataUrl) return await compressImageBase64(dataUrl, 900 * 1024)
-            }
-            return ''
-          }
-
-          const firstUploadable = await ensureUploadable(firstInput)
-          if (!firstUploadable) {
-            throw new Error(
-              `视频生成失败：上游提示首帧 ImageURL 无法外网访问，且当前首帧无法自动重传（可能是跨域/无本地数据）。请改用“上传/本地图片（dataURL）”作为首帧，或更换可被外网访问的图床域名。原始错误：${msg}`
-            )
-          }
-
-          const retryFirstUrl = await uploadBase64ToImageHost(firstUploadable)
-
-          let retryLastUrl = ''
-          if (lastFrame) {
-            const lastUploadable = await ensureUploadable(lastFrame)
-            if (lastUploadable) {
-              retryLastUrl = await uploadBase64ToImageHost(lastUploadable)
-            }
-          }
-
-          const retryPayload: any = { ...(payload as any) }
-          const existingFileInfos = Array.isArray(retryPayload.file_infos) ? retryPayload.file_infos : []
-          if (existingFileInfos.length > 0) {
-            retryPayload.file_infos = [...existingFileInfos]
-            retryPayload.file_infos[0] = { ...(retryPayload.file_infos[0] || {}), type: 'Url', url: retryFirstUrl }
-          } else {
-            retryPayload.file_infos = [{ type: 'Url', url: retryFirstUrl }]
-          }
-          if (retryLastUrl) retryPayload.last_frame_url = retryLastUrl
-
-          console.log('[generateVideo] Tencent Video 重试 create payload（仅展示关键字段）:', {
-            file_infos_0: retryPayload?.file_infos?.[0],
-            last_frame_url: retryPayload?.last_frame_url,
-          })
-
-          // 重新创建任务
-          const retryTask: any = await postJson<any>(endpointOverride, retryPayload, { authMode: modelCfg.authMode, timeoutMs: 240000 })
-          const retryTaskId =
-            retryTask?.Response?.TaskId ||
-            retryTask?.TaskId ||
-            retryTask?.task_id ||
-            retryTask?.taskId ||
-            retryTask?.data?.task_id ||
-            retryTask?.data?.taskId
-          const retryId =
-            retryTask?.id ||
-            retryTaskId ||
-            retryTask?.task_id ||
-            retryTask?.taskId ||
-            retryTask?.data?.id ||
-            retryTask?.data?.task_id ||
-            retryTask?.data?.taskId
-          if (!retryId) throw new Error('重试创建任务失败：未获取到任务 ID')
-
-          const polled2 = await pollVideoTask(String(retryId), { ...modelCfg, statusEndpoint: statusEndpointOverride }, configNodeId, videoNodeId)
-          videoUrl = normalizeMediaUrl(polled2)
-        } else {
-          throw pollErr
-        }
+        throw pollErr
       }
     }
 

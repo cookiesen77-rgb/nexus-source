@@ -13,6 +13,7 @@ import {
 } from '@xyflow/react'
 import { ChevronDown } from 'lucide-react'
 import { useGraphStore } from '@/graph/store'
+import { coerceVideoImageRole, getAllowedVideoImageRoles, getVideoModelCaps } from '@/lib/modelCaps'
 
 type ImageRole = 'first_frame_image' | 'last_frame_image' | 'input_reference'
 
@@ -29,6 +30,7 @@ const IMAGE_ROLE_OPTIONS: { label: string; key: ImageRole }[] = [
 
 export const ImageRoleEdge = memo(function ImageRoleEdge({
   id,
+  target,
   sourceX,
   sourceY,
   targetX,
@@ -42,6 +44,18 @@ export const ImageRoleEdge = memo(function ImageRoleEdge({
   const dropdownRef = useRef<HTMLDivElement>(null)
   const edgeData = data as ImageRoleEdgeData | undefined
   const { setEdges } = useReactFlow()
+
+  // 订阅目标 videoConfig 节点的模型（用于动态过滤角色选项）
+  const targetModelKey = useGraphStore((s) => {
+    const n = s.nodes.find((x) => x.id === target)
+    return String((n?.data as any)?.model || '').trim()
+  })
+  const caps = useMemo(() => getVideoModelCaps(targetModelKey), [targetModelKey])
+  const allowedRoles = useMemo(() => new Set(getAllowedVideoImageRoles(caps)), [caps])
+  const roleOptions = useMemo(
+    () => IMAGE_ROLE_OPTIONS.filter((o) => allowedRoles.has(o.key)),
+    [allowedRoles]
+  )
 
   // 计算贝塞尔路径
   const [edgePath, labelX, labelY] = getBezierPath({
@@ -68,6 +82,23 @@ export const ImageRoleEdge = memo(function ImageRoleEdge({
     return option?.label || '首帧'
   }, [currentRole])
 
+  // 若当前边的角色对当前模型不支持，则自动回退到可用角色
+  useEffect(() => {
+    const coerced = coerceVideoImageRole(currentRole, caps)
+    if (coerced === currentRole) return
+
+    // 1) 更新 store
+    useGraphStore.getState().setEdgeImageRole(id, coerced)
+
+    // 2) 同步更新 React Flow 边数据
+    setEdges((edges) =>
+      edges.map((edge) => {
+        if (edge.id === id) return { ...edge, data: { ...edge.data, imageRole: coerced } }
+        return edge
+      })
+    )
+  }, [caps, currentRole, id, setEdges])
+
   // 点击外部关闭下拉菜单
   useEffect(() => {
     if (!showDropdown) return
@@ -92,8 +123,9 @@ export const ImageRoleEdge = memo(function ImageRoleEdge({
   // 处理角色选择
   const handleRoleSelect = useCallback(
     (role: ImageRole) => {
+      const next = coerceVideoImageRole(role, caps)
       // 1. 更新 Zustand store
-      useGraphStore.getState().setEdgeImageRole(id, role)
+      useGraphStore.getState().setEdgeImageRole(id, next)
 
       // 2. 同时更新 React Flow 的边数据（确保 UI 同步）
       setEdges((edges) =>
@@ -101,7 +133,7 @@ export const ImageRoleEdge = memo(function ImageRoleEdge({
           if (edge.id === id) {
             return {
               ...edge,
-              data: { ...edge.data, imageRole: role },
+              data: { ...edge.data, imageRole: next },
             }
           }
           return edge
@@ -110,7 +142,7 @@ export const ImageRoleEdge = memo(function ImageRoleEdge({
 
       setShowDropdown(false)
     },
-    [id, setEdges]
+    [caps, id, setEdges]
   )
 
   // 切换下拉菜单
@@ -172,7 +204,7 @@ export const ImageRoleEdge = memo(function ImageRoleEdge({
               style={{ zIndex: 9999 }}
               onMouseDown={(e) => e.stopPropagation()}
             >
-              {IMAGE_ROLE_OPTIONS.map((option) => (
+              {roleOptions.map((option) => (
                 <button
                   key={option.key}
                   onClick={(e) => {

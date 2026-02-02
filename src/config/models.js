@@ -19,9 +19,22 @@ const MODEL_ALIASES = {
     // Veo 旧 key（已下线）兼容迁移
     'veo_3_1-fast-components-4K': 'veo3.1-fast-components',
     'sora-2-pro': 'sora-2-all',
-    // Tencent AIGC Video 兼容旧 key
-    'aigc-video-vidu': 'vidu-q2-pro',
-    'aigc-video-hailuo': 'hailuo-2.3-fast'
+    // Tencent AIGC Video（已移除）兼容旧 key：迁移到新模型或默认视频模型，避免旧工程打开后变成图片模型
+    'aigc-video-vidu': 'sora-2-all',
+    'vidu-q2-turbo': 'sora-2-all',
+    'vidu-q2': 'sora-2-all',
+    'vidu-q2-pro': 'sora-2-all',
+    // Hailuo（旧 AIGC 走腾讯）迁移到云雾海螺（MiniMax）端点
+    'aigc-video-hailuo': 'MiniMax-Hailuo-2.3-Fast',
+    'hailuo-2.3-fast': 'MiniMax-Hailuo-2.3-Fast',
+    'hailuo-2.3': 'MiniMax-Hailuo-2.3',
+    'hailuo-02': 'MiniMax-Hailuo-2.3',
+    // Kling（旧 AIGC 走腾讯）迁移到 Kling 官方 /kling/v1 视频端点
+    'kling-2.5': 'kling-video',
+    'kling-2.1': 'kling-video',
+    'kling-2.0': 'kling-video',
+    'kling-1.6': 'kling-video',
+    'kling-o1': 'kling-video',
 }
 
 // Seedream image size options | 豆包图片尺寸选项
@@ -66,6 +79,10 @@ export const IMAGE_MODELS = [
         format: 'gemini-image',
         timeout: 240000,
         tips: '支持多张参考图 + 提示词（最多 14 张参考图）',
+        // 能力描述（用于 UI 限制与运行时校验）
+        requiresPrompt: false,
+        supportsReferenceImages: true,
+        maxRefImages: 14,
         sizes: ['1:1', '16:9', '9:16', '4:3', '3:4'],
         qualities: [
             { label: '1K', key: '1K' },
@@ -85,6 +102,10 @@ export const IMAGE_MODELS = [
         format: 'doubao-seedream',
         timeout: 240000,
         tips: '参考图目前仅支持 1 张。',
+        // 能力描述（用于 UI 限制与运行时校验）
+        requiresPrompt: true,
+        supportsReferenceImages: true,
+        maxRefImages: 1,
         // 分辨率（方式1）：1K/2K/4K；尺寸（方式2）：通过像素宽高来精确指定比例
         qualities: [
             { label: '1K', key: '1K' },
@@ -105,6 +126,9 @@ export const IMAGE_MODELS = [
         authMode: 'bearer',
         format: 'openai-chat-image',
         tips: '以 Chat 方式生图，建议在提示词里要求返回图片 URL 或 dataURI',
+        requiresPrompt: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         sizes: [],
         defaultParams: {
             quality: 'standard'
@@ -117,6 +141,9 @@ export const IMAGE_MODELS = [
         authMode: 'bearer',
         format: 'kling-image',
         tips: 'Kling 生图（支持参考图）；本项目固定 model_name=kling-v2-1',
+        requiresPrompt: true,
+        supportsReferenceImages: true,
+        maxRefImages: 1,
         sizes: ['1:1', '2:3', '3:2', '4:3', '3:4', '16:9', '9:16', '21:9'],
         qualities: [
             { label: '1K（标清）', key: '1k' },
@@ -130,12 +157,39 @@ export const IMAGE_MODELS = [
         }
     },
     {
+        label: 'Kling Omni-Image（kling-image-o1）',
+        key: 'kling-omni-image',
+        endpoint: toAbsoluteUrl('/kling/v1/images/omni-image'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/images/omni-image/${id}`),
+        authMode: 'bearer',
+        format: 'kling-omni-image',
+        tips: 'Kling Omni-Image：提示词必填；可选多张参考图（主体/场景/风格等）。',
+        requiresPrompt: true,
+        supportsReferenceImages: true,
+        // 文档未显式给出上限；这里做保守上限，避免一次提交过多图片导致上游失败
+        maxRefImages: 6,
+        sizes: ['auto', '16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3', '21:9'],
+        qualities: [
+            { label: '1K（标清）', key: '1k' },
+            { label: '2K（高清）', key: '2k' }
+        ],
+        defaultParams: {
+            model_name: 'kling-image-o1',
+            size: 'auto',
+            quality: '1k',
+            n: 1
+        }
+    },
+    {
         label: 'Flux Pro 1.1 Ultra',
         key: 'flux-pro-1.1-ultra',
         endpoint: '/images/generations',
         authMode: 'bearer',
         format: 'openai-image',
         tips: 'OpenAI Images 兼容生图（返回 url 或 b64_json）',
+        requiresPrompt: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         sizes: ['1024x1024', '1536x1024', '1024x1536'],
         defaultParams: {
             size: '1024x1024',
@@ -149,6 +203,9 @@ export const IMAGE_MODELS = [
         authMode: 'bearer',
         format: 'openai-image',
         tips: '不支持参考图输入（仅使用提示词生成）',
+        requiresPrompt: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         sizes: ['1024x1024', '1536x1024', '1024x1536'],
         defaultParams: {
             size: '1024x1024',
@@ -162,6 +219,9 @@ export const IMAGE_MODELS = [
         authMode: 'bearer',
         format: 'openai-chat-image',
         tips: '以 Chat 方式生图，建议在提示词里要求返回图片 URL 或 dataURI',
+        requiresPrompt: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         sizes: [],
         defaultParams: {
             quality: 'standard'
@@ -174,6 +234,10 @@ export const IMAGE_MODELS = [
         authMode: 'bearer',
         format: 'openai-image-edit',
         tips: '需要参考图 + 提示词（使用第一张参考图）',
+        requiresPrompt: true,
+        supportsReferenceImages: true,
+        maxRefImages: 1,
+        requiresReferenceImages: true,
         sizes: [],
         defaultParams: {
             quality: 'standard'
@@ -185,6 +249,10 @@ export const IMAGE_MODELS = [
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-image'),
         authMode: 'bearer',
         format: 'tencent-image',
+        tips: '仅提示词生图（不支持参考图输入）',
+        requiresPrompt: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         defaultParams: {
             version: '3.0',
             clarity: '2k'
@@ -196,6 +264,10 @@ export const IMAGE_MODELS = [
         endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-image'),
         authMode: 'bearer',
         format: 'tencent-image',
+        tips: '仅提示词生图（不支持参考图输入）',
+        requiresPrompt: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         defaultParams: {
             version: '0925',
             clarity: '2k'
@@ -224,6 +296,12 @@ export const VIDEO_MODELS = [
         format: 'veo-unified',
         // components 模型支持最多 3 张图片作为视频元素
         maxImages: 3,
+        tips: '提示词必填；支持最多 3 张参考图（作为视频元素）',
+        requiresPrompt: true,
+        supportsFirstFrame: false,
+        supportsLastFrame: false,
+        supportsReferenceImages: true,
+        maxRefImages: 3,
         ratios: ['16:9', '9:16'],
         durs: [{ label: '8 秒', key: 8 }],
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
@@ -236,6 +314,12 @@ export const VIDEO_MODELS = [
         authMode: 'bearer',
         format: 'openai-video',
         maxImages: 3,
+        tips: '提示词必填；支持最多 3 张参考图（作为视频元素）',
+        requiresPrompt: true,
+        supportsFirstFrame: false,
+        supportsLastFrame: false,
+        supportsReferenceImages: true,
+        maxRefImages: 3,
         ratios: ['16:9', '9:16'],
         durs: [{ label: '8 秒', key: 8 }],
         defaultParams: { ratio: '16:9', duration: 8 }
@@ -249,6 +333,12 @@ export const VIDEO_MODELS = [
         format: 'veo-unified',
         // Veo 首尾帧：通常 2 张（首/尾）；更多图片会触发上游校验或被忽略
         maxImages: 2,
+        tips: '提示词必填；可选首帧/尾帧（最多 2 张）。',
+        requiresPrompt: true,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         ratios: ['16:9', '9:16'],
         durs: [{ label: '8 秒', key: 8 }],
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
@@ -261,6 +351,12 @@ export const VIDEO_MODELS = [
         authMode: 'bearer',
         format: 'veo-unified',
         maxImages: 2,
+        tips: '提示词必填；可选首帧/尾帧（最多 2 张）。',
+        requiresPrompt: true,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         ratios: ['16:9', '9:16'],
         durs: [{ label: '8 秒', key: 8 }],
         defaultParams: { ratio: '16:9', duration: 8, enhancePrompt: true, enableUpsample: true }
@@ -273,12 +369,184 @@ export const VIDEO_MODELS = [
         statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/videos/text2video/${id}`),
         authMode: 'bearer',
         format: 'kling-video',
+        // 图生视频：首帧/尾帧最多 2 张；也允许把“参考图”当作首帧（最多 1 张参考图）
+        maxImages: 2,
+        tips: '文生：仅提示词；图生：需要首帧，可选尾帧；参考图最多 1 张（等同首帧）。本项目固定 model_name=kling-v2-6, mode=pro, sound=off。',
+        requiresPrompt: false,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsReferenceImages: true,
+        maxRefImages: 1,
         ratios: ['16:9', '9:16', '1:1'],
         durs: [{ label: '10 秒', key: 10 }],
         defaultParams: { ratio: '16:9', duration: 10, model_name: 'kling-v2-6', mode: 'pro', sound: 'off' },
         // 额外端点（图生视频）
         endpointImage: toAbsoluteUrl('/kling/v1/videos/image2video'),
         statusEndpointImage: (id) => toAbsoluteUrl(`/kling/v1/videos/image2video/${id}`)
+    },
+    {
+        label: 'Kling 多图参考生视频（kling-v1-6）',
+        key: 'kling-multi-image2video',
+        endpoint: toAbsoluteUrl('/kling/v1/videos/multi-image2video'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/videos/multi-image2video/${id}`),
+        authMode: 'bearer',
+        format: 'kling-multi-image2video',
+        maxImages: 4,
+        tips: '提示词必填；支持最多 4 张参考图（全部作为参考图，不支持首/尾帧角色）。',
+        requiresPrompt: true,
+        supportsFirstFrame: false,
+        supportsLastFrame: false,
+        supportsReferenceImages: true,
+        maxRefImages: 4,
+        ratios: ['16:9', '9:16', '1:1'],
+        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 5, model_name: 'kling-v1-6', mode: 'std' }
+    },
+    {
+        label: 'seedance-1-5-pro（doubao-seedance-1-5-pro-251215）',
+        key: 'doubao-seedance-1-5-pro-251215',
+        endpoint: toAbsoluteUrl('/volc/v1/contents/generations/tasks'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/volc/v1/contents/generations/tasks/${id}`),
+        authMode: 'bearer',
+        format: 'volc-seedance-video',
+        // 首尾帧：最多 2 张（首/尾）
+        maxImages: 2,
+        tips: '提示词必填；可选首帧/尾帧（最多 2 张）。不支持多参考图。',
+        requiresPrompt: true,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
+        ratios: ['adaptive', '16:9', '9:16'],
+        durs: [{ label: '4 秒', key: 4 }, { label: '8 秒', key: 8 }],
+        defaultParams: { ratio: 'adaptive', duration: 4, watermark: false }
+    },
+    {
+        label: 'wan2.6-i2v（通义万象）',
+        key: 'wan2.6-i2v',
+        endpoint: toAbsoluteUrl('/alibailian/api/v1/services/aigc/video-generation/video-synthesis'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/alibailian/api/v1/tasks/${id}`),
+        authMode: 'bearer',
+        format: 'alibailian-wan-video',
+        maxImages: 1,
+        tips: '需要首帧图片；提示词可选；不支持尾帧/多参考图。',
+        requiresPrompt: false,
+        supportsFirstFrame: true,
+        supportsLastFrame: false,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
+        // 输出比例主要由首帧图决定；这里仍保留常用选项用于 UI 展示
+        ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
+        sizes: [
+            { label: '720P', key: '720P' },
+            { label: '1080P', key: '1080P' }
+        ],
+        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 5, size: '1080P', prompt_extend: true }
+    },
+    {
+        label: 'MiniMax-Hailuo-2.3（海螺）',
+        key: 'MiniMax-Hailuo-2.3',
+        endpoint: toAbsoluteUrl('/minimax/v1/video_generation'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/minimax/v1/query/video_generation?task_id=${id}`),
+        authMode: 'bearer',
+        format: 'minimax-hailuo-video',
+        maxImages: 2,
+        tips: '提示词可选；可选首帧/尾帧（最多 2 张）。不支持多参考图。',
+        requiresPrompt: false,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
+        ratios: ['16:9', '9:16', '1:1'],
+        sizes: [
+            { label: '768P', key: '768P' },
+            { label: '1080P', key: '1080P' }
+        ],
+        durs: [{ label: '6 秒', key: 6 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 10, size: '768P', prompt_optimizer: true }
+    },
+    {
+        label: 'MiniMax-Hailuo-2.3-Fast（海螺）',
+        key: 'MiniMax-Hailuo-2.3-Fast',
+        endpoint: toAbsoluteUrl('/minimax/v1/video_generation'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/minimax/v1/query/video_generation?task_id=${id}`),
+        authMode: 'bearer',
+        format: 'minimax-hailuo-video',
+        maxImages: 2,
+        tips: '提示词可选；可选首帧/尾帧（最多 2 张）。不支持多参考图。',
+        requiresPrompt: false,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
+        ratios: ['16:9', '9:16', '1:1'],
+        sizes: [
+            { label: '768P', key: '768P' },
+            { label: '1080P', key: '1080P' }
+        ],
+        durs: [{ label: '6 秒', key: 6 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 10, size: '768P', prompt_optimizer: true }
+    },
+    {
+        label: 'kling-omni-video',
+        key: 'kling-omni-video',
+        endpoint: toAbsoluteUrl('/kling/v1/videos/omni-video'),
+        // 按用户确认：GET /kling/v1/videos/omni-video/{id}
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/videos/omni-video/${id}`),
+        authMode: 'bearer',
+        format: 'kling-omni-video',
+        // 文档支持 image_list 多张参考图（包含首帧/尾帧）；这里做保守上限
+        maxImages: 6,
+        tips: '提示词必填；支持多张参考图（主体/场景/风格等），也可设置首帧/尾帧；注意：仅尾帧不支持（有尾帧必须有首帧）。视频编辑能力在 Kling 工具节点中提供。',
+        requiresPrompt: true,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        requiresFirstFrameIfLastFrame: true,
+        supportsReferenceImages: true,
+        maxRefImages: 6,
+        ratios: ['16:9', '9:16', '1:1'],
+        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 5, mode: 'pro', model_name: 'kling-video-o1' }
+    },
+    {
+        label: 'luma_video_api',
+        key: 'luma_video_api',
+        endpoint: toAbsoluteUrl('/luma/generations'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/luma/generations/${id}`),
+        authMode: 'bearer',
+        format: 'luma-video',
+        tips: '仅提示词（不支持首帧/尾帧/参考图）。',
+        requiresPrompt: true,
+        supportsFirstFrame: false,
+        supportsLastFrame: false,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
+        ratios: ['16:9', '9:16', '1:1'],
+        sizes: [
+            { label: '720p', key: '720p' },
+            { label: '1080p', key: '1080p' }
+        ],
+        durs: [{ label: '5 秒', key: 5 }, { label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 5, size: '720p', model_name: 'ray-v2' }
+    },
+    {
+        label: 'runwayml-gen3a_turbo-10',
+        key: 'runwayml-gen3a_turbo-10',
+        endpoint: toAbsoluteUrl('/runwayml/v1/image_to_video'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/runwayml/v1/tasks/${id}`),
+        authMode: 'bearer',
+        format: 'runway-video',
+        tips: '需要首帧图片；提示词可选；不支持尾帧/多参考图。',
+        requiresPrompt: false,
+        supportsFirstFrame: true,
+        supportsLastFrame: false,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
+        // Runway ratio 以像素比传递，这里仍保留常见 UI 比例
+        ratios: ['16:9', '9:16', '1:1', '4:3', '3:4'],
+        durs: [{ label: '10 秒', key: 10 }],
+        defaultParams: { ratio: '16:9', duration: 10, watermark: false }
     },
     {
         label: 'Sora 2 All ¥0.07',
@@ -289,6 +557,12 @@ export const VIDEO_MODELS = [
         format: 'sora-unified',
         // Sora 参考图数量上游会限制，默认先按 2 张（首/尾）做安全上限
         maxImages: 2,
+        tips: '提示词必填；可选首帧/尾帧（最多 2 张）。',
+        requiresPrompt: true,
+        supportsFirstFrame: true,
+        supportsLastFrame: true,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         // Sora 需要额外参数 size（small/large）| required by Apifox sora-2 docs
         sizes: [
             { label: 'small（约 720p）', key: 'small' },
@@ -307,6 +581,12 @@ export const VIDEO_MODELS = [
         authMode: 'bearer',
         format: 'sora-openai',
         maxImages: 1,
+        tips: '需要首帧图片；提示词必填（OpenAI 官方视频接口）。',
+        requiresPrompt: true,
+        supportsFirstFrame: true,
+        supportsLastFrame: false,
+        supportsReferenceImages: false,
+        maxRefImages: 0,
         sizes: [
             { label: '720x1280 (竖版)', key: '720x1280' },
             { label: '1280x720 (横版)', key: '1280x720' }
@@ -337,6 +617,12 @@ export const VIDEO_MODELS = [
         imagesMustBeHttp: true,
         // 允许多张垫图；上游具体限制未知，这里做保守上限
         maxImages: 3,
+        tips: '需要提示词 + 图片（至少 1 张，且必须是公网 URL）。不支持首帧/尾帧语义，全部按参考图处理。',
+        requiresPrompt: true,
+        supportsFirstFrame: false,
+        supportsLastFrame: false,
+        supportsReferenceImages: true,
+        maxRefImages: 3,
         // 文档限定：2:3, 3:2, 1:1
         ratios: ['3:2', '2:3', '1:1'],
         // 文档：size 720P 或 1080P（但当前仅支持 720P）
@@ -358,213 +644,176 @@ export const VIDEO_MODELS = [
         requiresImages: true,
         imagesMustBeHttp: true,
         maxImages: 3,
+        tips: '需要提示词 + 图片（至少 1 张，且必须是公网 URL）。不支持首帧/尾帧语义，全部按参考图处理。',
+        requiresPrompt: true,
+        supportsFirstFrame: false,
+        supportsLastFrame: false,
+        supportsReferenceImages: true,
+        maxRefImages: 3,
         ratios: ['3:2', '2:3', '1:1'],
         sizes: [{ label: '720P', key: '720P' }],
         durs: [{ label: '10 秒', key: 10 }],
         supportsDuration: false,
         defaultParams: { ratio: '3:2', duration: 10, size: '720P' }
     },
-    // ========== Vidu 系列 (按秒计费) ==========
+]
+
+// Kling Platform tools (advanced workflows) | 可灵平台工具（高级工作流）
+// 说明：这些“工具”用于新节点类型（klingVideoTool/klingImageTool/klingAudioTool），不属于基础生图/生视频下拉框。
+export const KLING_VIDEO_TOOLS = [
     {
-        label: 'Vidu q2-turbo ¥0.55/4s',
-        key: 'vidu-q2-turbo',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 多模态视频编辑（选区/增删元素）',
+        key: 'kling-multi-elements-video-edit',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '4 秒', key: 4 },
-            { label: '8 秒', key: 8 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: 'q2-turbo', duration: 4 }
+        format: 'kling-video-tool',
+        tips: '需要待编辑视频（video_id 或 video_url）；可标记选区（增加/删减）；再提交提示词生成编辑后的视频。',
+        endpoints: {
+            initSelection: toAbsoluteUrl('/kling/v1/videos/multi-elements/init-selection'),
+            addSelection: toAbsoluteUrl('/kling/v1/videos/multi-elements/add-selection'),
+            deleteSelection: toAbsoluteUrl('/kling/v1/videos/multi-elements/delete-selection'),
+            previewSelection: toAbsoluteUrl('/kling/v1/videos/multi-elements/preview-selection'),
+            run: toAbsoluteUrl('/kling/v1/videos/multi-elements'),
+            query: (id) => toAbsoluteUrl(`/kling/v1/videos/multi-elements/${id}`),
+        },
     },
     {
-        label: 'Vidu q2 ¥0.70/4s',
-        key: 'vidu-q2',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 视频延长（video-extend）',
+        key: 'kling-video-extend',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '4 秒', key: 4 },
-            { label: '8 秒', key: 8 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: 'q2', duration: 4 }
+        format: 'kling-video-tool',
+        tips: '需要可灵历史作品 video_id + 提示词；用于在原视频基础上延长。',
+        endpoint: toAbsoluteUrl('/kling/v1/videos/video-extend'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/videos/video-extend/${id}`),
     },
     {
-        label: 'Vidu q2-pro ¥0.77/4s',
-        key: 'vidu-q2-pro',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 视频特效（effects）',
+        key: 'kling-video-effects',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '4 秒', key: 4 },
-            { label: '8 秒', key: 8 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: 'q2-pro', duration: 4 }
-    },
-    // ========== Hailuo 海螺系列 ==========
-    {
-        label: 'Hailuo 2.3-Fast ¥1.01/6s',
-        key: 'hailuo-2.3-fast',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
-        authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '768P', key: '768p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '6 秒', key: 6 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '2.3-fast', duration: 6 }
+        format: 'kling-video-tool',
+        tips: '根据 effect_scene 选择特效；输入通常为 1 张或 2 张图片（不同场景输入结构不同）。',
+        endpoint: toAbsoluteUrl('/kling/v1/videos/effects'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/videos/effects/${id}`),
     },
     {
-        label: 'Hailuo 2.3 ¥1.45/6s',
-        key: 'hailuo-2.3',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 数字人（image + audio → video）',
+        key: 'kling-digital-human',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '768P', key: '768p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '6 秒', key: 6 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '2.3', duration: 6 }
+        format: 'kling-video-tool',
+        tips: '需要数字人参考图 + 音频（audio_id 或 sound_file）+ 可选提示词；输出为口播/数字人视频。',
+        requiresAudio: true,
+        endpoint: toAbsoluteUrl('/kling/v1/videos/avatar/image2video'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/videos/avatar/image2video/${id}`),
     },
     {
-        label: 'Hailuo 02 ¥1.45/6s',
-        key: 'hailuo-02',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 动作控制（image + video → video）',
+        key: 'kling-motion-control',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '768P', key: '768p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '6 秒', key: 6 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '02', duration: 6 }
-    },
-    // ========== Kling 可灵系列 ==========
-    {
-        label: 'Kling 2.5 ¥1.10/5s',
-        key: 'kling-2.5',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
-        authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '5 秒', key: 5 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '2.5', duration: 5 }
+        format: 'kling-video-tool',
+        tips: '需要参考图 + 参考动作视频（video_url）；可选提示词；输出为动作驱动视频。',
+        endpoint: toAbsoluteUrl('/kling/v1/videos/motion-control'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/videos/motion-control/${id}`),
     },
     {
-        label: 'Kling 2.1 ¥1.46/5s',
-        key: 'kling-2.1',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 对口型（identify-face + lip-sync）',
+        key: 'kling-lip-sync',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '5 秒', key: 5 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '2.1', duration: 5 }
+        format: 'kling-video-tool',
+        tips: '先做人脸识别（identify-face）拿 session_id/face_id，再提交 advanced-lip-sync（音频 + 选脸）生成对口型视频。',
+        endpoints: {
+            identifyFace: toAbsoluteUrl('/kling/v1/videos/identify-face'),
+            lipSync: toAbsoluteUrl('/kling/v1/videos/advanced-lip-sync'),
+            query: (id) => toAbsoluteUrl(`/kling/v1/videos/advanced-lip-sync/${id}`),
+        },
+        requiresAudio: true,
+    },
+]
+
+export const KLING_IMAGE_TOOLS = [
+    {
+        label: 'Kling 多图参考生图（multi-image2image）',
+        key: 'kling-multi-image2image',
+        authMode: 'bearer',
+        format: 'kling-image-tool',
+        tips: '支持 1~4 张主体参考图（subject_image_list）；可选场景图 scene_image / 风格图 style_image；可选提示词。',
+        endpoint: toAbsoluteUrl('/kling/v1/images/multi-image2image'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/images/multi-image2image/${id}`),
     },
     {
-        label: 'Kling 2.0 ¥1.46/5s',
-        key: 'kling-2.0',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 扩图（outpaint / expand）',
+        key: 'kling-expand-image',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '5 秒', key: 5 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '2.0', duration: 5 }
+        format: 'kling-image-tool',
+        tips: '需要 1 张图片；通过上下左右扩展比例控制扩图范围；可选提示词。',
+        endpoint: toAbsoluteUrl('/kling/v1/images/editing/expand'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/images/editing/expand/${id}`),
     },
     {
-        label: 'Kling 1.6 ¥1.46/5s',
-        key: 'kling-1.6',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 虚拟试穿（kolors-virtual-try-on）',
+        key: 'kling-virtual-try-on',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '5 秒', key: 5 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: '1.6', duration: 5 }
+        format: 'kling-image-tool',
+        tips: '需要人物图 human_image + 服饰图 cloth_image；输出试穿效果图。',
+        endpoint: toAbsoluteUrl('/kling/v1/images/kolors-virtual-try-on'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/images/kolors-virtual-try-on/${id}`),
     },
     {
-        label: 'Kling O1 ¥3.29/5s',
-        key: 'kling-o1',
-        endpoint: toAbsoluteUrl('/tencent-vod/v1/aigc-video'),
-        statusEndpoint: (id) => `/tencent-vod/v1/query/${id}`,
+        label: 'Kling 图像识别（image-recognize）',
+        key: 'kling-image-recognize',
         authMode: 'bearer',
-        format: 'tencent-video',
-        sizes: [
-            { label: '720P', key: '720p' },
-            { label: '1080P', key: '1080p' }
-        ],
-        durs: [
-            { label: '5 秒', key: 5 },
-            { label: '10 秒', key: 10 }
-        ],
-        ratios: ['16:9', '9:16', '1:1'],
-        defaultParams: { version: 'O1', duration: 5 }
-    }
+        format: 'kling-image-tool',
+        tips: '输入 1 张图片，返回识别结果（同步接口）。',
+        endpoint: toAbsoluteUrl('/kling/v1/videos/image-recognize'),
+    },
+    {
+        label: 'Kling 主体（custom-elements）',
+        key: 'kling-custom-elements',
+        authMode: 'bearer',
+        format: 'kling-image-tool',
+        tips: '创建主体元素：名称 + 描述 + 正面图 + 1~3 张其他角度参考图。',
+        endpoint: toAbsoluteUrl('/kling/v1/general/custom-elements'),
+    },
+]
+
+export const KLING_AUDIO_TOOLS = [
+    {
+        label: 'Kling 文生音效（text-to-audio）',
+        key: 'kling-text-to-audio',
+        authMode: 'bearer',
+        format: 'kling-audio-tool',
+        tips: '提示词 + 时长（3.0~10.0 秒，可小数）→ 音效。',
+        endpoint: toAbsoluteUrl('/kling/v1/audio/text-to-audio'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/audio/text-to-audio/${id}`),
+    },
+    {
+        label: 'Kling 视频生音效（video-to-audio）',
+        key: 'kling-video-to-audio',
+        authMode: 'bearer',
+        format: 'kling-audio-tool',
+        tips: 'video_id 或 video_url（二选一）+ 音效/配乐提示词 → 音频（可选 ASMR）。',
+        endpoint: toAbsoluteUrl('/kling/v1/audio/video-to-audio'),
+        statusEndpoint: (id) => toAbsoluteUrl(`/kling/v1/audio/video-to-audio/${id}`),
+    },
+    {
+        label: 'Kling 语音合成（TTS）',
+        key: 'kling-tts',
+        authMode: 'bearer',
+        format: 'kling-audio-tool',
+        tips: 'text + voice_id + voice_language（可选 voice_speed）→ 语音。',
+        endpoint: toAbsoluteUrl('/kling/v1/audio/tts'),
+    },
+    {
+        label: 'Kling 自定义音色（custom-voices）',
+        key: 'kling-custom-voices',
+        authMode: 'bearer',
+        format: 'kling-audio-tool',
+        tips: '通过 voice_url（音视频）或历史作品 video_id 提供素材，创建自定义音色；可查询/删除。',
+        endpoints: {
+            create: toAbsoluteUrl('/kling/v1/general/custom-voices'),
+            query: (id) => toAbsoluteUrl(`/kling/v1/general/custom-voices/${id}`),
+            presets: toAbsoluteUrl('/kling/v1/general/presets-voices'),
+            delete: toAbsoluteUrl('/kling/v1/general/delete-voices'),
+        },
+    },
 ]
 
 // Chat/LLM models | 对话模型

@@ -8,7 +8,10 @@ export const NODE_WIDTHS: Record<string, number> = {
   image: 260,
   video: 320,
   audio: 280,
-  localSave: 260
+  localSave: 260,
+  klingVideoTool: 320,
+  klingImageTool: 320,
+  klingAudioTool: 320,
 }
 
 // 节点最小高度（用于空间索引估算）
@@ -19,7 +22,10 @@ export const NODE_MIN_HEIGHTS: Record<string, number> = {
   image: 200,
   video: 240,
   audio: 120,
-  localSave: 100
+  localSave: 100,
+  klingVideoTool: 220,
+  klingImageTool: 220,
+  klingAudioTool: 220,
 }
 
 export const getNodeWidth = (type: string) => NODE_WIDTHS[type] || 260
@@ -39,7 +45,10 @@ export const NODE_ACCENTS: Record<NodeType, [number, number, number, number]> = 
   image: [0.68, 0.43, 0.98, 1.0],
   video: [0.16, 0.88, 0.67, 1.0],
   audio: [0.2, 0.83, 0.99, 1.0],
-  localSave: [0.62, 0.69, 0.78, 1.0]
+  localSave: [0.62, 0.69, 0.78, 1.0],
+  klingVideoTool: [0.93, 0.3, 0.4, 1.0],
+  klingImageTool: [0.22, 0.78, 0.45, 1.0],
+  klingAudioTool: [0.15, 0.7, 0.9, 1.0],
 }
 
 export const getNodeAccent = (type: NodeType) => NODE_ACCENTS[type] || ([0.49, 0.83, 0.99, 1.0] as const)

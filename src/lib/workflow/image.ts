@@ -311,14 +311,23 @@ export const generateImageFromConfigNode = async (
 
   // 2. 检查模型是否支持参考图
   const format = modelCfg.format
-  const supportsRefImages = format === 'gemini-image' || format === 'openai-image-edit' || format === 'kling-image' || format === 'doubao-seedream'
-  const maxRefImages =
-    modelKey === 'gemini-3-pro-image-preview'
-      ? 14
-      : format === 'doubao-seedream'
-        ? 1
-        : refImages.length
-  const limitedRefImages = refImages.slice(0, maxRefImages)
+  const requiresPrompt = !!(modelCfg as any)?.requiresPrompt
+  const supportsRefImages = !!(modelCfg as any)?.supportsReferenceImages
+  const requiresRefImages = !!(modelCfg as any)?.requiresReferenceImages
+  const maxRefImages = supportsRefImages
+    ? (Number.isFinite(Number((modelCfg as any)?.maxRefImages)) ? Number((modelCfg as any).maxRefImages) : refImages.length)
+    : 0
+  const limitedRefImages = supportsRefImages ? refImages.slice(0, maxRefImages) : []
+
+  if (requiresPrompt && !String(prompt || '').trim()) {
+    throw new Error('当前模型需要提示词：请连接文本节点（提示词）后重试')
+  }
+  if (requiresRefImages && limitedRefImages.length === 0) {
+    throw new Error('当前模型需要参考图：请连接图片节点（参考图）后重试')
+  }
+  if (supportsRefImages && maxRefImages > 0 && refImages.length > maxRefImages) {
+    throw new Error(`当前模型参考图最多支持 ${maxRefImages} 张`)
+  }
 
   if (!supportsRefImages && refImages.length > 0) {
     if (!prompt) {
@@ -562,6 +571,42 @@ export const generateImageFromConfigNode = async (
           const statusText = String(polled?.status || polled?.data?.task_status || polled?.data?.status || polled?.task_status || '').toLowerCase()
           if (statusText && /(fail|error)/i.test(statusText)) {
             throw new Error(polled?.message || polled?.error?.message || 'Kling 生图任务失败')
+          }
+          await new Promise((r) => setTimeout(r, 3000))
+        }
+      }
+    } else if (modelCfg.format === 'kling-omni-image') {
+      // Kling Omni-Image：POST /kling/v1/images/omni-image
+      // 查询：GET /kling/v1/images/omni-image/{id}
+      const requestData: any = {
+        model_name: modelCfg.defaultParams?.model_name || 'kling-image-o1',
+        prompt,
+        n: 1,
+        aspect_ratio: size || modelCfg.defaultParams?.size || 'auto',
+        resolution: quality || modelCfg.defaultParams?.quality || '2k',
+      }
+      if (Array.isArray(limitedRefImages) && limitedRefImages.length > 0) {
+        requestData.image_list = limitedRefImages.map((u: string) => ({ image: String(u || '').trim() }))
+      }
+      const resp = await postJson<any>(modelCfg.endpoint, requestData, { authMode: modelCfg.authMode, timeoutMs: modelCfg.timeout || 240000 })
+      imageUrl = normalizeToImageUrl(resp) || extractUrlsDeep(resp)[0] || ''
+
+      if (!imageUrl) {
+        const taskId = resp?.data?.task_id || resp?.data?.id || resp?.task_id || resp?.id || ''
+        if (!taskId) throw new Error('Kling Omni-Image 返回异常：未获取到图片或任务 ID')
+        const statusUrl =
+          typeof modelCfg.statusEndpoint === 'function'
+            ? modelCfg.statusEndpoint(String(taskId))
+            : `${String(modelCfg.endpoint).replace(/\/$/, '')}/${encodeURIComponent(String(taskId))}`
+
+        const maxAttempts = 120
+        for (let i = 0; i < maxAttempts; i++) {
+          const polled = await getJson<any>(statusUrl, undefined, { authMode: modelCfg.authMode })
+          imageUrl = normalizeToImageUrl(polled) || extractUrlsDeep(polled)[0] || ''
+          if (imageUrl) break
+          const statusText = String(polled?.status || polled?.data?.task_status || polled?.data?.status || polled?.task_status || '').toLowerCase()
+          if (statusText && /(fail|error)/i.test(statusText)) {
+            throw new Error(polled?.message || polled?.error?.message || 'Kling Omni-Image 任务失败')
           }
           await new Promise((r) => setTimeout(r, 3000))
         }

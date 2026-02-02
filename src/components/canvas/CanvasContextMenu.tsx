@@ -5,6 +5,7 @@ import { getNodeSize } from '@/graph/nodeSizing'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '@/config/models'
 import { saveMedia } from '@/lib/mediaStorage'
 import { downloadFile } from '@/lib/download'
+import { getVideoModelCaps } from '@/lib/modelCaps'
 
 // 检测 Tauri 环境
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
@@ -421,37 +422,47 @@ export default function CanvasContextMenu({
     const s = byId.get(e.source)
     const t = byId.get(e.target)
     const canSetRole = s?.type === 'image' && t?.type === 'videoConfig'
+    const videoCaps = canSetRole ? getVideoModelCaps(String((t?.data as any)?.model || DEFAULT_VIDEO_MODEL)) : null
+    const canFirst = !!videoCaps?.supportsFirstFrame
+    const canLast = !!videoCaps?.supportsLastFrame
+    const canRef = !!videoCaps?.supportsReferenceImages
     return (
       <MenuShell>
         {canSetRole ? (
           <>
-            <button
-              className={itemClass}
-              onClick={() => {
-                setEdgeImageRole(e.id, 'first_frame_image')
-                onOpenChange(false)
-              }}
-            >
-              <span>设为首帧</span>
-            </button>
-            <button
-              className={itemClass}
-              onClick={() => {
-                setEdgeImageRole(e.id, 'last_frame_image')
-                onOpenChange(false)
-              }}
-            >
-              <span>设为尾帧</span>
-            </button>
-            <button
-              className={itemClass}
-              onClick={() => {
-                setEdgeImageRole(e.id, 'input_reference')
-                onOpenChange(false)
-              }}
-            >
-              <span>设为参考图</span>
-            </button>
+            {canFirst && (
+              <button
+                className={itemClass}
+                onClick={() => {
+                  setEdgeImageRole(e.id, 'first_frame_image')
+                  onOpenChange(false)
+                }}
+              >
+                <span>设为首帧</span>
+              </button>
+            )}
+            {canLast && (
+              <button
+                className={itemClass}
+                onClick={() => {
+                  setEdgeImageRole(e.id, 'last_frame_image')
+                  onOpenChange(false)
+                }}
+              >
+                <span>设为尾帧</span>
+              </button>
+            )}
+            {canRef && (
+              <button
+                className={itemClass}
+                onClick={() => {
+                  setEdgeImageRole(e.id, 'input_reference')
+                  onOpenChange(false)
+                }}
+              >
+                <span>设为参考图</span>
+              </button>
+            )}
             {sectionSep}
           </>
         ) : null}

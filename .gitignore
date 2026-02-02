@@ -12,6 +12,7 @@ dist
 dist-ssr
 release
 *.local
+.vite-dev.pid
 src-tauri/target
 
 # Editor directories and files

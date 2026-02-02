@@ -1,4 +1,14 @@
-export type NodeType = 'text' | 'image' | 'video' | 'imageConfig' | 'videoConfig' | 'audio' | 'localSave'
+export type NodeType =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'imageConfig'
+  | 'videoConfig'
+  | 'audio'
+  | 'localSave'
+  | 'klingVideoTool'
+  | 'klingImageTool'
+  | 'klingAudioTool'
 
 export type GraphNode = {
   id: string

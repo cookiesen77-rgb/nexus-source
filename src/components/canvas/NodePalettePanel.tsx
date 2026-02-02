@@ -3,7 +3,7 @@ import type { NodeType } from '@/graph/types'
 import { useGraphStore } from '@/graph/store'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
-import { Image, Music, Save, Settings2, SlidersHorizontal, Type, Video } from 'lucide-react'
+import { Clapperboard, Image, Mic, Music, Save, Settings2, SlidersHorizontal, Sparkles, Type, Video } from 'lucide-react'
 import { saveMedia } from '@/lib/mediaStorage'
 
 // 检测 Tauri 环境
@@ -13,6 +13,9 @@ const NODE_OPTIONS: { type: NodeType; name: string; Icon: React.ComponentType<{ 
   { type: 'text', name: '文本节点', Icon: Type, color: '#3b82f6' },
   { type: 'imageConfig', name: '文生图配置', Icon: SlidersHorizontal, color: '#22c55e' },
   { type: 'videoConfig', name: '视频生成配置', Icon: Settings2, color: '#f59e0b' },
+  { type: 'klingVideoTool', name: 'Kling 视频工具', Icon: Clapperboard, color: '#f97316' },
+  { type: 'klingImageTool', name: 'Kling 图片工具', Icon: Sparkles, color: '#22c55e' },
+  { type: 'klingAudioTool', name: 'Kling 音频工具', Icon: Mic, color: '#0ea5e9' },
   { type: 'image', name: '图片节点', Icon: Image, color: '#8b5cf6' },
   { type: 'video', name: '视频节点', Icon: Video, color: '#ef4444' },
   { type: 'audio', name: '音频节点', Icon: Music, color: '#0ea5e9' },
@@ -23,6 +26,9 @@ const defaultLabelFor = (type: NodeType) => {
   if (type === 'text') return '文本'
   if (type === 'imageConfig') return '生图配置'
   if (type === 'videoConfig') return '视频配置'
+  if (type === 'klingVideoTool') return 'Kling 视频工具'
+  if (type === 'klingImageTool') return 'Kling 图片工具'
+  if (type === 'klingAudioTool') return 'Kling 音频工具'
   if (type === 'image') return '图片'
   if (type === 'video') return '视频'
   if (type === 'audio') return '音频'

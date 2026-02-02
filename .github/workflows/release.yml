@@ -168,16 +168,11 @@ jobs:
             - **Windows**: `Nexus_${{ steps.version.outputs.version }}_x64-setup.exe` / `.msi`
             
             ### 本次更新（重点）
-            - 短剧制作：批量首/尾生成状态修复（成功不再卡“生成中”）；支持从历史/画布导入图片/视频到工作台；支持一键上板到画布
-            - 修复自动模式「分析并搭建」按钮在窄宽度下挤压错位/换行
-            - 短剧制作：全屏工作台（路由化），自动/手动双模式
-            - 自动模式：默认模型可选；一致性流水线优化（先角色/场景参考 → 再首/尾关键帧 → 再视频）
-            - 工作台：图片/视频一键预览；返回/切换路由不丢版本
-            - 剪辑台：进入即预览（无需先点播放）；导出工程/导出成片（FFmpeg sidecar）；返回前强制保存
-            - 历史素材：画布/短剧/剪辑台产物全链路同步
-            - 下载：需要鉴权的素材下载自动附带 Bearer（更稳定）
-            - 仅使用云雾官方图床（imageproxy）上传垫图
-            - 修复 Veo 3.1 Components（openai-video）size 参数不合法导致 400
+            - 接入 7 个新视频模型：`doubao-seedance-1-5-pro-251215`、`wan2.6-i2v`、`MiniMax-Hailuo-2.3`、`MiniMax-Hailuo-2.3-Fast`、`kling-omni-video`、`luma_video_api`、`runwayml-gen3a_turbo-10`
+            - Kling 平台全量接入：支持 Kling 生图/生视频、Omni-Video/Omni-Image、多图参考生视频，以及扩展/特效/数字人/口型/动作控制/换装/TTS 等工具能力
+            - 新增 `klingVideoTool / klingImageTool / klingAudioTool` 三类工具节点：创建任务、轮询状态、回填视频/图片/音频 URL
+            - 模型输入说明（tips）完善，并在 UI/运行时对首帧/尾帧/参考图数量与组合进行限制与校验（不匹配时给出明确报错）
+            - 清理遗留 `tencent-video` 分支逻辑，统一模型能力驱动的生成与校验流程
             
             ### 获取 API Key
             访问 [nexusapi.cn](https://nexusapi.cn/) 获取 API Key
