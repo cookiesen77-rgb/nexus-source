@@ -2,7 +2,7 @@ import { KLING_AUDIO_TOOLS, KLING_IMAGE_TOOLS, KLING_VIDEO_TOOLS } from '@/confi
 import { useGraphStore } from '@/graph/store'
 import type { GraphNode } from '@/graph/types'
 import { klingCreateTask, klingPollTaskForMedia, normalizePayloadInlineMedia, pickMediaUrls } from '@/lib/workflow/klingPlatform'
-import { postJson } from '@/lib/workflow/request'
+import { getJson, postJson } from '@/lib/workflow/request'
 
 const pickNodeUrl = (n: GraphNode | null): string => {
   if (!n) return ''
@@ -124,22 +124,27 @@ export const runKlingToolNode = async (nodeId: string) => {
   payload = fillPayloadFromConnections(payload, { text: firstText, imageUrls, videoUrls, audioUrls })
   payload = await normalizePayloadInlineMedia(payload)
 
-  // 创建输出节点（按工具节点类型推断）
-  const expectedOutputType = node.type === 'klingVideoTool' ? 'video' : node.type === 'klingImageTool' ? 'image' : 'audio'
+  // 创建输出节点（允许 tool 覆盖输出类型：video/image/audio/text）
+  const toolOutputType = String(toolCfg?.outputType || '').trim()
+  const expectedOutputType =
+    toolOutputType === 'text' || toolOutputType === 'image' || toolOutputType === 'video' || toolOutputType === 'audio'
+      ? (toolOutputType as any)
+      : node.type === 'klingVideoTool'
+        ? 'video'
+        : node.type === 'klingImageTool'
+          ? 'image'
+          : 'audio'
   const outId = createOutputNode(node, expectedOutputType)
 
   try {
     // 选择端点
-    const endpoint = String(
-      toolCfg?.endpoint ||
-        toolCfg?.endpoints?.create ||
-        toolCfg?.endpoints?.run ||
-        toolCfg?.endpoints?.lipSync ||
-        ''
-    ).trim()
+    const endpointCandidate =
+      toolCfg?.endpoint || toolCfg?.endpoints?.create || toolCfg?.endpoints?.run || toolCfg?.endpoints?.lipSync || ''
+    const endpoint = (typeof endpointCandidate === 'function' ? endpointCandidate(payload) : String(endpointCandidate || '')).trim()
     if (!endpoint) throw new Error('工具未配置 endpoint')
 
     const statusEndpoint = toolCfg?.statusEndpoint || toolCfg?.endpoints?.query
+    const method = String(toolCfg?.method || 'POST').trim().toUpperCase() || 'POST'
 
     // 同步/异步两类：有 statusEndpoint 则轮询，否则直接尝试从响应取 URL
     let finalResp: any = null
@@ -154,8 +159,19 @@ export const runKlingToolNode = async (nodeId: string) => {
       finalResp = polled.raw
       finalUrls = { ...(polled.urls as any) }
     } else {
-      finalResp = await postJson<any>(endpoint, payload, { authMode: 'bearer', timeoutMs: 240000 })
+      if (method === 'GET') {
+        finalResp = await getJson<any>(endpoint, payload, { authMode: 'bearer', timeoutMs: 240000 })
+      } else {
+        finalResp = await postJson<any>(endpoint, payload, { authMode: 'bearer', timeoutMs: 240000 })
+      }
       finalUrls = pickMediaUrls(finalResp)
+    }
+
+    if (expectedOutputType === 'text') {
+      const text = JSON.stringify(finalResp, null, 2)
+      store.updateNode(outId, { data: { content: text, label: 'Kling 输出（JSON）', model: toolCfg.key, updatedAt: Date.now() } } as any)
+      store.updateNode(nodeId, { data: { executed: true, lastRunAt: Date.now() } } as any)
+      return { outId }
     }
 
     // 根据输出节点类型回填

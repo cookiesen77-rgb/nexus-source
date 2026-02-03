@@ -1664,11 +1664,83 @@ export default function Canvas() {
               label: `分镜 ${index + 1}`,
               content: shot
             })
-            const configId = store.addNode('imageConfig', { x: startX + spacing, y: startY + index * 200 }, {
+            // 根据模型 sizes/qualities，把“比例/分辨率”映射到 imageConfig 的 size/quality
+            const modelKey = String(payload.imageModel || DEFAULT_IMAGE_MODEL)
+            const modelCfg: any = (IMAGE_MODELS as any[]).find((m: any) => m?.key === modelKey) || (IMAGE_MODELS as any[])[0]
+            const desiredAspect = String(payload.aspectRatio || '').trim()
+            const desiredQuality = String((payload as any).imageQuality || '').trim()
+
+            const normalizeSizeKeys = (sizes: any) => {
+              const arr = Array.isArray(sizes) ? sizes : []
+              const out: string[] = []
+              for (const it of arr) {
+                if (typeof it === 'string') out.push(it)
+                else if (it && typeof it === 'object') {
+                  const k = String((it as any).key || (it as any).label || '').trim()
+                  if (k) out.push(k)
+                }
+              }
+              return out.filter(Boolean)
+            }
+            const parseAspectRatioToNumber = (raw: string) => {
+              const v = String(raw || '').trim()
+              const m = v.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/)
+              if (!m) return NaN
+              const a = Number(m[1])
+              const b = Number(m[2])
+              if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return NaN
+              return a / b
+            }
+            const parseSizeKeyToRatio = (key: string) => {
+              const v = String(key || '').trim()
+              if (!v) return NaN
+              if (/^\d{3,5}x\d{3,5}$/i.test(v)) {
+                const [w, h] = v.toLowerCase().split('x').map((x) => Number(x))
+                if (!Number.isFinite(w) || !Number.isFinite(h) || h <= 0) return NaN
+                return w / h
+              }
+              return parseAspectRatioToNumber(v)
+            }
+            const pickBestSize = (cfg: any, desired: string) => {
+              const keys = normalizeSizeKeys(cfg?.sizes)
+              if (!desired) return String(cfg?.defaultParams?.size || keys[0] || '')
+              if (keys.includes(desired)) return desired
+              const target = parseAspectRatioToNumber(desired)
+              if (!Number.isFinite(target) || keys.length === 0) return String(cfg?.defaultParams?.size || keys[0] || desired)
+              let best = keys[0]
+              let bestDiff = Number.POSITIVE_INFINITY
+              for (const k of keys) {
+                const r = parseSizeKeyToRatio(k)
+                if (!Number.isFinite(r)) continue
+                const diff = Math.abs(r - target)
+                if (diff < bestDiff) {
+                  bestDiff = diff
+                  best = k
+                }
+              }
+              return best
+            }
+            const pickBestQuality = (cfg: any, desired: string) => {
+              const list: any[] = Array.isArray(cfg?.qualities) ? cfg.qualities : []
+              if (!desired || list.length === 0) return ''
+              const dv = desired.toLowerCase()
+              for (const it of list) {
+                const k = String((it as any)?.key || it || '').trim()
+                if (!k) continue
+                if (k.toLowerCase() === dv) return k
+              }
+              return ''
+            }
+
+            const cfgData: any = {
               label: `分镜 ${index + 1}`,
-              model: payload.imageModel,
-              size: payload.aspectRatio
-            })
+              model: modelKey,
+              size: pickBestSize(modelCfg, desiredAspect),
+            }
+            const q = pickBestQuality(modelCfg, desiredQuality)
+            if (q) cfgData.quality = q
+
+            const configId = store.addNode('imageConfig', { x: startX + spacing, y: startY + index * 200 }, cfgData)
             store.addEdge(textId, configId, { sourceHandle: 'right', targetHandle: 'left' })
           })
           

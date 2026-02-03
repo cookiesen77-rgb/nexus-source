@@ -33,7 +33,7 @@ interface Props {
   setPrefs: React.Dispatch<React.SetStateAction<ShortDramaStudioPrefsV1>>
 }
 
-const SUPPORTED_VIDEO_FORMATS = new Set<string>(['sora-unified', 'veo-unified', 'kling-video', 'unified-video'])
+const SUPPORTED_VIDEO_FORMATS = new Set<string>(['sora-unified', 'veo-unified', 'kling-video', 'kling-multi-image2video', 'kling-omni-video', 'unified-video'])
 
 const makeId = () => globalThis.crypto?.randomUUID?.() || `sd_${Date.now()}_${Math.random().toString(16).slice(2)}`
 

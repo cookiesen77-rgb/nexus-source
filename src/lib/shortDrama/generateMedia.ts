@@ -624,6 +624,7 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
     const mode = modelCfg.defaultParams?.mode || 'pro'
     const sound = modelCfg.defaultParams?.sound || 'off'
     const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 10)
+    const supportsSound = /^kling-v2-6/i.test(String(modelName || '').trim())
 
     if (hasAnyImage) {
       const first = images[0] || ''
@@ -636,13 +637,104 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
         image_tail: lastFrame || '',
         mode,
         duration: durValue,
-        sound,
       }
+      if (supportsSound) payload.sound = sound
       if (prompt) payload.prompt = prompt
     } else {
+      if (!String(prompt || '').trim()) throw new Error('Kling 文生视频需要提示词')
       payload = { model_name: modelName, prompt, mode, duration: durValue, sound }
       if (ratio) payload.aspect_ratio = ratio
     }
+  } else if (modelCfg.format === 'kling-multi-image2video') {
+    // Kling 多图参考生视频：POST /kling/v1/videos/multi-image2video
+    // 查询：GET /kling/v1/videos/multi-image2video/{id}
+    const modelName = modelCfg.defaultParams?.model_name || 'kling-v1-6'
+    const mode = modelCfg.defaultParams?.mode || 'std'
+    const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 5)
+    const promptText = String(prompt || '').trim()
+    if (!promptText) throw new Error('Kling 多图参考生视频需要提示词')
+    if (!Array.isArray(images) || images.length === 0) {
+      throw new Error('Kling 多图参考生视频需要至少 1 张参考图/首帧')
+    }
+
+    const ensureHttpImage = async (raw: string, label: string) => {
+      let v = String(raw || '').trim()
+      if (!v) return ''
+      if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+      if (isHttpUrl(v)) return v
+      if (isDataUrl(v)) {
+        const compressed = await compressImageBase64(v, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      if (isBase64Like(v)) {
+        const dataUrl = `data:image/png;base64,${v}`
+        const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      throw new Error(`${label}需要公网可访问的图片 URL（http/https）或 dataURL/base64`)
+    }
+
+    const max = Number.isFinite(Number(modelCfg.maxImages)) ? Number(modelCfg.maxImages) : 4
+    const image_list: any[] = []
+    for (let i = 0; i < Math.min(max, images.length); i++) {
+      const u = await ensureHttpImage(images[i], `参考图${i + 1}`)
+      if (u) image_list.push({ image: u })
+    }
+    if (image_list.length === 0) throw new Error('Kling 多图参考生视频参考图为空')
+
+    payload = { model_name: modelName, image_list, prompt: promptText, mode, duration: durValue }
+    if (ratio) payload.aspect_ratio = ratio
+  } else if (modelCfg.format === 'kling-omni-video') {
+    // Kling Omni-Video：POST /kling/v1/videos/omni-video
+    // 查询：GET /kling/v1/videos/omni-video/{id}
+    const modelName = modelCfg.defaultParams?.model_name || 'kling-video-o1'
+    const mode = modelCfg.defaultParams?.mode || 'pro'
+    const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 5)
+    const promptText = String(prompt || '').trim()
+    if (!promptText) throw new Error('Kling Omni-Video 需要提示词')
+
+    const ensureHttpImage = async (raw: string, label: string) => {
+      let v = String(raw || '').trim()
+      if (!v) return ''
+      if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+      if (isHttpUrl(v)) return v
+      if (isDataUrl(v)) {
+        const compressed = await compressImageBase64(v, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      if (isBase64Like(v)) {
+        const dataUrl = `data:image/png;base64,${v}`
+        const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      throw new Error(`${label}需要公网可访问的图片 URL（http/https）或 dataURL/base64`)
+    }
+
+    const firstFrame = images[0] || ''
+    const image_list: any[] = []
+    if (firstFrame) {
+      const u = await ensureHttpImage(firstFrame, '首帧')
+      if (u) image_list.push({ image_url: u, type: 'first_frame' })
+    }
+    if (lastFrame) {
+      if (!firstFrame) throw new Error('Kling Omni-Video 不支持仅尾帧：有尾帧时必须同时提供首帧')
+      const u = await ensureHttpImage(lastFrame, '尾帧')
+      if (u) image_list.push({ image_url: u, type: 'end_frame' })
+    }
+
+    // 其余图片作为参考图（不做主体/风格/场景分类）
+    const extra = images
+      .slice(1)
+      .map((x) => String(x || '').trim())
+      .filter((x) => x && x !== lastFrame)
+    const maxExtra = Math.max(0, Number(modelCfg.maxImages || 6))
+    for (let i = 0; i < Math.min(maxExtra, extra.length); i++) {
+      const u = await ensureHttpImage(extra[i], `参考图${i + 1}`)
+      if (u) image_list.push({ image_url: u })
+    }
+
+    payload = { model_name: modelName, prompt: promptText, image_list, mode, duration: durValue }
+    if (ratio) payload.aspect_ratio = ratio
   } else {
     throw new Error(`工作台暂不支持该视频模型格式：${String(modelCfg.format || '')}`)
   }

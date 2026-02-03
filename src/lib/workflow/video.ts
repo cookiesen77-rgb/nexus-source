@@ -572,6 +572,7 @@ const getConnectedInputs = (configId: string) => {
   const firstFrame: string[] = []
   const lastFrame: string[] = []
   const refImages: string[] = []
+  const refVideos: string[] = []
 
   for (const edge of connectedEdges) {
     const sourceNode = byId.get(edge.source)
@@ -631,6 +632,19 @@ const getConnectedInputs = (configId: string) => {
         // 默认是首帧
         firstFrame.push(imageData)
       }
+    } else if (sourceNode.type === 'video') {
+      const nodeData = sourceNode.data as any
+      const pick = (...cands: any[]) => {
+        for (const c of cands) {
+          const v = String(c || '').trim()
+          if (!v) continue
+          return v
+        }
+        return ''
+      }
+      // 优先使用 sourceUrl（通常是公网 URL），其次 url（可能是 asset:// 或 data:）
+      const v = pick(nodeData?.sourceUrl, nodeData?.url)
+      if (v) refVideos.push(v)
     }
   }
 
@@ -638,7 +652,8 @@ const getConnectedInputs = (configId: string) => {
     prompt: promptParts.join('\n\n'),
     firstFrame: firstFrame[0] || '',
     lastFrame: lastFrame[0] || '',
-    refImages: Array.from(new Set(refImages))
+    refImages: Array.from(new Set(refImages)),
+    refVideos: Array.from(new Set(refVideos))
   }
 }
 
@@ -983,18 +998,20 @@ export const generateVideoFromConfigNode = async (
   console.log('[generateVideo] 节点数据:', d)
 
   // 1. 获取连接的输入
-  let { prompt, firstFrame, lastFrame, refImages } = getConnectedInputs(configNodeId)
+  let { prompt, firstFrame, lastFrame, refImages, refVideos } = getConnectedInputs(configNodeId)
   console.log('[generateVideo] 连接输入:', {
     promptLength: prompt?.length || 0,
     hasFirstFrame: !!firstFrame,
     hasLastFrame: !!lastFrame,
     refImagesCount: refImages.length,
+    refVideosCount: (refVideos || []).length,
     // 显示图片 URL 前缀以确认是 HTTP 还是 base64
     firstFrameType: firstFrame ? (firstFrame.startsWith('http') ? 'HTTP URL' : 'base64/other') : 'none',
-    refImagesTypes: refImages.map(img => img.startsWith('http') ? 'HTTP URL' : 'base64/other')
+    refImagesTypes: refImages.map(img => img.startsWith('http') ? 'HTTP URL' : 'base64/other'),
+    refVideosTypes: (refVideos || []).map(v => v.startsWith('http') ? 'HTTP URL' : (v.startsWith('asset://') ? 'asset://' : 'other'))
   })
 
-  if (!prompt && !firstFrame && !lastFrame && refImages.length === 0) {
+  if (!prompt && !firstFrame && !lastFrame && refImages.length === 0 && (refVideos || []).length === 0) {
     throw new Error('请连接文本节点（提示词）或图片节点（首帧/尾帧/参考图）')
   }
 
@@ -1016,12 +1033,14 @@ export const generateVideoFromConfigNode = async (
   const supportsFirstFrame = !!(modelCfg as any)?.supportsFirstFrame
   const supportsLastFrame = !!(modelCfg as any)?.supportsLastFrame
   const supportsRef = !!(modelCfg as any)?.supportsReferenceImages
+  const supportsRefVideo = !!(modelCfg as any)?.supportsReferenceVideo
   const requiresPrompt = !!(modelCfg as any)?.requiresPrompt
   const requiresFirstFrameIfLastFrame = !!(modelCfg as any)?.requiresFirstFrameIfLastFrame
   const maxImages = Number.isFinite(Number((modelCfg as any)?.maxImages)) ? Number((modelCfg as any).maxImages) : 2
   const maxRefImages = supportsRef
     ? (Number.isFinite(Number((modelCfg as any)?.maxRefImages)) ? Number((modelCfg as any).maxRefImages) : maxImages)
     : 0
+  const maxRefVideos = supportsRefVideo ? (Number.isFinite(Number((modelCfg as any)?.maxRefVideos)) ? Number((modelCfg as any).maxRefVideos) : 1) : 0
 
   // Fold roles to match model capability
   if (supportsRef && !supportsFirstFrame && firstFrame) {
@@ -1050,8 +1069,14 @@ export const generateVideoFromConfigNode = async (
   if (!supportsRef && (refImages?.length || 0) > 0) {
     throw new Error('当前模型不支持参考图输入（请移除参考图连接或更换模型）')
   }
+  if (!supportsRefVideo && (refVideos?.length || 0) > 0) {
+    throw new Error('当前模型不支持参考视频输入（请移除视频连接或更换模型）')
+  }
   if (supportsRef && maxRefImages > 0 && (refImages?.length || 0) > maxRefImages) {
     throw new Error(`当前模型参考图最多支持 ${maxRefImages} 张`)
+  }
+  if (supportsRefVideo && maxRefVideos > 0 && (refVideos?.length || 0) > maxRefVideos) {
+    throw new Error(`当前模型参考视频最多支持 ${maxRefVideos} 个`)
   }
   if (Number.isFinite(maxImages) && maxImages > 0 && totalImages > maxImages) {
     throw new Error(`当前模型最多支持 ${maxImages} 张图片输入（含首/尾帧与参考图）`)
@@ -1389,8 +1414,16 @@ export const generateVideoFromConfigNode = async (
       const modelName = modelCfg.defaultParams?.model_name || 'kling-v2-6'
       const mode = modelCfg.defaultParams?.mode || 'pro'
       const sound = modelCfg.defaultParams?.sound || 'off'
-      // Kling API 要求 duration 为字符串类型（官方文档要求）
-      const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : '10'
+      const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 10)
+      const supportsSoundAndVoice = /^kling-v2-6/i.test(String(modelName || '').trim())
+      const voiceIdsRaw = String((d as any)?.klingVoiceIds || '').trim()
+      const voiceIds = voiceIdsRaw
+        ? voiceIdsRaw
+            .split(/[,，\s]+/g)
+            .map((x) => String(x || '').trim())
+            .filter(Boolean)
+            .slice(0, 2)
+        : []
 
       if (hasAnyImage) {
         let image = firstFrame || refImages[0] || ''
@@ -1435,12 +1468,27 @@ export const generateVideoFromConfigNode = async (
           image,
           image_tail: tail,
           mode,
-          duration: durValue,  // 字符串类型
-          sound
+          duration: durValue,
+        }
+        // sound / voice_list：仅 kling-v2-6 及后续模型支持（按云雾文档）
+        if (supportsSoundAndVoice) {
+          payload.sound = sound
+          if (voiceIds.length > 0) {
+            if (String(sound || '').toLowerCase() !== 'on') {
+              throw new Error('使用音色（voice_list）时需要 sound=on：请切换到 “kling-v2-6 · 有音频” 模型')
+            }
+            payload.voice_list = voiceIds.map((voice_id) => ({ voice_id }))
+          }
+        } else if (voiceIds.length > 0) {
+          throw new Error('当前 Kling 模型不支持音色（voice_list），仅 kling-v2-6 支持')
         }
         if (prompt) payload.prompt = prompt
       } else {
-        payload = { model_name: modelName, prompt, mode, duration: durValue, sound }
+        const promptText = normalizeText(prompt)
+        if (!promptText) {
+          throw new Error('Kling 文生视频需要提示词：请连接文本节点（提示词）后重试')
+        }
+        payload = { model_name: modelName, prompt: promptText, mode, duration: durValue, sound }
         if (ratio) payload.aspect_ratio = ratio
       }
     } else if (modelCfg.format === 'kling-multi-image2video') {
@@ -1646,7 +1694,33 @@ export const generateVideoFromConfigNode = async (
         }
       }
 
+      const ensureHttpVideo = (raw: string, label: string) => {
+        const v = String(raw || '').trim()
+        if (!v) return ''
+        if (/^https?:\/\//i.test(v)) return v
+        if (v.startsWith('asset://')) {
+          throw new Error(`${label}是本地缓存（asset://），请使用源视频公网 URL（建议用视频节点的 sourceUrl）`)
+        }
+        throw new Error(`${label}需要公网可访问的 http(s) URL`)
+      }
+
+      const video_list: any[] = []
+      if (Array.isArray(refVideos) && refVideos.length > 0) {
+        const maxV = Number.isFinite(Number(modelCfg.maxRefVideos)) ? Number(modelCfg.maxRefVideos) : 1
+        for (let i = 0; i < Math.min(maxV, refVideos.length); i++) {
+          const u = ensureHttpVideo(refVideos[i], `参考视频${i + 1}`)
+          if (u) {
+            video_list.push({
+              video_url: u,
+              refer_type: 'feature',
+              keep_original_sound: 'no',
+            })
+          }
+        }
+      }
+
       payload = { model_name: modelName, prompt: promptText, image_list, mode, duration: durValue }
+      if (video_list.length > 0) payload.video_list = video_list
       if (ratio) payload.aspect_ratio = ratio
     } else if (modelCfg.format === 'luma-video') {
       // Luma 官方格式：POST /luma/generations, GET /luma/generations/{id}

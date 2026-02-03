@@ -14,6 +14,7 @@ import ShortDramaStudioManualView from '@/components/shortDrama/ShortDramaStudio
 import { createDefaultDraftV2, loadShortDramaDraftV2, saveShortDramaDraftV2 } from '@/lib/shortDrama/draftStorage'
 import { createDefaultShortDramaPrefs, loadShortDramaPrefs, saveShortDramaPrefs } from '@/lib/shortDrama/uiPrefs'
 import { syncAssetHistoryFromCanvasNodes } from '@/lib/assets/syncFromCanvas'
+import { useGraphStore } from '@/graph/store'
 import type { ShortDramaDraftV2 } from '@/lib/shortDrama/types'
 import type { ShortDramaStudioPrefsV1 } from '@/lib/shortDrama/uiPrefs'
 
@@ -82,7 +83,15 @@ export default function ShortDramaStudioShell({
 
   const handleClose = useCallback(() => {
     flushNow()
-    onRequestClose?.()
+    // 同步保存画布，避免“从短剧回到画布时新增节点丢失”（画布可能在路由切换时触发 hydrate 覆盖未落盘的变更）
+    ;(async () => {
+      try {
+        await useGraphStore.getState().saveNow()
+      } catch {
+        // ignore
+      }
+      onRequestClose?.()
+    })()
   }, [flushNow, onRequestClose])
 
   const mode = prefs.mode

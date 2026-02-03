@@ -50,6 +50,8 @@ interface VideoConfigNodeData {
   dur?: number
   size?: string
   loopCount?: number  // 循环生成次数，默认 1
+  // Kling v2.6 音色（可选）：最多 2 个 voice_id（逗号分隔）
+  klingVoiceIds?: string
 }
 
 export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data, selected }: NodeProps) {
@@ -60,6 +62,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
   const [duration, setDuration] = useState(nodeData?.dur || 5)
   const [size, setSize] = useState(nodeData?.size || '')
   const [loopCount, setLoopCount] = useState(nodeData?.loopCount || 1) // 循环次数，默认 1
+  const [klingVoiceIds, setKlingVoiceIds] = useState(() => String(nodeData?.klingVoiceIds || '').trim())
   const [loading, setLoading] = useState(false)
   
   const updateTimerRef = useRef<number>(0)
@@ -141,6 +144,12 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeData?.size, id])
 
+  useEffect(() => {
+    const next = String(nodeData?.klingVoiceIds || '').trim()
+    if (next !== klingVoiceIds) setKlingVoiceIds(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeData?.klingVoiceIds, id])
+
   // 按需计算连接状态
   const getConnectionStatus = useCallback(() => {
     const state = useGraphStore.getState()
@@ -149,6 +158,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     let firstFrame = false
     let lastFrame = false
     let refs = 0
+    let refVideos = 0
 
     for (const edge of incomingEdges) {
       const sourceNode = state.nodes.find((n) => n.id === edge.source)
@@ -161,8 +171,11 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
         else if (role === 'last_frame_image' && !lastFrame) lastFrame = true
         else refs++
       }
+      if (sourceNode?.type === 'video' && (((sourceNode.data as any)?.sourceUrl) || ((sourceNode.data as any)?.url))) {
+        refVideos++
+      }
     }
-    return { prompts, firstFrame, lastFrame, refs }
+    return { prompts, firstFrame, lastFrame, refs, refVideos }
   }, [id])
 
   const handleDelete = useCallback((e: React.MouseEvent) => {
@@ -190,7 +203,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     const caps = getVideoModelCaps(model)
     const totalImages = (status.firstFrame ? 1 : 0) + (status.lastFrame ? 1 : 0) + status.refs
 
-    if (status.prompts === 0 && totalImages === 0) {
+    if (status.prompts === 0 && totalImages === 0 && (status as any).refVideos === 0) {
       console.warn('[VideoConfigNode] 无输入连接，退出生成')
       window.$message?.warning?.('请连接文本节点（提示词）或图片节点（首帧/尾帧/参考图）')
       return
@@ -225,6 +238,14 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
       window.$message?.warning?.('当前模型不支持仅尾帧：有尾帧时必须同时提供首帧')
       return
     }
+    if (!caps.supportsReferenceVideo && (status as any).refVideos > 0) {
+      window.$message?.warning?.('当前模型不支持参考视频输入')
+      return
+    }
+    if (caps.supportsReferenceVideo && caps.maxRefVideos > 0 && (status as any).refVideos > caps.maxRefVideos) {
+      window.$message?.warning?.(`当前模型参考视频最多支持 ${caps.maxRefVideos} 个`)
+      return
+    }
 
     setLoading(true)
     console.log('[VideoConfigNode] 开始生成视频...')
@@ -232,7 +253,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     try {
       // 生成前强制同步当前 UI 选择到 store（用于持久化）
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current)
-      useGraphStore.getState().updateNode(id, { data: { model, ratio, dur: duration, size, loopCount } } as any)
+      useGraphStore.getState().updateNode(id, { data: { model, ratio, dur: duration, size, loopCount, klingVoiceIds } } as any)
       
       // 循环生成（并发）：选择 N 次就立即创建 N 个后续输出节点，并发完成调用
       const actualLoopCount = Math.max(1, Math.min(10, loopCount)) // 限制 1-10 次
@@ -311,7 +332,7 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
     } finally {
       setLoading(false)
     }
-  }, [id, model, ratio, duration, size, loopCount, getConnectionStatus])
+  }, [id, model, ratio, duration, size, loopCount, klingVoiceIds, getConnectionStatus])
 
   // 更新 store 的辅助函数
   const debouncedUpdateStore = useCallback((updates: Record<string, any>) => {
@@ -470,6 +491,27 @@ export const VideoConfigNodeComponent = memo(function VideoConfigNode({ id, data
             </div>
           )}
 
+          {/* Kling v2.6 音色（可选）：仅在模型开启 sound=on 时生效 */}
+          {String(currentModelConfig?.format || '') === 'kling-video' && /^kling-v2-6/i.test(String(currentModelConfig?.defaultParams?.model_name || '')) && (
+            <div className="flex flex-col gap-1">
+              <div className="text-xs text-[var(--text-secondary)]">音色 voice_id（可选，最多 2 个，用逗号分隔）</div>
+              <input
+                value={klingVoiceIds}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setKlingVoiceIds(v)
+                  debouncedUpdateStore({ klingVoiceIds: v })
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="nodrag w-full bg-transparent border border-[var(--border-color)] rounded px-2 py-1 outline-none text-sm"
+                placeholder="例如：voice_001, voice_002（仅 v2.6 且 sound=on 生效）"
+              />
+              <div className="text-[11px] text-[var(--text-tertiary)]">
+                说明：使用音色时请在提示词中用 “&lt;&lt; &gt;&gt;” 标注，且需选择带音频的 v2.6 模型（sound=on）。
+              </div>
+            </div>
+          )}
+
           {/* 连接输入指示 */}
           <ConnectionStatusIndicator nodeId={id} modelKey={model} />
 
@@ -522,6 +564,7 @@ const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({
     let firstFrame = false
     let lastFrame = false
     let refs = 0
+    let refVideos = 0
 
     for (const edge of incomingEdges) {
       const sourceNode = state.nodes.find((n) => n.id === edge.source)
@@ -540,8 +583,11 @@ const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({
           refs++
         }
       }
+      if (sourceNode?.type === 'video' && (((sourceNode.data as any)?.sourceUrl) || ((sourceNode.data as any)?.url))) {
+        refVideos++
+      }
     }
-    return { prompts, firstFrame, lastFrame, refs }
+    return { prompts, firstFrame, lastFrame, refs, refVideos }
   })
 
   return (
@@ -578,6 +624,15 @@ const ConnectionStatusIndicator = memo(function ConnectionStatusIndicator({
             : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
         }`}>
           参考图 {status.refs > 0 ? `✓ ${status.refs}` : '○'}
+        </span>
+      )}
+      {caps.supportsReferenceVideo && (
+        <span className={`px-2 py-0.5 rounded-full ${
+          (status as any).refVideos > 0
+            ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400'
+            : 'bg-gray-100 text-gray-500 dark:bg-gray-800'
+        }`}>
+          参考视频 {(status as any).refVideos > 0 ? `✓ ${(status as any).refVideos}` : '○'}
         </span>
       )}
     </div>

@@ -11,7 +11,9 @@ export type VideoModelCaps = {
   supportsFirstFrame: boolean
   supportsLastFrame: boolean
   supportsReferenceImages: boolean
+  supportsReferenceVideo: boolean
   maxRefImages: number
+  maxRefVideos: number
   maxImages: number
   requiresFirstFrameIfLastFrame: boolean
 }
@@ -49,6 +51,7 @@ export const getVideoModelCaps = (modelKey: string): VideoModelCaps => {
   const supportsFirstFrame = !!cfg?.supportsFirstFrame
   const supportsLastFrame = !!cfg?.supportsLastFrame
   const supportsReferenceImages = !!cfg?.supportsReferenceImages
+  const supportsReferenceVideo = !!cfg?.supportsReferenceVideo
 
   const maxImagesRaw = Number(cfg?.maxImages)
   const maxImages = Number.isFinite(maxImagesRaw) && maxImagesRaw > 0 ? Math.floor(maxImagesRaw) : 0
@@ -61,6 +64,10 @@ export const getVideoModelCaps = (modelKey: string): VideoModelCaps => {
     maxRefImages = maxImages
   }
 
+  const maxRefVideosRaw = Number(cfg?.maxRefVideos)
+  let maxRefVideos = Number.isFinite(maxRefVideosRaw) && maxRefVideosRaw >= 0 ? Math.floor(maxRefVideosRaw) : 0
+  if (!supportsReferenceVideo) maxRefVideos = 0
+
   return {
     modelKey: String(cfg?.key || modelKey || '').trim(),
     label,
@@ -69,7 +76,9 @@ export const getVideoModelCaps = (modelKey: string): VideoModelCaps => {
     supportsFirstFrame,
     supportsLastFrame,
     supportsReferenceImages,
+    supportsReferenceVideo,
     maxRefImages,
+    maxRefVideos,
     maxImages,
     requiresFirstFrameIfLastFrame: !!cfg?.requiresFirstFrameIfLastFrame,
   }

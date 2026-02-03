@@ -34,7 +34,7 @@ import {
   POLISH_SYSTEM_PROMPT,
   getAspectRatioOptions
 } from '@/lib/directorPresets'
-import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL } from '@/config/models'
+import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, SEEDREAM_SIZE_OPTIONS, SEEDREAM_4K_SIZE_OPTIONS } from '@/config/models'
 import { useAssetsStore } from '@/store/assets'
 
 interface HistoryEntry {
@@ -55,6 +55,7 @@ interface CreateNodesPayload {
   shots: string[]
   imageModel: string
   aspectRatio: string
+  imageQuality?: string
   autoGenerateImages: boolean
   // 新增：单图模式
   singleImageUrl?: string
@@ -74,6 +75,105 @@ const imageModelOptions = (IMAGE_MODELS as any[]).map((m: any) => ({
   label: m.label,
   value: m.key
 }))
+
+// ===== 尺寸/分辨率辅助（导演台用）=====
+const roundEvenInt = (n: number) => {
+  const v = Math.max(1, Math.round(n))
+  return v % 2 === 0 ? v : v + 1
+}
+
+// Seedream：将“分辨率(1K/2K/4K)+比例(16:9等)”映射为像素宽高（用于写入 size 字段）
+const seedreamSizeByRatioAndResolution = (ratio: string, resolution: string) => {
+  const r = String(ratio || '').trim()
+  if (/^\d{3,5}x\d{3,5}$/i.test(r)) return r
+
+  const res = String(resolution || '').trim().toUpperCase()
+  const lookup = (list: any[], label: string) => {
+    const hit = (Array.isArray(list) ? list : []).find((o: any) => String(o?.label || '').trim() === label)
+    const key = String(hit?.key || '').trim()
+    return /^\d{3,5}x\d{3,5}$/i.test(key) ? key : ''
+  }
+
+  if (res === '4K') return lookup(SEEDREAM_4K_SIZE_OPTIONS as any, r) || lookup(SEEDREAM_SIZE_OPTIONS as any, r) || '4096x4096'
+  if (res === '2K') return lookup(SEEDREAM_SIZE_OPTIONS as any, r) || '2048x2048'
+  if (res === '1K') {
+    const m = r.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/)
+    const a = Number(m?.[1] || 1)
+    const b = Number(m?.[2] || 1)
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return '1024x1024'
+    const base = 1024
+    if (a >= b) {
+      const h = base
+      const w = roundEvenInt((base * a) / b)
+      return `${w}x${h}`
+    }
+    const w = base
+    const h = roundEvenInt((base * b) / a)
+    return `${w}x${h}`
+  }
+
+  // fallback：按 2K 处理
+  return lookup(SEEDREAM_SIZE_OPTIONS as any, r) || '2048x2048'
+}
+
+const parseAspectRatioToNumber = (raw: string) => {
+  const v = String(raw || '').trim()
+  const m = v.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/)
+  if (!m) return NaN
+  const a = Number(m[1])
+  const b = Number(m[2])
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return NaN
+  return a / b
+}
+
+const parseSizeKeyToRatio = (key: string) => {
+  const v = String(key || '').trim()
+  if (!v) return NaN
+  if (/^\d{3,5}x\d{3,5}$/i.test(v)) {
+    const [w, h] = v.toLowerCase().split('x').map((x) => Number(x))
+    if (!Number.isFinite(w) || !Number.isFinite(h) || h <= 0) return NaN
+    return w / h
+  }
+  return parseAspectRatioToNumber(v)
+}
+
+const normalizeSizeKeys = (sizes: any) => {
+  const arr = Array.isArray(sizes) ? sizes : []
+  const out: string[] = []
+  for (const it of arr) {
+    if (typeof it === 'string') out.push(it)
+    else if (it && typeof it === 'object') {
+      const k = String((it as any).key || (it as any).label || '').trim()
+      if (k) out.push(k)
+    }
+  }
+  return out.filter(Boolean)
+}
+
+const pickBestSizeKeyForAspect = (modelCfg: any, desiredAspect: string) => {
+  const keys = normalizeSizeKeys(modelCfg?.sizes)
+  if (keys.length === 0) return String(modelCfg?.defaultParams?.size || desiredAspect || '').trim()
+
+  // exact match (ratio-mode models)
+  const exact = keys.find((k) => String(k).trim() === String(desiredAspect || '').trim())
+  if (exact) return exact
+
+  const target = parseAspectRatioToNumber(desiredAspect)
+  if (!Number.isFinite(target)) return keys[0]
+
+  let best = keys[0]
+  let bestDiff = Number.POSITIVE_INFINITY
+  for (const k of keys) {
+    const r = parseSizeKeyToRatio(k)
+    if (!Number.isFinite(r)) continue
+    const diff = Math.abs(r - target)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      best = k
+    }
+  }
+  return best
+}
 
 export default function DirectorConsole({ open, onClose, onCreateNodes }: Props) {
   // 预设模式
@@ -371,22 +471,42 @@ Output STRICT JSON only (no markdown, no code fences):
         if (!imageUrl) throw new Error('Chat 生图未返回有效图片')
       } else if (format === 'kling-image') {
         // Kling 格式
+        const klingRes = String(resolution || '').trim().toLowerCase() || String(modelCfg.defaultParams?.quality || '1k')
         const klingPayload = {
           model_name: modelCfg.defaultParams?.model_name || 'kling-v2-1',
           prompt: promptToUse,
           aspect_ratio: aspectRatio || '1:1',
+          resolution: klingRes === '4k' ? '2k' : klingRes,
           n: 1
         }
         const rsp = await postJson<any>(modelCfg.endpoint, klingPayload, { authMode: modelCfg.authMode, timeoutMs: modelCfg.timeout || 120000 })
         if (rsp?.data?.images?.[0]?.url) imageUrl = rsp.data.images[0].url
         else if (rsp?.data?.[0]?.url) imageUrl = rsp.data[0].url
         else throw new Error('Kling 生图未返回有效图片')
+      } else if (format === 'doubao-seedream') {
+        // 豆包 Seedream（云雾 OpenAPI）：ratio(16:9等)+resolution(1K/2K/4K) 合成写入 size(像素)
+        const finalSize = seedreamSizeByRatioAndResolution(aspectRatio || modelCfg.defaultParams?.size || '3:4', resolution || modelCfg.defaultParams?.quality || '2K')
+        const payload: any = {
+          model: imageModel,
+          prompt: promptToUse,
+          size: finalSize,
+          response_format: 'url',
+          watermark: false,
+          sequential_image_generation: 'disabled',
+        }
+        // Seedream 参考图要求 http(s) URL；当前导演台上传是 dataURL，这里不自动上传，避免隐式外部依赖
+        const rsp = await postJson<any>(modelCfg.endpoint || '/images/generations', payload, { authMode: modelCfg.authMode, timeoutMs: modelCfg.timeout || 240000 })
+        if (rsp?.url) imageUrl = rsp.url
+        else if (rsp?.data?.[0]?.url) imageUrl = rsp.data[0].url
+        else if (rsp?.data?.[0]?.b64_json) imageUrl = `data:image/png;base64,${rsp.data[0].b64_json}`
+        else throw new Error('Seedream 未获取到图片结果')
       } else {
         // OpenAI 兼容格式
+        const pickedSize = pickBestSizeKeyForAspect(modelCfg, aspectRatio || '')
         const result = await generateImage({
           model: imageModel,
           prompt: promptToUse,
-          size: aspectRatio,
+          size: pickedSize || aspectRatio,
         }, {
           endpoint: modelCfg?.endpoint || '/images/generations',
           authMode: modelCfg?.authMode || 'bearer',
@@ -559,10 +679,12 @@ Output STRICT JSON only (no markdown, no code fences):
         if (!imageUrl) throw new Error('Chat 生图未返回有效图片')
       } else if (format === 'kling-image') {
         // Kling 格式
+        const klingRes = String(resolution || '').trim().toLowerCase() || String(modelCfg.defaultParams?.quality || '1k')
         const klingPayload = {
           model_name: modelCfg.defaultParams?.model_name || 'kling-v2-1',
           prompt: finalPrompt,
           aspect_ratio: aspectRatio || '1:1',
+          resolution: klingRes === '4k' ? '2k' : klingRes,
           n: 1
         }
         const rsp = await postJson<any>(modelCfg.endpoint, klingPayload, { authMode: modelCfg.authMode, timeoutMs: modelCfg.timeout || 120000 })
@@ -574,12 +696,28 @@ Output STRICT JSON only (no markdown, no code fences):
         } else {
           throw new Error('Kling 生图未返回有效图片')
         }
+      } else if (format === 'doubao-seedream') {
+        const finalSize = seedreamSizeByRatioAndResolution(aspectRatio || modelCfg.defaultParams?.size || '3:4', resolution || modelCfg.defaultParams?.quality || '2K')
+        const payload: any = {
+          model: imageModel,
+          prompt: finalPrompt,
+          size: finalSize,
+          response_format: 'url',
+          watermark: false,
+          sequential_image_generation: 'disabled',
+        }
+        const rsp = await postJson<any>(modelCfg.endpoint || '/images/generations', payload, { authMode: modelCfg.authMode, timeoutMs: modelCfg.timeout || 240000 })
+        if (rsp?.url) imageUrl = rsp.url
+        else if (rsp?.data?.[0]?.url) imageUrl = rsp.data[0].url
+        else if (rsp?.data?.[0]?.b64_json) imageUrl = `data:image/png;base64,${rsp.data[0].b64_json}`
+        else throw new Error('Seedream 未获取到图片结果')
       } else {
         // OpenAI 兼容格式
+        const pickedSize = pickBestSizeKeyForAspect(modelCfg, aspectRatio || '')
         const result = await generateImage({
           model: imageModel,
           prompt: finalPrompt,
-          size: aspectRatio,
+          size: pickedSize || aspectRatio,
         }, {
           endpoint: modelCfg?.endpoint || '/images/generations',
           authMode: modelCfg?.authMode || 'bearer',
@@ -735,6 +873,7 @@ Output STRICT JSON only (no markdown, no code fences):
         shots: [],
         imageModel,
         aspectRatio,
+        imageQuality: resolution,
         autoGenerateImages: false,
         singleImageUrl: generatedImageUrl,
         singleImagePrompt: (usedPolished || userPrompt).trim()
@@ -756,6 +895,7 @@ Output STRICT JSON only (no markdown, no code fences):
       shots,
       imageModel,
       aspectRatio,
+      imageQuality: resolution,
       autoGenerateImages
     })
 
