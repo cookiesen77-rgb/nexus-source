@@ -33,7 +33,19 @@ interface Props {
   setPrefs: React.Dispatch<React.SetStateAction<ShortDramaStudioPrefsV1>>
 }
 
-const SUPPORTED_VIDEO_FORMATS = new Set<string>(['sora-unified', 'veo-unified', 'kling-video', 'kling-multi-image2video', 'kling-omni-video', 'unified-video'])
+const SUPPORTED_VIDEO_FORMATS = new Set<string>([
+  'sora-unified',
+  'veo-unified',
+  'kling-video',
+  'kling-multi-image2video',
+  'kling-omni-video',
+  'unified-video',
+  'volc-seedance-video',
+  'alibailian-wan-video',
+  'minimax-hailuo-video',
+  'runway-video',
+  'luma-video',
+])
 
 const makeId = () => globalThis.crypto?.randomUUID?.() || `sd_${Date.now()}_${Math.random().toString(16).slice(2)}`
 
@@ -903,6 +915,13 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
       if (!startInput) {
         window.$message?.warning?.('未检测到首帧，将按纯文生视频执行（若模型支持）')
+      }
+
+      // API 约束警告：音频与尾帧不兼容
+      const modelCfg = VIDEO_MODELS.find((m) => m.key === draft.models.videoModelKey)
+      const supportsSound = !!(modelCfg?.supportsSound || modelCfg?.defaultParams?.sound === 'on')
+      if (supportsSound && endInput) {
+        window.$message?.warning?.('⚠️ 检测到尾帧：Kling 音频与尾帧不兼容，本次生成将禁用音频')
       }
 
       const running: ShortDramaMediaVariant = {
@@ -2109,7 +2128,12 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
                   <div className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-secondary)] p-3">
                     <div className="flex items-center justify-between">
-                      <div className="text-xs font-semibold text-[var(--text-primary)]">尾帧版本</div>
+                      <div className="flex flex-col">
+                        <div className="text-xs font-semibold text-[var(--text-primary)]">尾帧版本</div>
+                        {endSelected && (VIDEO_MODELS.find((m) => m.key === draft.models.videoModelKey)?.supportsSound || VIDEO_MODELS.find((m) => m.key === draft.models.videoModelKey)?.defaultParams?.sound === 'on') && (
+                          <div className="text-[10px] text-amber-600">⚠️ 已选尾帧，生成视频时音频将被禁用</div>
+                        )}
+                      </div>
                       <div className="flex items-center gap-2">
                         <label className="mr-1 flex items-center gap-2 text-xs text-[var(--text-secondary)]">
                           <input

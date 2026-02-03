@@ -48,7 +48,7 @@ This project uses **Zustand** for state management:
 
 **Key stores**:
 - `src/graph/store.ts` - Nodes, edges, viewport, undo/redo with auto-save
-- `src/store/projects.ts` - Project CRUD with localStorage + Tauri persistence
+- `src/store/projects.ts` - Project CRUD (name, description, thumbnail) with localStorage + Tauri persistence
 - `src/store/settings.ts` - App settings (theme, API config)
 
 **State patterns**:
@@ -141,6 +141,7 @@ Three-tier API integration:
    {
      id: string,
      name: string,
+     description?: string,  // Optional project description
      thumbnail?: string,
      createdAt: number,
      updatedAt: number
@@ -152,7 +153,12 @@ Three-tier API integration:
    - Auto-save on every change (debounced 500ms)
    - History compressed with LZ4 for older entries
 
-3. **Tauri desktop** → Native file system via `save_project_canvas`/`load_project_canvas` commands
+3. **Media storage** → IndexedDB via `lib/mediaStorage.ts`
+   - Binary blobs (images, videos, audio) stored separately from graph state
+   - Project removal automatically cleans up associated media
+   - Prevents localStorage quota issues with large files
+
+4. **Tauri desktop** → Native file system via `save_project_canvas`/`load_project_canvas` commands
 
 No backend required - all data persists client-side.
 
@@ -227,6 +233,7 @@ src/
 │   ├── polish.ts        # Prompt enhancement
 │   ├── contextEngine.ts # Graph context analysis
 │   ├── nexusApi.ts      # API adapters
+│   ├── mediaStorage.ts  # IndexedDB media management
 │   └── tauri.ts         # Tauri helpers
 ├── config/              # Model configurations
 ├── utils/               # Utility functions

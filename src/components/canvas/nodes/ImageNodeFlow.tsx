@@ -112,30 +112,24 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
   // 如果没有 url，尝试从 IndexedDB 或 sourceUrl 恢复
   // 优先级：1. IndexedDB (mediaId) 2. sourceUrl (HTTPS URL)
   // 使用 ref 防止重复尝试
-  // 性能优化：只有节点在可视区域内时才加载
   const loadAttemptedRef = React.useRef(false)
-  
+
   useEffect(() => {
-    // 懒加载：如果节点不在可视区域，暂不加载
-    if (!inView) {
-      return
-    }
-    
     // 如果已经有 url 或正在加载，或者有错误，不需要尝试恢复
     if (nodeData?.url || nodeData?.loading || nodeData?.error) {
       return
     }
-    
+
     // 如果没有 mediaId 也没有 sourceUrl，不需要尝试
     if (!nodeData?.mediaId && !nodeData?.sourceUrl) {
       return
     }
-    
+
     // 如果已经尝试过，不再重复
     if (loadAttemptedRef.current) {
       return
     }
-    
+
     loadAttemptedRef.current = true
     
     const loadMedia = async () => {
@@ -182,7 +176,7 @@ export const ImageNodeComponent = memo(function ImageNode({ id, data, selected }
     }
     
     loadMedia()
-  }, [id, nodeData?.url, nodeData?.mediaId, nodeData?.sourceUrl, nodeData?.loading, nodeData?.error, inView])
+  }, [id, nodeData?.url, nodeData?.mediaId, nodeData?.sourceUrl, nodeData?.loading, nodeData?.error])
 
   // 当 sourceUrl 变化时，允许重新触发一次“直链失败 -> 缓存兜底”
   useEffect(() => {

@@ -340,7 +340,52 @@ const sanitizeErrorForNode = (raw: any) => {
 
 const isDataUrl = (v: string) => typeof v === 'string' && v.startsWith('data:')
 const isBase64Like = (v: string) =>
-  typeof v === 'string' && v.length > 1024 && !v.startsWith('http') && !v.startsWith('blob:') && !v.startsWith('data:')
+  typeof v === 'string' &&
+  v.length > 1024 &&
+  !v.startsWith('http') &&
+  !v.startsWith('blob:') &&
+  !v.startsWith('data:') &&
+  !v.startsWith('asset://')
+
+const isAssetUrl = (v: string) => typeof v === 'string' && v.startsWith('asset://')
+
+const isPrivateNetUrl = (u: string) => {
+  const v = String(u || '').trim()
+  if (!v) return false
+  return /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/i.test(v)
+}
+
+const blobToDataUrl = async (blob: Blob): Promise<string> => {
+  return await new Promise<string>((resolve) => {
+    const reader = new FileReader()
+    reader.onerror = () => resolve('')
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.readAsDataURL(blob)
+  })
+}
+
+const resolveUrlToDataUrl = async (url: string): Promise<string> => {
+  const u = String(url || '').trim()
+  if (!u) return ''
+  if (u.startsWith('data:')) return u
+  try {
+    // blob:/asset:// 使用原生 fetch；http(s) 使用 safeFetch（Tauri Windows 必须用插件 fetch）
+    const res: any =
+      u.startsWith('blob:') || isAssetUrl(u)
+        ? await globalThis.fetch(u, { method: 'GET' })
+        : /^https?:\/\//i.test(u)
+          ? await (safeFetch as any)(u, { method: 'GET' })
+          : null
+    if (!res?.ok) return ''
+    const blob: Blob = await res.blob()
+    // 避免把超大图片转成 dataURL（base64 会膨胀）
+    if ((blob as any)?.size && Number(blob.size) > 12 * 1024 * 1024) return ''
+    const dataUrl = await blobToDataUrl(blob)
+    return dataUrl && dataUrl.startsWith('data:') ? dataUrl : ''
+  } catch {
+    return ''
+  }
+}
 
 const resolveReadableImageFromNode = async (node: GraphNode | null): Promise<string> => {
   if (!node || node.type !== 'image') return ''
@@ -369,6 +414,18 @@ const resolveReadableImageFromNode = async (node: GraphNode | null): Promise<str
     if (data2) return data2
   } catch {
     // ignore
+  }
+
+  // 最后兜底：若仅有本地可读 URL（asset:// / blob: / 内网 http），尝试转为 dataURL 供后续上传
+  const displayUrl = typeof d.displayUrl === 'string' ? d.displayUrl.trim() : ''
+  const candidates = [displayUrl, url].filter(Boolean)
+  for (const c of candidates) {
+    const v = String(c || '').trim()
+    if (!v) continue
+    const isLocalReadable = v.startsWith('blob:') || isAssetUrl(v) || (isHttpUrl(v) && isPrivateNetUrl(v))
+    if (!isLocalReadable) continue
+    const data3 = await resolveUrlToDataUrl(v)
+    if (data3) return data3
   }
 
   return ''
@@ -462,6 +519,23 @@ const resolveImageToBlob = async (input: string): Promise<Blob | null> => {
       return null
     }
   }
+
+  // 3.5 asset:// URL（Tauri 本地缓存协议）
+  if (isAssetUrl(v)) {
+    try {
+      const res = await globalThis.fetch(v, { method: 'GET' })
+      if (!res.ok) {
+        console.warn('[resolveImageToBlob] asset URL 请求失败')
+        return null
+      }
+      const blob = await res.blob()
+      console.log('[resolveImageToBlob] 成功从 asset URL 获取 Blob, size:', blob.size)
+      return blob
+    } catch (err) {
+      console.error('[resolveImageToBlob] 无法获取 asset URL:', err)
+      return null
+    }
+  }
   
   // 4. 纯 base64 字符串（兜底，与 Vue 版本对齐）
   if (v.length > 1024 && /^[A-Za-z0-9+/=\s]+$/.test(v)) {
@@ -479,6 +553,42 @@ const resolveImageToBlob = async (input: string): Promise<Blob | null> => {
   
   console.warn('[resolveImageToBlob] 无法识别的图片格式, 前100字符:', v.slice(0, 100))
   return null
+}
+
+/**
+ * 确保图片是“公网可访问的 http(s) URL”。
+ * - http(s) 且非内网：直接返回
+ * - data/base64：压缩并上传到云雾图床
+ * - blob:/asset:///内网 http：读取为 Blob → dataURL → 压缩上传
+ */
+const ensurePublicHttpImageUrl = async (raw: string, label: string): Promise<string> => {
+  let v = String(raw || '').trim()
+  if (!v) return ''
+
+  // 1) 已是公网 URL
+  if (isHttpUrl(v) && !isPrivateNetUrl(v)) return v
+
+  // 2) data/base64 → 上传
+  if (v.startsWith('data:') || isBase64Like(v)) {
+    if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
+    return await uploadBase64ToImageHost(v)
+  }
+
+  // 3) blob:/asset:///内网 http → 读取后上传
+  if (v.startsWith('blob:') || isAssetUrl(v) || (isHttpUrl(v) && isPrivateNetUrl(v))) {
+    const blob = await resolveImageToBlob(v)
+    if (!blob) {
+      throw new Error(`${label}图片读取失败（可能是本地缓存已失效/跨域受限）。建议：重新导入该图片或使用带 sourceUrl 的图片节点。`)
+    }
+    const dataUrl = await blobToDataUrl(blob)
+    if (!dataUrl) throw new Error(`${label}图片读取失败（无法转换为 dataURL）`)
+    const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+    return await uploadBase64ToImageHost(compressed)
+  }
+
+  // 4) 其他协议（如 file://）暂不支持自动转换
+  if (isHttpUrl(v)) return v
+  throw new Error(`${label}图片需要公网可访问的 http(s) URL（或可读取的 data/blob/asset 本地图片）。`)
 }
 
 /**
@@ -563,7 +673,7 @@ const resizeImageBlob = async (blob: Blob, targetSize: string): Promise<Blob> =>
  * 获取连接到视频配置节点的输入
  * 与 Vue 版本对齐
  */
-const getConnectedInputs = (configId: string) => {
+const getConnectedInputs = async (configId: string) => {
   const s = useGraphStore.getState()
   const byId = new Map(s.nodes.map((n) => [n.id, n]))
   const connectedEdges = s.edges.filter((e) => e.target === configId)
@@ -582,36 +692,60 @@ const getConnectedInputs = (configId: string) => {
       const text = normalizeText((sourceNode.data as any)?.content || '')
       if (text) promptParts.push(text)
     } else if (sourceNode.type === 'image') {
-      // 与 Vue 版本对齐：优先使用 base64/DataURL，其次使用 HTTP URL
-      // 原因：某些视频 API 需要 base64 数据，HTTP URL 可能因跨域或链接过期而失败
+      // 与 Vue 版本对齐：优先使用 base64/DataURL。
+      // 但要避免把本地缓存链接（asset:// / 127.0.0.1）直接传给上游 —— 上游无法访问。
       const nodeData = sourceNode.data as any
-      const isHttpUrl = (u: string) => typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://'))
-      const isDataUrl = (u: string) => typeof u === 'string' && u.startsWith('data:')
-      const isBase64Like = (u: string) => typeof u === 'string' && u.length > 1024 && !u.startsWith('http') && !u.startsWith('blob:')
+      const asStr = (x: any) => (typeof x === 'string' ? x.trim() : '')
+      const url = asStr(nodeData?.url)
+      const sourceUrl = asStr(nodeData?.sourceUrl)
+      const base64 = asStr(nodeData?.base64)
+      const isPublicHttp = (u: string) => isHttpUrl(u) && !isPrivateNetUrl(u)
       
       let imageData = ''
       let dataSource = ''
       
       // 1. 优先使用 base64 字段（与 Vue 版本对齐）
-      if (nodeData?.base64 && (isDataUrl(nodeData.base64) || isBase64Like(nodeData.base64))) {
-        imageData = nodeData.base64
+      if (base64 && (isDataUrl(base64) || isBase64Like(base64))) {
+        imageData = base64
         dataSource = 'base64 字段'
       // 2. url 如果是 DataURL
-      } else if (nodeData?.url && isDataUrl(nodeData.url)) {
-        imageData = nodeData.url
+      } else if (url && isDataUrl(url)) {
+        imageData = url
         dataSource = 'url(DataURL)'
-      // 3. url 如果是 HTTP URL
-      } else if (nodeData?.url && isHttpUrl(nodeData.url)) {
-        imageData = nodeData.url
-        dataSource = 'url(HTTP)'
-      // 4. sourceUrl（原始 HTTPS URL，作为兜底）
-      } else if (nodeData?.sourceUrl && isHttpUrl(nodeData.sourceUrl)) {
-        imageData = nodeData.sourceUrl
-        dataSource = 'sourceUrl'
+      // 3. url 如果是公网 HTTP URL（排除内网/本地）
+      } else if (url && isPublicHttp(url)) {
+        imageData = url
+        dataSource = 'url(HTTP-public)'
+      // 4. sourceUrl（原始公网 HTTPS URL，优先于本地缓存 URL）
+      } else if (sourceUrl && isPublicHttp(sourceUrl)) {
+        imageData = sourceUrl
+        dataSource = 'sourceUrl(HTTP-public)'
       // 5. 纯 base64 字段（无前缀）
-      } else if (nodeData?.base64 && typeof nodeData.base64 === 'string' && nodeData.base64.length > 100) {
-        imageData = nodeData.base64
+      } else if (base64 && base64.length > 100) {
+        imageData = base64
         dataSource = 'base64(raw)'
+      }
+
+      // 6. 尝试从 IndexedDB（mediaId / nodeId）或本地可读 URL 取回 dataURL（适配“导入图片/缓存后只剩 asset://”的情况）
+      if (!imageData) {
+        try {
+          const localReadable = await resolveReadableImageFromNode(sourceNode)
+          if (localReadable) {
+            imageData = localReadable
+            dataSource = 'mediaId/IndexedDB/本地缓存'
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // 7. 最后兜底：保留任意 URL（可能是 asset:// / 内网 http），后续按模型需求再转公网
+      if (!imageData) {
+        const fallback = sourceUrl || url
+        if (fallback) {
+          imageData = fallback
+          dataSource = 'url(fallback)'
+        }
       }
       
       if (!imageData) {
@@ -998,7 +1132,7 @@ export const generateVideoFromConfigNode = async (
   console.log('[generateVideo] 节点数据:', d)
 
   // 1. 获取连接的输入
-  let { prompt, firstFrame, lastFrame, refImages, refVideos } = getConnectedInputs(configNodeId)
+  let { prompt, firstFrame, lastFrame, refImages, refVideos } = await getConnectedInputs(configNodeId)
   console.log('[generateVideo] 连接输入:', {
     promptLength: prompt?.length || 0,
     hasFirstFrame: !!firstFrame,
@@ -1348,7 +1482,7 @@ export const generateVideoFromConfigNode = async (
       const localData = await resolveReadableImageFromNode(inputNode)
       if (localData) {
         const cur = String(inputCandidate || '')
-        const preferLocal = !cur || cur.startsWith('http') || cur.startsWith('blob:')
+        const preferLocal = !cur || cur.startsWith('http') || cur.startsWith('blob:') || cur.startsWith('asset://')
         if (preferLocal) inputCandidate = localData
       }
 
@@ -1414,7 +1548,7 @@ export const generateVideoFromConfigNode = async (
       const modelName = modelCfg.defaultParams?.model_name || 'kling-v2-6'
       const mode = modelCfg.defaultParams?.mode || 'pro'
       const sound = modelCfg.defaultParams?.sound || 'off'
-      const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 10)
+      let durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 10)
       const supportsSoundAndVoice = /^kling-v2-6/i.test(String(modelName || '').trim())
       const voiceIdsRaw = String((d as any)?.klingVoiceIds || '').trim()
       const voiceIds = voiceIdsRaw
@@ -1425,40 +1559,29 @@ export const generateVideoFromConfigNode = async (
             .slice(0, 2)
         : []
 
+      // API 约束：kling-video 的 duration 只支持 5 和 10 秒
+      const durNum = Number(durValue)
+      if (durNum !== 5 && durNum !== 10) {
+        durValue = durNum > 7 ? '10' : '5'
+        console.warn('[generateVideo] kling-video duration 只支持 5/10 秒，已自动调整为:', durValue)
+      }
+
       if (hasAnyImage) {
         let image = firstFrame || refImages[0] || ''
         if (!image) throw new Error('Kling 图生视频需要首帧/参考图（请连接图片节点）')
-
-        // Kling 图生视频：尽量使用公网 URL（避免 base64 过大/不可访问导致失败）
-        if (image.startsWith('data:') || isBase64Like(image)) {
-          console.log('[kling-video] 检测到 base64 首帧，自动上传到图床...')
-          try {
-            if (image.startsWith('data:')) {
-              image = await compressImageBase64(image, 900 * 1024)
-            }
-            image = await uploadBase64ToImageHost(image)
-          } catch (uploadErr: any) {
-            throw new Error(`首帧图片上传失败：${uploadErr?.message || '未知错误'}`)
-          }
-        }
-        if (image.startsWith('blob:')) {
-          throw new Error('Kling 图生视频不支持 blob 图片，请使用上传/生成后的图片（可转成公网 URL）')
+        try {
+          image = await ensurePublicHttpImageUrl(image, '首帧')
+        } catch (e: any) {
+          throw new Error(`首帧图片处理失败：${e?.message || String(e || '')}`)
         }
 
         let tail = lastFrame || ''
-        if (tail && (tail.startsWith('data:') || isBase64Like(tail))) {
-          console.log('[kling-video] 检测到 base64 尾帧，自动上传到图床...')
+        if (tail) {
           try {
-            if (tail.startsWith('data:')) {
-              tail = await compressImageBase64(tail, 900 * 1024)
-            }
-            tail = await uploadBase64ToImageHost(tail)
-          } catch (uploadErr: any) {
-            throw new Error(`尾帧图片上传失败：${uploadErr?.message || '未知错误'}`)
+            tail = await ensurePublicHttpImageUrl(tail, '尾帧')
+          } catch (e: any) {
+            throw new Error(`尾帧图片处理失败：${e?.message || String(e || '')}`)
           }
-        }
-        if (tail.startsWith('blob:')) {
-          throw new Error('Kling 图生视频不支持 blob 尾帧图片，请使用上传/生成后的图片（可转成公网 URL）')
         }
 
         endpointOverride = modelCfg.endpointImage || endpointOverride
@@ -1466,16 +1589,18 @@ export const generateVideoFromConfigNode = async (
         payload = {
           model_name: modelName,
           image,
-          image_tail: tail,
           mode,
           duration: durValue,
         }
+        // API 约束：image_tail 不能为空字符串，仅在有尾帧时才传入
+        if (tail) payload.image_tail = tail
         // sound / voice_list：仅 kling-v2-6 及后续模型支持（按云雾文档）
-        if (supportsSoundAndVoice) {
+        // API 约束：sound 与 image_tail 不兼容，仅在无尾帧时才启用 sound
+        if (supportsSoundAndVoice && !tail) {
           payload.sound = sound
           if (voiceIds.length > 0) {
             if (String(sound || '').toLowerCase() !== 'on') {
-              throw new Error('使用音色（voice_list）时需要 sound=on：请切换到 “kling-v2-6 · 有音频” 模型')
+              throw new Error('使用音色（voice_list）时需要 sound=on：请切换到 "kling-v2-6 · 有音频" 模型')
             }
             payload.voice_list = voiceIds.map((voice_id) => ({ voice_id }))
           }
@@ -1496,23 +1621,22 @@ export const generateVideoFromConfigNode = async (
       // 查询：GET /kling/v1/videos/multi-image2video/{id}
       const modelName = modelCfg.defaultParams?.model_name || 'kling-v1-6'
       const mode = modelCfg.defaultParams?.mode || 'std'
-      const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || '5')
+      let durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || '5')
       const promptText = normalizeText(prompt)
       if (!promptText) throw new Error('Kling 多图参考生视频需要提示词：请连接文本节点（提示词）后重试')
       if (!Array.isArray(refImages) || refImages.length === 0) {
-        throw new Error('Kling 多图参考生视频需要至少 1 张参考图（请连接图片节点并设置为“参考图”）')
+        throw new Error('Kling 多图参考生视频需要至少 1 张参考图（请连接图片节点并设置为"参考图"）')
+      }
+
+      // API 约束：multi-image2video 的 duration 只支持 5 和 10 秒
+      const durNum = Number(durValue)
+      if (durNum !== 5 && durNum !== 10) {
+        durValue = durNum > 7 ? '10' : '5'
+        console.warn('[generateVideo] multi-image2video duration 只支持 5/10 秒，已自动调整为:', durValue)
       }
 
       const ensureHttpImage = async (raw: string, label: string) => {
-        let v = String(raw || '').trim()
-        if (!v) return ''
-        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
-        if (v.startsWith('data:') || isBase64Like(v)) {
-          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
-          v = await uploadBase64ToImageHost(v)
-        }
-        if (/^https?:\/\//i.test(v)) return v
-        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+        return await ensurePublicHttpImageUrl(raw, label)
       }
 
       const max = Number.isFinite(Number(modelCfg.maxImages)) ? Number(modelCfg.maxImages) : 4
@@ -1538,15 +1662,7 @@ export const generateVideoFromConfigNode = async (
       const watermark = typeof modelCfg.defaultParams?.watermark === 'boolean' ? modelCfg.defaultParams.watermark : false
 
       const ensureHttpImage = async (raw: string, label: string) => {
-        let v = String(raw || '').trim()
-        if (!v) return ''
-        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
-        if (v.startsWith('data:') || isBase64Like(v)) {
-          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
-          v = await uploadBase64ToImageHost(v)
-        }
-        if (/^https?:\/\//i.test(v)) return v
-        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+        return await ensurePublicHttpImageUrl(raw, label)
       }
 
       const content: any[] = []
@@ -1584,15 +1700,7 @@ export const generateVideoFromConfigNode = async (
       // 端点：POST /alibailian/api/v1/services/aigc/video-generation/video-synthesis
       // 查询：GET /alibailian/api/v1/tasks/{task_id}
       const ensureHttpImage = async (raw: string, label: string) => {
-        let v = String(raw || '').trim()
-        if (!v) return ''
-        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
-        if (v.startsWith('data:') || isBase64Like(v)) {
-          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
-          v = await uploadBase64ToImageHost(v)
-        }
-        if (/^https?:\/\//i.test(v)) return v
-        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+        return await ensurePublicHttpImageUrl(raw, label)
       }
 
       let imageUrl = firstFrame || refImages[0] || ''
@@ -1626,15 +1734,7 @@ export const generateVideoFromConfigNode = async (
       // 云雾海螺（MiniMax）端点：POST /minimax/v1/video_generation
       // 查询：GET /minimax/v1/query/video_generation?task_id=...
       const ensureHttpImage = async (raw: string, label: string) => {
-        let v = String(raw || '').trim()
-        if (!v) return ''
-        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
-        if (v.startsWith('data:') || isBase64Like(v)) {
-          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
-          v = await uploadBase64ToImageHost(v)
-        }
-        if (/^https?:\/\//i.test(v)) return v
-        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+        return await ensurePublicHttpImageUrl(raw, label)
       }
 
       const sizeValue = String(overrides?.size || d.size || modelCfg.defaultParams?.size || '768P')
@@ -1659,22 +1759,14 @@ export const generateVideoFromConfigNode = async (
       // Kling Omni-Video：POST /kling/v1/videos/omni-video
       // 查询按用户确认：GET /kling/v1/videos/omni-video/{id}
       const ensureHttpImage = async (raw: string, label: string) => {
-        let v = String(raw || '').trim()
-        if (!v) return ''
-        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
-        if (v.startsWith('data:') || isBase64Like(v)) {
-          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
-          v = await uploadBase64ToImageHost(v)
-        }
-        if (/^https?:\/\//i.test(v)) return v
-        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+        return await ensurePublicHttpImageUrl(raw, label)
       }
 
       const modelName = modelCfg.defaultParams?.model_name || 'kling-video-o1'
       const mode = modelCfg.defaultParams?.mode || 'pro'
       const promptText = normalizeText(prompt)
       if (!promptText) throw new Error('kling-omni-video 需要提示词：请连接文本节点（提示词）后重试')
-      const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || '5')
+      let durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || '5')
 
       const image_list: any[] = []
       if (firstFrame) {
@@ -1686,7 +1778,10 @@ export const generateVideoFromConfigNode = async (
         const u = await ensureHttpImage(lastFrame, '尾帧')
         if (u) image_list.push({ image_url: u, type: 'end_frame' })
       }
-      if (Array.isArray(refImages) && refImages.length > 0) {
+      // API 约束：使用首帧/尾帧模式时，不应同时发送无 type 的参考图
+      // 参考图（无 type）仅用于纯参考模式（无首帧/尾帧）
+      const hasFrameImages = !!(firstFrame || lastFrame)
+      if (!hasFrameImages && Array.isArray(refImages) && refImages.length > 0) {
         const max = Number.isFinite(Number(modelCfg.maxImages)) ? Number(modelCfg.maxImages) : 6
         for (let i = 0; i < Math.min(max, refImages.length); i++) {
           const u = await ensureHttpImage(refImages[i], `参考图${i + 1}`)
@@ -1697,8 +1792,11 @@ export const generateVideoFromConfigNode = async (
       const ensureHttpVideo = (raw: string, label: string) => {
         const v = String(raw || '').trim()
         if (!v) return ''
-        if (/^https?:\/\//i.test(v)) return v
-        if (v.startsWith('asset://')) {
+        if (isHttpUrl(v) && !isPrivateNetUrl(v)) return v
+        if (isHttpUrl(v) && isPrivateNetUrl(v)) {
+          throw new Error(`${label}是本地/内网链接（localhost/127/192.168/10/172.16-31），上游无法访问。请使用公网可访问的源视频 URL。`)
+        }
+        if (isAssetUrl(v)) {
           throw new Error(`${label}是本地缓存（asset://），请使用源视频公网 URL（建议用视频节点的 sourceUrl）`)
         }
         throw new Error(`${label}需要公网可访问的 http(s) URL`)
@@ -1721,7 +1819,17 @@ export const generateVideoFromConfigNode = async (
 
       payload = { model_name: modelName, prompt: promptText, image_list, mode, duration: durValue }
       if (video_list.length > 0) payload.video_list = video_list
-      if (ratio) payload.aspect_ratio = ratio
+      // API 约束：使用首帧时，aspect_ratio 由图片推断，不应传入；仅纯文生视频时需要 aspect_ratio
+      const hasFirstFrame = image_list.some((img: any) => img.type === 'first_frame')
+      // API 约束：使用首帧时，duration 只支持 5 和 10 秒
+      if (hasFirstFrame) {
+        const durNum = Number(durValue)
+        if (durNum !== 5 && durNum !== 10) {
+          durValue = durNum > 7 ? '10' : '5'
+          payload.duration = durValue
+        }
+      }
+      if (!hasFirstFrame && ratio) payload.aspect_ratio = ratio
     } else if (modelCfg.format === 'luma-video') {
       // Luma 官方格式：POST /luma/generations, GET /luma/generations/{id}
       const modelName = String(modelCfg.defaultParams?.model_name || 'ray-v2')
@@ -1739,15 +1847,7 @@ export const generateVideoFromConfigNode = async (
       // Runway：POST /runwayml/v1/image_to_video, GET /runwayml/v1/tasks/{id}
       // 注意：Runway ratio 使用像素比（如 1280:720）
       const ensureHttpImage = async (raw: string, label: string) => {
-        let v = String(raw || '').trim()
-        if (!v) return ''
-        if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
-        if (v.startsWith('data:') || isBase64Like(v)) {
-          if (v.startsWith('data:')) v = await compressImageBase64(v, 900 * 1024)
-          v = await uploadBase64ToImageHost(v)
-        }
-        if (/^https?:\/\//i.test(v)) return v
-        throw new Error(`${label}图片需要公网可访问的 http(s) URL`)
+        return await ensurePublicHttpImageUrl(raw, label)
       }
 
       let imageUrl = firstFrame || refImages[0] || ''

@@ -35,7 +35,19 @@ const makeId = () => globalThis.crypto?.randomUUID?.() || `sd_${Date.now()}_${Ma
 const isHttp = (v: string) => /^https?:\/\//i.test(v)
 const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__
 
-const SUPPORTED_VIDEO_FORMATS = new Set<string>(['sora-unified', 'veo-unified', 'kling-video', 'kling-multi-image2video', 'kling-omni-video', 'unified-video'])
+const SUPPORTED_VIDEO_FORMATS = new Set<string>([
+  'sora-unified',
+  'veo-unified',
+  'kling-video',
+  'kling-multi-image2video',
+  'kling-omni-video',
+  'unified-video',
+  'volc-seedance-video',
+  'alibailian-wan-video',
+  'minimax-hailuo-video',
+  'runway-video',
+  'luma-video',
+])
 
 const getModelLabel = (m: any) => String(m?.label || m?.key || '')
 

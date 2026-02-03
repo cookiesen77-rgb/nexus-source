@@ -590,9 +590,32 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
         if (out.length >= maxImages) break
         const v0 = String(raw || '').trim()
         if (!v0) continue
+
+        // 处理 blob: URL - 转换为 dataURL
         if (v0.startsWith('blob:')) {
-          throw new Error('该视频模型不支持 blob 图片，请使用上传/生成后的图片（可转为公网 URL）')
+          try {
+            const res = await (globalThis.fetch as any)(v0, { method: 'GET' })
+            if (!res?.ok) throw new Error(`HTTP ${res?.status || 0}`)
+            const blob = await res.blob()
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onerror = () => reject(new Error('read failed'))
+              reader.onload = () => resolve(String(reader.result || ''))
+              reader.readAsDataURL(blob)
+            })
+            if (dataUrl && dataUrl.startsWith('data:')) {
+              const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+              const uploaded = await uploadImageToYunwu(compressed)
+              cache.set(v0, uploaded)
+              out.push(uploaded)
+              continue
+            }
+          } catch (err) {
+            console.error('[generateShortDramaVideo] blob URL 转换失败:', err)
+            throw new Error('blob 图片转换失败，请尝试重新导入该图片')
+          }
         }
+
         if (isHttpUrl(v0)) {
           out.push(v0)
           continue
@@ -652,13 +675,43 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
     const modelName = modelCfg.defaultParams?.model_name || 'kling-v2-6'
     const mode = modelCfg.defaultParams?.mode || 'pro'
     const sound = modelCfg.defaultParams?.sound || 'off'
-    const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 10)
+    let durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 10)
     const supportsSound = /^kling-v2-6/i.test(String(modelName || '').trim())
+
+    // API 约束：kling-video 的 duration 只支持 5 和 10 秒
+    const durNum = Number(durValue)
+    if (durNum !== 5 && durNum !== 10) {
+      durValue = durNum > 7 ? '10' : '5'
+      console.warn('[generateShortDramaVideo] kling-video duration 只支持 5/10 秒，已自动调整为:', durValue)
+    }
 
     const ensureHttpImage = async (raw: string, label: string) => {
       let v = String(raw || '').trim()
       if (!v) return ''
-      if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先导入/上传为 dataURL 或公网 URL`)
+
+      // 处理 blob: URL - 转换为 dataURL
+      if (v.startsWith('blob:')) {
+        try {
+          const res = await (globalThis.fetch as any)(v, { method: 'GET' })
+          if (!res?.ok) throw new Error(`HTTP ${res?.status || 0}`)
+          const blob = await res.blob()
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onerror = () => reject(new Error('read failed'))
+            reader.onload = () => resolve(String(reader.result || ''))
+            reader.readAsDataURL(blob)
+          })
+          if (dataUrl && dataUrl.startsWith('data:')) {
+            v = dataUrl
+          } else {
+            throw new Error('blob URL 转换失败')
+          }
+        } catch (err) {
+          console.error(`[generateShortDramaVideo] ${label} blob URL 转换失败:`, err)
+          throw new Error(`${label}图片转换失败：请尝试重新导入该图片`)
+        }
+      }
+
       if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
       if (isHttpUrl(v)) return v
       if (isDataUrl(v)) {
@@ -687,33 +740,67 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
       payload = {
         model_name: modelName,
         image: first,
-        image_tail: tail,
         mode,
         duration: durValue,
       }
-      if (supportsSound) payload.sound = sound
+      // API 约束：image_tail 不能为空字符串，仅在有尾帧时才传入
+      if (tail) payload.image_tail = tail
+      // API 约束：sound 与 image_tail 不兼容，仅在无尾帧时才启用 sound
+      if (supportsSound && !tail) payload.sound = sound
       if (prompt) payload.prompt = prompt
+      console.log('[generateShortDramaVideo] kling-video (图生视频) payload:', JSON.stringify(payload, null, 2))
     } else {
       if (!String(prompt || '').trim()) throw new Error('Kling 文生视频需要提示词')
       payload = { model_name: modelName, prompt, mode, duration: durValue, sound }
       if (ratio) payload.aspect_ratio = ratio
+      console.log('[generateShortDramaVideo] kling-video (文生视频) payload:', JSON.stringify(payload, null, 2))
     }
   } else if (modelCfg.format === 'kling-multi-image2video') {
     // Kling 多图参考生视频：POST /kling/v1/videos/multi-image2video
     // 查询：GET /kling/v1/videos/multi-image2video/{id}
     const modelName = modelCfg.defaultParams?.model_name || 'kling-v1-6'
     const mode = modelCfg.defaultParams?.mode || 'std'
-    const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 5)
+    let durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 5)
     const promptText = String(prompt || '').trim()
     if (!promptText) throw new Error('Kling 多图参考生视频需要提示词')
     if (!Array.isArray(images) || images.length === 0) {
       throw new Error('Kling 多图参考生视频需要至少 1 张参考图/首帧')
     }
 
+    // API 约束：multi-image2video 的 duration 只支持 5 和 10 秒
+    const durNum = Number(durValue)
+    if (durNum !== 5 && durNum !== 10) {
+      durValue = durNum > 7 ? '10' : '5'
+      console.warn('[generateShortDramaVideo] multi-image2video duration 只支持 5/10 秒，已自动调整为:', durValue)
+    }
+
     const ensureHttpImage = async (raw: string, label: string) => {
       let v = String(raw || '').trim()
       if (!v) return ''
-      if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+
+      // 处理 blob: URL - 转换为 dataURL
+      if (v.startsWith('blob:')) {
+        try {
+          const res = await (globalThis.fetch as any)(v, { method: 'GET' })
+          if (!res?.ok) throw new Error(`HTTP ${res?.status || 0}`)
+          const blob = await res.blob()
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onerror = () => reject(new Error('read failed'))
+            reader.onload = () => resolve(String(reader.result || ''))
+            reader.readAsDataURL(blob)
+          })
+          if (dataUrl && dataUrl.startsWith('data:')) {
+            v = dataUrl
+          } else {
+            throw new Error('blob URL 转换失败')
+          }
+        } catch (err) {
+          console.error(`[generateShortDramaVideo] ${label} blob URL 转换失败:`, err)
+          throw new Error(`${label}图片转换失败：请尝试重新导入该图片`)
+        }
+      }
+
       if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
       if (isHttpUrl(v)) return v
       if (isDataUrl(v)) {
@@ -738,19 +825,43 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
 
     payload = { model_name: modelName, image_list, prompt: promptText, mode, duration: durValue }
     if (ratio) payload.aspect_ratio = ratio
+    console.log('[generateShortDramaVideo] kling-multi-image2video payload:', JSON.stringify(payload, null, 2))
   } else if (modelCfg.format === 'kling-omni-video') {
     // Kling Omni-Video：POST /kling/v1/videos/omni-video
     // 查询：GET /kling/v1/videos/omni-video/{id}
     const modelName = modelCfg.defaultParams?.model_name || 'kling-video-o1'
     const mode = modelCfg.defaultParams?.mode || 'pro'
-    const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 5)
+    let durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 5)
     const promptText = String(prompt || '').trim()
     if (!promptText) throw new Error('Kling Omni-Video 需要提示词')
 
     const ensureHttpImage = async (raw: string, label: string) => {
       let v = String(raw || '').trim()
       if (!v) return ''
-      if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+
+      // 处理 blob: URL - 转换为 dataURL
+      if (v.startsWith('blob:')) {
+        try {
+          const res = await (globalThis.fetch as any)(v, { method: 'GET' })
+          if (!res?.ok) throw new Error(`HTTP ${res?.status || 0}`)
+          const blob = await res.blob()
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onerror = () => reject(new Error('read failed'))
+            reader.onload = () => resolve(String(reader.result || ''))
+            reader.readAsDataURL(blob)
+          })
+          if (dataUrl && dataUrl.startsWith('data:')) {
+            v = dataUrl
+          } else {
+            throw new Error('blob URL 转换失败')
+          }
+        } catch (err) {
+          console.error(`[generateShortDramaVideo] ${label} blob URL 转换失败:`, err)
+          throw new Error(`${label}图片转换失败：请尝试重新导入该图片`)
+        }
+      }
+
       if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
       if (isHttpUrl(v)) return v
       if (isDataUrl(v)) {
@@ -777,33 +888,260 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
       if (u) image_list.push({ image_url: u, type: 'end_frame' })
     }
 
-    // 其余图片作为参考图（不做主体/风格/场景分类）
-    const extra = images
-      .slice(1)
-      .map((x) => String(x || '').trim())
-      .filter((x) => x && x !== lastFrame)
-    const maxExtra = Math.max(0, Number(modelCfg.maxImages || 6))
-    for (let i = 0; i < Math.min(maxExtra, extra.length); i++) {
-      const u = await ensureHttpImage(extra[i], `参考图${i + 1}`)
-      if (u) image_list.push({ image_url: u })
+    // API 约束：使用首帧/尾帧模式时，不应同时发送无 type 的参考图
+    // 参考图（无 type）仅用于纯参考模式（无首帧/尾帧）
+    const hasFrameImages = image_list.some((img: any) => img.type === 'first_frame' || img.type === 'end_frame')
+    if (!hasFrameImages) {
+      // 仅在无首帧/尾帧时才添加参考图
+      const extra = images
+        .slice(1)
+        .map((x) => String(x || '').trim())
+        .filter((x) => x && x !== lastFrame)
+      const maxExtra = Math.max(0, Number(modelCfg.maxImages || 6))
+      for (let i = 0; i < Math.min(maxExtra, extra.length); i++) {
+        const u = await ensureHttpImage(extra[i], `参考图${i + 1}`)
+        if (u) image_list.push({ image_url: u })
+      }
+    }
+
+    // API 约束：使用首帧图生视频时，duration 只支持 5 和 10 秒
+    const hasFirstFrame = image_list.some((img: any) => img.type === 'first_frame')
+    const hasEndFrame = image_list.some((img: any) => img.type === 'end_frame')
+    if (hasFirstFrame) {
+      const durNum = Number(durValue)
+      if (durNum !== 5 && durNum !== 10) {
+        durValue = durNum > 7 ? '10' : '5'
+        console.warn('[generateShortDramaVideo] 首帧模式 duration 只支持 5/10 秒，已自动调整为:', durValue)
+      }
     }
 
     payload = { model_name: modelName, prompt: promptText, image_list, mode, duration: durValue }
-    if (ratio) payload.aspect_ratio = ratio
+    // API 约束：使用首帧时，aspect_ratio 由图片推断，不应传入；仅纯文生视频时需要 aspect_ratio
+    if (!hasFirstFrame && ratio) payload.aspect_ratio = ratio
+    console.log('[generateShortDramaVideo] kling-omni-video payload:', JSON.stringify(payload, null, 2))
+    console.log('[generateShortDramaVideo] image_list 详情:', { hasFirstFrame, hasEndFrame, imageCount: image_list.length })
+  } else if (modelCfg.format === 'volc-seedance-video') {
+    // doubao-seedance-1-5-pro-251215
+    // 端点：POST /volc/v1/contents/generations/tasks
+    // 查询：GET /volc/v1/contents/generations/tasks/{id}
+    const promptText = String(prompt || '').trim()
+    if (!promptText) throw new Error('seedance-1-5-pro 需要提示词')
+    const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 4)
+    const ratioValue = String(ratio || modelCfg.defaultParams?.ratio || 'adaptive') || 'adaptive'
+    const watermark = typeof modelCfg.defaultParams?.watermark === 'boolean' ? modelCfg.defaultParams.watermark : false
+
+    const ensureHttpImage = async (raw: string, label: string) => {
+      let v = String(raw || '').trim()
+      if (!v) return ''
+      if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
+      if (isHttpUrl(v)) return v
+      if (isDataUrl(v)) {
+        const compressed = await compressImageBase64(v, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      if (isBase64Like(v)) {
+        const dataUrl = `data:image/png;base64,${v}`
+        const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      throw new Error(`${label}需要公网可访问的图片 URL（http/https）或 dataURL/base64`)
+    }
+
+    const content: any[] = []
+    content.push({ type: 'text', text: promptText })
+
+    const firstRaw = String(images[0] || '').trim()
+    const tailRaw = String(lastFrame || '').trim()
+    let firstUrl = firstRaw ? await ensureHttpImage(firstRaw, '首帧') : ''
+    let lastUrl = tailRaw ? await ensureHttpImage(tailRaw, '尾帧') : ''
+
+    if (firstUrl) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: firstUrl },
+        ...(lastUrl ? { role: 'first_frame' } : {})
+      })
+    }
+    if (lastUrl) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: lastUrl },
+        role: 'last_frame'
+      })
+    }
+
+    payload = {
+      model: modelCfg.key,
+      content,
+      ratio: ratioValue,
+      duration: durValue,
+      watermark
+    }
+    console.log('[generateShortDramaVideo] volc-seedance-video payload:', JSON.stringify(payload, null, 2))
+  } else if (modelCfg.format === 'alibailian-wan-video') {
+    // 通义万象 wan2.6-i2v
+    // 端点：POST /alibailian/api/v1/services/aigc/video-generation/video-synthesis
+    // 查询：GET /alibailian/api/v1/tasks/{task_id}
+    const ensureHttpImage = async (raw: string, label: string) => {
+      let v = String(raw || '').trim()
+      if (!v) return ''
+      if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
+      if (isHttpUrl(v)) return v
+      if (isDataUrl(v)) {
+        const compressed = await compressImageBase64(v, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      if (isBase64Like(v)) {
+        const dataUrl = `data:image/png;base64,${v}`
+        const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      throw new Error(`${label}需要公网可访问的图片 URL（http/https）或 dataURL/base64`)
+    }
+
+    const firstRaw = String(images[0] || '').trim()
+    if (!firstRaw) throw new Error('wan2.6-i2v 需要首帧图片')
+    const imageUrl = await ensureHttpImage(firstRaw, '首帧')
+
+    const sizeValue = String(modelCfg.defaultParams?.size || '1080P')
+    const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 5)
+    const promptExtend = typeof modelCfg.defaultParams?.prompt_extend === 'boolean' ? modelCfg.defaultParams.prompt_extend : true
+
+    payload = {
+      model: modelCfg.key,
+      input: {
+        prompt: prompt || '',
+        image_url: imageUrl,
+        img_url: imageUrl,
+      },
+      parameters: {
+        resolution: sizeValue,
+        duration: durValue,
+        prompt_extend: promptExtend,
+      }
+    }
+    console.log('[generateShortDramaVideo] alibailian-wan-video payload:', JSON.stringify(payload, null, 2))
+  } else if (modelCfg.format === 'minimax-hailuo-video') {
+    // 云雾海螺（MiniMax）端点：POST /minimax/v1/video_generation
+    // 查询：GET /minimax/v1/query/video_generation?task_id=...
+    const ensureHttpImage = async (raw: string, label: string) => {
+      let v = String(raw || '').trim()
+      if (!v) return ''
+      if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
+      if (isHttpUrl(v)) return v
+      if (isDataUrl(v)) {
+        const compressed = await compressImageBase64(v, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      if (isBase64Like(v)) {
+        const dataUrl = `data:image/png;base64,${v}`
+        const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      throw new Error(`${label}需要公网可访问的图片 URL（http/https）或 dataURL/base64`)
+    }
+
+    const sizeValue = String(modelCfg.defaultParams?.size || '768P')
+    const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
+
+    const firstRaw = String(images[0] || '').trim()
+    const tailRaw = String(lastFrame || '').trim()
+    let firstUrl = firstRaw ? await ensureHttpImage(firstRaw, '首帧') : ''
+    let lastUrl = tailRaw ? await ensureHttpImage(tailRaw, '尾帧') : ''
+
+    payload = {
+      model: modelCfg.key,
+      prompt: prompt || '',
+      duration: durValue,
+      resolution: sizeValue,
+    }
+    if (firstUrl) payload.first_frame_image = firstUrl
+    if (lastUrl) payload.last_frame_image = lastUrl
+    const po = modelCfg.defaultParams?.prompt_optimizer
+    if (typeof po === 'boolean') payload.prompt_optimizer = po
+    console.log('[generateShortDramaVideo] minimax-hailuo-video payload:', JSON.stringify(payload, null, 2))
+  } else if (modelCfg.format === 'runway-video') {
+    // Runway：POST /runwayml/v1/image_to_video, GET /runwayml/v1/tasks/{id}
+    const ensureHttpImage = async (raw: string, label: string) => {
+      let v = String(raw || '').trim()
+      if (!v) return ''
+      if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
+      if (isHttpUrl(v)) return v
+      if (isDataUrl(v)) {
+        const compressed = await compressImageBase64(v, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      if (isBase64Like(v)) {
+        const dataUrl = `data:image/png;base64,${v}`
+        const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      throw new Error(`${label}需要公网可访问的图片 URL（http/https）或 dataURL/base64`)
+    }
+
+    const firstRaw = String(images[0] || '').trim()
+    if (!firstRaw) throw new Error('Runway image_to_video 需要首帧图片')
+    const imageUrl = await ensureHttpImage(firstRaw, '首帧')
+
+    const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 10)
+    const watermark = typeof modelCfg.defaultParams?.watermark === 'boolean' ? modelCfg.defaultParams.watermark : false
+
+    const toPixelRatio = (r: string) => {
+      const rr = String(r || '').trim()
+      if (!rr) return '1280:720'
+      if (/^\d+:\d+$/.test(rr) && rr.includes(':') && rr.split(':')[0].length > 2) return rr
+      switch (rr) {
+        case '16:9': return '1280:720'
+        case '9:16': return '720:1280'
+        case '1:1': return '1024:1024'
+        case '4:3': return '1024:768'
+        case '3:4': return '768:1024'
+        default: return '1280:720'
+      }
+    }
+
+    payload = {
+      promptImage: imageUrl,
+      model: modelCfg.key,
+      promptText: prompt || '',
+      watermark,
+      duration: durValue,
+      ratio: toPixelRatio(ratio),
+    }
+    console.log('[generateShortDramaVideo] runway-video payload:', JSON.stringify(payload, null, 2))
+  } else if (modelCfg.format === 'luma-video') {
+    // Luma 官方格式：POST /luma/generations, GET /luma/generations/{id}
+    // 注意：Luma 不支持首帧/尾帧/参考图，仅支持文生视频
+    const promptText = String(prompt || '').trim()
+    if (!promptText) throw new Error('Luma 视频需要提示词')
+    const modelName = String(modelCfg.defaultParams?.model_name || 'ray-v2')
+    const durValue = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 5)
+    const durationStr = `${durValue}s`
+    const resolution = String(modelCfg.defaultParams?.size || '720p')
+
+    payload = {
+      user_prompt: promptText,
+      model_name: modelName,
+      duration: durationStr,
+      resolution,
+    }
+    console.log('[generateShortDramaVideo] luma-video payload:', JSON.stringify(payload, null, 2))
   } else {
     throw new Error(`工作台暂不支持该视频模型格式：${String(modelCfg.format || '')}`)
   }
 
-  // Grok 在 Tauri 中更容易遇到“官方负载过大”，这里做更温和、更长的重试退避
+  // Grok/Kling 在上游可能遇到"负载过大/饱和"，这里做温和的重试退避
   const isGrokModel = /^grok-video-/i.test(String(modelCfg.key || ''))
-  const maxCreateAttempts = (isTauri && isGrokModel) ? 6 : 1
+  const isKlingModel = /^kling/i.test(String(modelCfg.key || ''))
+  const shouldRetryOnOverload = isTauri && (isGrokModel || isKlingModel)
+  const maxCreateAttempts = shouldRetryOnOverload ? 4 : 1
   let task: any = null
   let lastCreateErr: any = null
   for (let attempt = 0; attempt < maxCreateAttempts; attempt++) {
     try {
       if (attempt > 0) {
-        const waitMs = Math.min(20000, 2500 * Math.pow(2, Math.max(0, attempt - 1)))
-        console.warn(`[shortDramaVideo] Grok 上游过载/抖动，准备第 ${attempt + 1} 次重试...`, { waitMs })
+        const waitMs = Math.min(15000, 2000 * Math.pow(2, Math.max(0, attempt - 1)))
+        console.warn(`[shortDramaVideo] 上游过载/抖动，准备第 ${attempt + 1} 次重试...`, { waitMs, model: modelCfg.key })
         await new Promise((r) => setTimeout(r, waitMs))
       }
       task = await postJson<any>(endpointOverride, payload, { authMode: modelCfg.authMode, timeoutMs: 240000 })
@@ -812,13 +1150,28 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
       lastCreateErr = e
       const msg = String(e?.message || e || '')
       const isOverload =
-        /负载过大|server busy|overload|Service Unavailable|HTTP 503|Too Many Requests|rate limit|temporarily unavailable|try again later/i.test(msg)
-      if (!(isTauri && isGrokModel && isOverload) || attempt === maxCreateAttempts - 1) {
+        /负载.*饱和|负载过大|server busy|overload|Service Unavailable|HTTP 503|HTTP 500|Too Many Requests|rate limit|temporarily unavailable|try again later/i.test(msg)
+      if (!shouldRetryOnOverload || !isOverload || attempt === maxCreateAttempts - 1) {
         throw e
       }
     }
   }
   if (!task) throw lastCreateErr || new Error('视频创建失败')
+
+  // alibailian-wan-video（DashScope 风格）：task_id 位于 output.task_id
+  if (modelCfg.format === 'alibailian-wan-video') {
+    const taskId =
+      task?.output?.task_id ||
+      task?.output?.taskId ||
+      task?.data?.output?.task_id ||
+      task?.data?.output?.taskId ||
+      task?.task_id ||
+      task?.taskId
+    if (taskId) {
+      task.id = taskId
+      task.task_id = taskId
+    }
+  }
 
   const id =
     task?.id ||
@@ -828,7 +1181,9 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
     task?.data?.task_id ||
     task?.data?.taskId ||
     task?.Response?.TaskId ||
-    task?.response?.task_id
+    task?.response?.task_id ||
+    task?.output?.task_id ||
+    task?.output?.taskId
   if (!id) throw new Error('视频返回异常：未获取到任务 ID')
 
   const polled = await pollVideoTask(String(id), modelCfg, statusEndpointOverride)
