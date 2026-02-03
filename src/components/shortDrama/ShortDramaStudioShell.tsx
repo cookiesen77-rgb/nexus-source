@@ -44,15 +44,58 @@ export default function ShortDramaStudioShell({
   const prefsRef = useRef(prefs)
   draftRef.current = draft
   prefsRef.current = prefs
+  const hasWarnedPersistFailRef = useRef(false)
+
+  /**
+   * setState 的更新可能在路由切换/卸载前还未 commit，
+   * 此时 unmount flush 会读到旧 draftRef，导致“返回画布后再进工作台内容回滚”。
+   * 这里提供一个“同步更新 ref + state”的 setter，保证 flushNow 总能拿到最新草稿。
+   */
+  const setDraftSafe = useCallback((next: React.SetStateAction<ShortDramaDraftV2>) => {
+    if (typeof next === 'function') {
+      const updater = next as (prev: ShortDramaDraftV2) => ShortDramaDraftV2
+      const computed = updater(draftRef.current)
+      draftRef.current = computed
+      setDraft(computed)
+      return
+    }
+    draftRef.current = next
+    setDraft(next)
+  }, [])
+
+  const setPrefsSafe = useCallback((next: React.SetStateAction<ShortDramaStudioPrefsV1>) => {
+    if (typeof next === 'function') {
+      const updater = next as (prev: ShortDramaStudioPrefsV1) => ShortDramaStudioPrefsV1
+      const computed = updater(prefsRef.current)
+      prefsRef.current = computed
+      setPrefs(computed)
+      return
+    }
+    prefsRef.current = next
+    setPrefs(next)
+  }, [])
 
   const flushNow = useCallback(() => {
     try {
-      void saveShortDramaDraftV2(pid, draftRef.current)
+      const ok = saveShortDramaDraftV2(pid, draftRef.current)
+      if (!ok && !hasWarnedPersistFailRef.current) {
+        hasWarnedPersistFailRef.current = true
+        console.error('[ShortDramaStudioShell] 草稿保存失败（可能是 localStorage 空间不足）')
+        try {
+          window.$message?.error?.('短剧草稿保存失败：可能是本地存储空间不足（请减少大图/清理缓存/更换浏览器环境后重试）')
+        } catch {
+          // ignore
+        }
+      }
     } catch {
       // ignore
     }
     try {
-      void saveShortDramaPrefs(pid, prefsRef.current)
+      const ok = saveShortDramaPrefs(pid, prefsRef.current)
+      if (!ok && !hasWarnedPersistFailRef.current) {
+        hasWarnedPersistFailRef.current = true
+        console.error('[ShortDramaStudioShell] 偏好保存失败（可能是 localStorage 空间不足）')
+      }
     } catch {
       // ignore
     }
@@ -60,8 +103,8 @@ export default function ShortDramaStudioShell({
 
   // Load draft & prefs on mount / project change
   useEffect(() => {
-    setDraft(loadShortDramaDraftV2(pid))
-    setPrefs(loadShortDramaPrefs(pid))
+    setDraftSafe(loadShortDramaDraftV2(pid))
+    setPrefsSafe(loadShortDramaPrefs(pid))
     // 把画布中已有素材补进历史（单向补齐，不会破坏历史）
     syncAssetHistoryFromCanvasNodes({ includeDataUrl: true, includeAssetUrl: true })
   }, [pid])
@@ -98,7 +141,7 @@ export default function ShortDramaStudioShell({
   const setMode = (next: 'auto' | 'manual') => setPrefs((p) => ({ ...p, mode: next }))
 
   const body = useMemo(() => {
-    const viewProps = { projectId: pid, draft, setDraft, prefs, setPrefs }
+    const viewProps = { projectId: pid, draft, setDraft: setDraftSafe, prefs, setPrefs: setPrefsSafe }
     return mode === 'manual' ? <ShortDramaStudioManualView {...viewProps} /> : <ShortDramaStudioAutoView {...viewProps} />
   }, [pid, draft, prefs, mode])
 

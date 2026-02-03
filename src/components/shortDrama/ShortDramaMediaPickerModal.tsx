@@ -123,7 +123,8 @@ export default function ShortDramaMediaPickerModal({
   const itemsHistory = useMemo(() => {
     const list = (assets || []).filter((a: any) => a?.type === kind)
     return list.map((a: any) => {
-      const src = String((a?.localCacheUrl || a?.src) || '').trim()
+      // history 用于“可复用素材”，优先使用持久化的 src（避免把本地缓存 URL/127.0.0.1 带入下游生成）
+      const src = String((a?.src) || '').trim()
       const label = String(a?.title || a?.id || '').trim() || (kind === 'video' ? '历史视频' : '历史图片')
       const picked: ShortDramaPickedMedia =
         kind === 'video'

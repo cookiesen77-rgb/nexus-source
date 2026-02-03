@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { CHAT_MODELS, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, IMAGE_MODELS, VIDEO_MODELS } from '@/config/models'
+import * as modelsConfig from '@/config/models'
 import { cn } from '@/lib/utils'
 import { importShortDramaScriptFile } from '@/lib/shortDrama/scriptImport'
 import { analyzeShortDramaScriptToDraftV2 } from '@/lib/shortDrama/ai'
@@ -82,12 +83,74 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
   const chatModels = useMemo(() => getChatModels(), [])
   const videoModels = useMemo(() => getSupportedVideoModels(), [])
 
+  const imageModelCfg = useMemo(() => {
+    const key = String(draft.models.imageModelKey || DEFAULT_IMAGE_MODEL)
+    return (IMAGE_MODELS as any[]).find((m) => String(m?.key || '') === key) || (IMAGE_MODELS as any[])[0] || null
+  }, [draft.models.imageModelKey])
+
+  const videoModelCfg = useMemo(() => {
+    const key = String(draft.models.videoModelKey || DEFAULT_VIDEO_MODEL)
+    const resolved: any = (modelsConfig as any)?.getModelByName?.(key) || null
+    if (resolved && String(resolved?.format || '').includes('video')) return resolved
+    return (VIDEO_MODELS as any[]).find((m) => String(m?.key || '') === key) || null
+  }, [draft.models.videoModelKey])
+
   const patchModels = useCallback(
     (patch: Partial<ShortDramaDraftV2['models']>) => {
       setDraft((prev) => ({ ...prev, models: { ...prev.models, ...patch }, updatedAt: Date.now() }))
     },
     [setDraft]
   )
+
+  // 当切换模型/选项变化时，自动清理不兼容的比例/画质/时长选择（避免“看似选了但请求不生效/直接报错”）
+  useEffect(() => {
+    const patch: Partial<ShortDramaDraftV2['models']> = {}
+
+    const imageSizes: any[] = Array.isArray((imageModelCfg as any)?.sizes) ? ((imageModelCfg as any).sizes as any[]) : []
+    const imageQualities: any[] = Array.isArray((imageModelCfg as any)?.qualities) ? ((imageModelCfg as any).qualities as any[]) : []
+    const videoRatios: any[] = Array.isArray((videoModelCfg as any)?.ratios) ? ((videoModelCfg as any).ratios as any[]) : []
+    const videoDurs: any[] = Array.isArray((videoModelCfg as any)?.durs) ? ((videoModelCfg as any).durs as any[]) : []
+    const videoSizes: any[] = Array.isArray((videoModelCfg as any)?.sizes) ? ((videoModelCfg as any).sizes as any[]) : []
+
+    const inList = (list: any[], val: any, kind: 'raw' | 'key' = 'raw') => {
+      const v = String(val ?? '').trim()
+      if (!v) return true
+      if (!Array.isArray(list) || list.length === 0) return true
+      return list.some((it: any) => {
+        if (typeof it === 'string' || typeof it === 'number') return String(it) === v
+        if (it && typeof it === 'object') {
+          const k = kind === 'key' ? String(it?.key ?? it?.value ?? '') : String(it ?? '')
+          return k === v
+        }
+        return false
+      })
+    }
+
+    if (draft.models.imageSize && !inList(imageSizes, draft.models.imageSize, 'raw')) patch.imageSize = undefined
+    if (draft.models.imageQuality && !inList(imageQualities, draft.models.imageQuality, 'key')) patch.imageQuality = undefined
+    if (draft.models.videoRatio && !inList(videoRatios, draft.models.videoRatio, 'raw')) patch.videoRatio = undefined
+    if (draft.models.videoDuration != null && draft.models.videoDuration !== undefined) {
+      const dv = String(draft.models.videoDuration)
+      const ok =
+        !Array.isArray(videoDurs) || videoDurs.length === 0
+          ? true
+          : videoDurs.some((d: any) => String(typeof d === 'object' ? d?.key ?? d?.value ?? d : d) === dv)
+      if (!ok) patch.videoDuration = undefined
+    }
+    if (draft.models.videoSize && !inList(videoSizes, draft.models.videoSize, 'key')) patch.videoSize = undefined
+
+    if (Object.keys(patch).length > 0) patchModels(patch)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    draft.models.imageSize,
+    draft.models.imageQuality,
+    draft.models.videoRatio,
+    draft.models.videoDuration,
+    draft.models.videoSize,
+    imageModelCfg,
+    videoModelCfg,
+    patchModels,
+  ])
 
   const patchStyle = useCallback(
     (patch: Partial<ShortDramaDraftV2['style']>) => {
@@ -618,7 +681,9 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
         const sourceUrl = String(result.imageUrl || '').trim()
         const safeSourceUrl = isHttp(sourceUrl) ? sourceUrl : ''
         let mediaId: string | undefined
-        if (displayUrl.startsWith('data:')) {
+        const isDisplayDataUrl = displayUrl.startsWith('data:')
+        const isSourceDataUrl = sourceUrl.startsWith('data:')
+        if (isDisplayDataUrl) {
           mediaId = await saveMedia({
             nodeId: `short_drama:${projectId}:slot:${slotId}:variant:${running.id}`,
             projectId,
@@ -627,13 +692,23 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
             sourceUrl: safeSourceUrl && safeSourceUrl !== displayUrl ? safeSourceUrl : undefined,
             model: draft.models.imageModelKey,
           })
+        } else if (isSourceDataUrl) {
+          // displayUrl 往往是 asset://（缓存后），但 API 输入需要真实图片内容；把原始 dataURL 落到 IndexedDB
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:slot:${slotId}:variant:${running.id}`,
+            projectId,
+            type: 'image',
+            data: sourceUrl,
+            model: draft.models.imageModelKey,
+          })
         }
 
         setDraft((prev) =>
           updateVariantInSlot(prev, slotId, running.id, {
             status: 'success',
             sourceUrl: safeSourceUrl || undefined,
-            displayUrl: mediaId ? '' : displayUrl || undefined,
+            // 仅当 displayUrl 本身是 dataURL 时才清空，避免把大串写进 localStorage；asset:// 可保留用于预览
+            displayUrl: isDisplayDataUrl && mediaId ? '' : displayUrl || undefined,
             localPath: result.localPath || '',
             mediaId,
           })
@@ -643,7 +718,7 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
         try {
           useAssetsStore.getState().addAsset({
             type: 'image',
-            src: displayUrl || safeSourceUrl,
+            src: safeSourceUrl || displayUrl,
             title: String((p || '短剧图片').slice(0, 80)).trim(),
             model: draft.models.imageModelKey,
           })
@@ -984,6 +1059,55 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                       ))}
                     </select>
                   </div>
+
+                  {Array.isArray((imageModelCfg as any)?.sizes) && (imageModelCfg as any).sizes.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">图片比例/尺寸</label>
+                      <select
+                        value={draft.models.imageSize || ''}
+                        onChange={(e) => patchModels({ imageSize: e.target.value || undefined })}
+                        className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      >
+                        <option value="">默认</option>
+                        {((imageModelCfg as any).sizes as any[]).map((s: any) => {
+                          const key = typeof s === 'object' ? String(s?.key || s?.value || '') : String(s)
+                          const label = typeof s === 'object' ? String(s?.label || s?.key || s?.value || '') : String(s)
+                          const v = key || label
+                          if (!v) return null
+                          return (
+                            <option key={v} value={v}>
+                              {label || v}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </div>
+                  ) : null}
+
+                  {Array.isArray((imageModelCfg as any)?.qualities) && (imageModelCfg as any).qualities.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">图片画质</label>
+                      <select
+                        value={draft.models.imageQuality || ''}
+                        onChange={(e) => patchModels({ imageQuality: e.target.value || undefined })}
+                        className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      >
+                        <option value="">默认</option>
+                        {((imageModelCfg as any).qualities as any[]).map((q: any) => {
+                          const key = typeof q === 'object' ? String(q?.key || q?.value || '') : String(q)
+                          const label = typeof q === 'object' ? String(q?.label || q?.key || q?.value || '') : String(q)
+                          const v = key || label
+                          if (!v) return null
+                          return (
+                            <option key={v} value={v}>
+                              {label || v}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </div>
+                  ) : null}
+
                   <div className="flex flex-col gap-2">
                     <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频模型</label>
                     <select
@@ -999,6 +1123,76 @@ export default function ShortDramaStudioAutoView({ projectId, draft, setDraft, p
                     </select>
                     <div className="text-xs text-[var(--text-secondary)]">当前自动模式仅展示工作台支持的视频模型。</div>
                   </div>
+
+                  {Array.isArray((videoModelCfg as any)?.ratios) && (videoModelCfg as any).ratios.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频比例</label>
+                      <select
+                        value={draft.models.videoRatio || ''}
+                        onChange={(e) => patchModels({ videoRatio: e.target.value || undefined })}
+                        className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      >
+                        <option value="">默认</option>
+                        {((videoModelCfg as any).ratios as any[]).map((r: any) => {
+                          const v = String(r ?? '').trim()
+                          if (!v) return null
+                          return (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </div>
+                  ) : null}
+
+                  {Array.isArray((videoModelCfg as any)?.durs) && (videoModelCfg as any).durs.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频时长</label>
+                      <select
+                        value={draft.models.videoDuration ? String(draft.models.videoDuration) : ''}
+                        onChange={(e) => patchModels({ videoDuration: e.target.value ? Number(e.target.value) : undefined })}
+                        className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      >
+                        <option value="">默认</option>
+                        {((videoModelCfg as any).durs as any[]).map((d: any) => {
+                          const key = typeof d === 'object' ? String(d?.key ?? d?.value ?? '') : String(d)
+                          const label = typeof d === 'object' ? String(d?.label ?? d?.key ?? d?.value ?? '') : String(d)
+                          const v = key || label
+                          if (!v) return null
+                          return (
+                            <option key={v} value={v}>
+                              {label || v}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </div>
+                  ) : null}
+
+                  {Array.isArray((videoModelCfg as any)?.sizes) && (videoModelCfg as any).sizes.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[11px] font-bold uppercase text-[var(--text-secondary)]">视频清晰度/分辨率</label>
+                      <select
+                        value={draft.models.videoSize || ''}
+                        onChange={(e) => patchModels({ videoSize: e.target.value || undefined })}
+                        className="w-full rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-color)] focus:outline-none"
+                      >
+                        <option value="">默认</option>
+                        {((videoModelCfg as any).sizes as any[]).map((s: any) => {
+                          const key = typeof s === 'object' ? String(s?.key ?? s?.value ?? '') : String(s)
+                          const label = typeof s === 'object' ? String(s?.label ?? s?.key ?? s?.value ?? '') : String(s)
+                          const v = key || label
+                          if (!v) return null
+                          return (
+                            <option key={v} value={v}>
+                              {label || v}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>

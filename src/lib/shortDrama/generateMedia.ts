@@ -6,8 +6,30 @@ import { getJson, postFormData, postJson } from '@/lib/workflow/request'
 const normalizeText = (text: unknown) => String(text || '').replace(/\r\n/g, '\n').trim()
 const toDataUrl = (b64: string, mime = 'image/png') => `data:${mime};base64,${b64}`
 const isHttpUrl = (v: string) => /^https?:\/\//i.test(v)
+const isAssetUrl = (v: string) => /^asset:\/\//i.test(String(v || '').trim())
 const isDataUrl = (v: string) => /^data:image\/[a-z0-9.+-]+;base64,/i.test(String(v || '').trim())
 const isBase64Like = (v: string) => /^[A-Za-z0-9+/=]+$/.test(String(v || '').trim())
+
+const resolveAssetToDataUrl = async (assetUrl: string): Promise<string> => {
+  const u = String(assetUrl || '').trim()
+  if (!u || !isAssetUrl(u)) return u
+  try {
+    // asset:// 在 Tauri 下属于本地协议，优先用浏览器 fetch（plugin-http 不一定支持该协议）
+    const res = await (globalThis.fetch as any)(u, { method: 'GET' })
+    if (!res?.ok) throw new Error(`HTTP ${res?.status || 0}`)
+    const blob = await res.blob()
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(new Error('read failed'))
+      reader.onload = () => resolve(String(reader.result || ''))
+      reader.readAsDataURL(blob)
+    })
+    if (dataUrl && dataUrl.startsWith('data:')) return dataUrl
+  } catch {
+    // ignore
+  }
+  throw new Error('本地缓存素材（asset://）无法用于生成请求：请使用源链接（http/https）或重新导入该图片')
+}
 
 const getApiKey = () => {
   try {
@@ -581,6 +603,14 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
           out.push(cached)
           continue
         }
+        if (isAssetUrl(v0)) {
+          const dataUrl = await resolveAssetToDataUrl(v0)
+          const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+          const uploaded = await uploadImageToYunwu(compressed)
+          cache.set(v0, uploaded)
+          out.push(uploaded)
+          continue
+        }
         if (isDataUrl(v0)) {
           const compressed = await compressImageBase64(v0, 900 * 1024)
           const uploaded = await uploadImageToYunwu(compressed)
@@ -619,22 +649,45 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
       payload.duration = duration
     }
   } else if (modelCfg.format === 'kling-video') {
-    const hasAnyImage = Boolean(images.length > 0 || lastFrame)
     const modelName = modelCfg.defaultParams?.model_name || 'kling-v2-6'
     const mode = modelCfg.defaultParams?.mode || 'pro'
     const sound = modelCfg.defaultParams?.sound || 'off'
     const durValue = Number.isFinite(duration) && duration > 0 ? String(duration) : String(modelCfg.defaultParams?.duration || 10)
     const supportsSound = /^kling-v2-6/i.test(String(modelName || '').trim())
 
-    if (hasAnyImage) {
-      const first = images[0] || ''
-      if (!first) throw new Error('Kling 图生视频需要首帧/参考图')
+    const ensureHttpImage = async (raw: string, label: string) => {
+      let v = String(raw || '').trim()
+      if (!v) return ''
+      if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先导入/上传为 dataURL 或公网 URL`)
+      if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
+      if (isHttpUrl(v)) return v
+      if (isDataUrl(v)) {
+        const compressed = await compressImageBase64(v, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      if (isBase64Like(v)) {
+        const dataUrl = `data:image/png;base64,${v}`
+        const compressed = await compressImageBase64(dataUrl, 900 * 1024)
+        return await uploadImageToYunwu(compressed)
+      }
+      throw new Error(`${label}需要公网可访问的图片 URL（http/https）或 dataURL/base64`)
+    }
+
+    const firstRaw = String(images[0] || '').trim()
+    const tailRaw = String(lastFrame || '').trim()
+
+    // 仅有尾帧时，按纯文生执行（匹配 UI 提示语义），不强行把尾帧当首帧
+    const hasFirstFrame = !!firstRaw
+
+    if (hasFirstFrame) {
+      const first = await ensureHttpImage(firstRaw, '首帧')
+      const tail = tailRaw ? await ensureHttpImage(tailRaw, '尾帧') : ''
       endpointOverride = modelCfg.endpointImage || endpointOverride
       statusEndpointOverride = modelCfg.statusEndpointImage || statusEndpointOverride
       payload = {
         model_name: modelName,
         image: first,
-        image_tail: lastFrame || '',
+        image_tail: tail,
         mode,
         duration: durValue,
       }
@@ -661,6 +714,7 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
       let v = String(raw || '').trim()
       if (!v) return ''
       if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+      if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
       if (isHttpUrl(v)) return v
       if (isDataUrl(v)) {
         const compressed = await compressImageBase64(v, 900 * 1024)
@@ -697,6 +751,7 @@ export async function generateShortDramaVideo(req: ShortDramaVideoRequest): Prom
       let v = String(raw || '').trim()
       if (!v) return ''
       if (v.startsWith('blob:')) throw new Error(`${label}图片不支持 blob: URL，请先上传为公网 URL`)
+      if (isAssetUrl(v)) v = await resolveAssetToDataUrl(v)
       if (isHttpUrl(v)) return v
       if (isDataUrl(v)) {
         const compressed = await compressImageBase64(v, 900 * 1024)

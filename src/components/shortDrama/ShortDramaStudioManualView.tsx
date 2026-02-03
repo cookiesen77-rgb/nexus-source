@@ -368,6 +368,56 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
     [setDraft]
   )
 
+  // 切换模型时，自动清理不兼容的比例/画质/时长选择（避免残留旧值导致报错/不生效）
+  useEffect(() => {
+    const patch: Partial<ShortDramaDraftV2['models']> = {}
+
+    const imageSizes: any[] = Array.isArray((imageModelCfg as any)?.sizes) ? ((imageModelCfg as any).sizes as any[]) : []
+    const imageQualities: any[] = Array.isArray((imageModelCfg as any)?.qualities) ? ((imageModelCfg as any).qualities as any[]) : []
+    const videoRatios: any[] = Array.isArray((videoModelCfg as any)?.ratios) ? ((videoModelCfg as any).ratios as any[]) : []
+    const videoDurs: any[] = Array.isArray((videoModelCfg as any)?.durs) ? ((videoModelCfg as any).durs as any[]) : []
+    const videoSizes: any[] = Array.isArray((videoModelCfg as any)?.sizes) ? ((videoModelCfg as any).sizes as any[]) : []
+
+    const inList = (list: any[], val: any, kind: 'raw' | 'key' = 'raw') => {
+      const v = String(val ?? '').trim()
+      if (!v) return true
+      if (!Array.isArray(list) || list.length === 0) return true
+      return list.some((it: any) => {
+        if (typeof it === 'string' || typeof it === 'number') return String(it) === v
+        if (it && typeof it === 'object') {
+          const k = kind === 'key' ? String(it?.key ?? it?.value ?? '') : String(it ?? '')
+          return k === v
+        }
+        return false
+      })
+    }
+
+    if (draft.models.imageSize && !inList(imageSizes, draft.models.imageSize, 'raw')) patch.imageSize = undefined
+    if (draft.models.imageQuality && !inList(imageQualities, draft.models.imageQuality, 'key')) patch.imageQuality = undefined
+    if (draft.models.videoRatio && !inList(videoRatios, draft.models.videoRatio, 'raw')) patch.videoRatio = undefined
+    if (draft.models.videoDuration != null && draft.models.videoDuration !== undefined) {
+      const dv = String(draft.models.videoDuration)
+      const ok =
+        !Array.isArray(videoDurs) || videoDurs.length === 0
+          ? true
+          : videoDurs.some((d: any) => String(typeof d === 'object' ? d?.key ?? d?.value ?? d : d) === dv)
+      if (!ok) patch.videoDuration = undefined
+    }
+    if (draft.models.videoSize && !inList(videoSizes, draft.models.videoSize, 'key')) patch.videoSize = undefined
+
+    if (Object.keys(patch).length > 0) patchModels(patch)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    draft.models.imageSize,
+    draft.models.imageQuality,
+    draft.models.videoRatio,
+    draft.models.videoDuration,
+    draft.models.videoSize,
+    imageModelCfg,
+    videoModelCfg,
+    patchModels,
+  ])
+
   const addCharacter = useCallback(() => {
     setDraft((prev) => ({
       ...prev,
@@ -675,7 +725,9 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
         const sourceUrl = String(result.imageUrl || '').trim()
         const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : ''
         let mediaId: string | undefined
-        if (displayUrl.startsWith('data:')) {
+        const isDisplayDataUrl = displayUrl.startsWith('data:')
+        const isSourceDataUrl = sourceUrl.startsWith('data:')
+        if (isDisplayDataUrl) {
           mediaId = await saveMedia({
             nodeId: `short_drama:${projectId}:character:${characterId}:sheet:${running.id}`,
             projectId,
@@ -684,13 +736,21 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
             sourceUrl: safeSourceUrl && safeSourceUrl !== displayUrl ? safeSourceUrl : undefined,
             model: draft.models.imageModelKey,
           })
+        } else if (isSourceDataUrl) {
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:character:${characterId}:sheet:${running.id}`,
+            projectId,
+            type: 'image',
+            data: sourceUrl,
+            model: draft.models.imageModelKey,
+          })
         }
 
         setDraft((prev) =>
           updateVariantInSlot(prev, slotId, running.id, {
             status: 'success',
             sourceUrl: safeSourceUrl || undefined,
-            displayUrl: mediaId ? '' : displayUrl || undefined,
+            displayUrl: isDisplayDataUrl && mediaId ? '' : displayUrl || undefined,
             localPath: result.localPath || '',
             mediaId,
           })
@@ -700,7 +760,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
         try {
           useAssetsStore.getState().addAsset({
             type: 'image',
-            src: displayUrl || safeSourceUrl,
+            src: safeSourceUrl || displayUrl,
             title: `${String(c.name || '角色').trim()} · 设定图`.slice(0, 80),
             model: draft.models.imageModelKey,
           })
@@ -764,7 +824,9 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
         const sourceUrl = String(result.imageUrl || '').trim()
         const safeSourceUrl = /^https?:\/\//i.test(sourceUrl) ? sourceUrl : ''
         let mediaId: string | undefined
-        if (displayUrl.startsWith('data:')) {
+        const isDisplayDataUrl = displayUrl.startsWith('data:')
+        const isSourceDataUrl = sourceUrl.startsWith('data:')
+        if (isDisplayDataUrl) {
           mediaId = await saveMedia({
             nodeId: `short_drama:${projectId}:slot:${slotId}:variant:${running.id}`,
             projectId,
@@ -773,13 +835,21 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
             sourceUrl: safeSourceUrl && safeSourceUrl !== displayUrl ? safeSourceUrl : undefined,
             model: draft.models.imageModelKey,
           })
+        } else if (isSourceDataUrl) {
+          mediaId = await saveMedia({
+            nodeId: `short_drama:${projectId}:slot:${slotId}:variant:${running.id}`,
+            projectId,
+            type: 'image',
+            data: sourceUrl,
+            model: draft.models.imageModelKey,
+          })
         }
 
         setDraft((prev) =>
           updateVariantInSlot(prev, slotId, running.id, {
             status: 'success',
             sourceUrl: safeSourceUrl || undefined,
-            displayUrl: mediaId ? '' : displayUrl || undefined,
+            displayUrl: isDisplayDataUrl && mediaId ? '' : displayUrl || undefined,
             localPath: result.localPath || '',
             mediaId,
           })
@@ -787,7 +857,7 @@ export default function ShortDramaStudioManualView({ projectId, draft, setDraft,
 
         useAssetsStore.getState().addAsset({
           type: 'image',
-          src: displayUrl || safeSourceUrl,
+          src: safeSourceUrl || displayUrl,
           title: `${shot.title || '镜头'} · ${role === 'start' ? '首帧' : '尾帧'}`.slice(0, 80),
           model: draft.models.imageModelKey,
         })

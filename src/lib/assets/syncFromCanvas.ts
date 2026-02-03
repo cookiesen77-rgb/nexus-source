@@ -36,7 +36,8 @@ export const syncAssetHistoryFromCanvasNodes = (opts?: { includeDataUrl?: boolea
     const d: any = node.data || {}
 
     if (node.type === 'image') {
-      const src = pickFirstString(d.displayUrl, d.sourceUrl, d.src, d.url, d.imageUrl)
+      // 优先使用 sourceUrl（更可能是公网可访问地址），避免把 asset:// 缓存地址写入历史后无法用于下游生成
+      const src = pickFirstString(d.sourceUrl, d.displayUrl, d.src, d.url, d.imageUrl)
       if (!src) continue
       if (isBlobUrl(src)) continue
       if (isDataUrl(src) && !includeDataUrl) continue
@@ -55,7 +56,7 @@ export const syncAssetHistoryFromCanvasNodes = (opts?: { includeDataUrl?: boolea
     }
 
     if (node.type === 'video') {
-      const src = pickFirstString(d.displayUrl, d.sourceUrl, d.src, d.url, d.videoUrl)
+      const src = pickFirstString(d.sourceUrl, d.displayUrl, d.src, d.url, d.videoUrl)
       if (!src) continue
       if (isBlobUrl(src)) continue
       if (isDataUrl(src) && !includeDataUrl) continue
