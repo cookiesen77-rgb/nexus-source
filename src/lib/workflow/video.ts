@@ -782,13 +782,21 @@ const getConnectedInputs = async (configId: string) => {
     }
   }
 
-  return {
+  const result = {
     prompt: promptParts.join('\n\n'),
     firstFrame: firstFrame[0] || '',
     lastFrame: lastFrame[0] || '',
     refImages: Array.from(new Set(refImages)),
     refVideos: Array.from(new Set(refVideos))
   }
+  console.log('[getConnectedInputs] 汇总结果:', {
+    promptLen: result.prompt?.length || 0,
+    firstFrameLen: result.firstFrame?.length || 0,
+    lastFrameLen: result.lastFrame?.length || 0,
+    refImagesCount: result.refImages?.length || 0,
+    refVideosCount: result.refVideos?.length || 0
+  })
+  return result
 }
 
 /**
@@ -1329,16 +1337,53 @@ export const generateVideoFromConfigNode = async (
       payload = { model: modelCfg.key, prompt }
       if (images.length > 0) payload.images = images
       if (ratio === '16:9' || ratio === '9:16') payload.aspect_ratio = ratio
-      // 强制添加 duration 参数（不论是否有效，都传递，让 API 决定）
-      const finalDuration = Number.isFinite(duration) && duration > 0 ? duration : Number(modelCfg.defaultParams?.duration || 8)
-      payload.duration = finalDuration
-      console.log('[generateVideo] veo-unified duration:', { userSelected: duration, final: finalDuration })
+      // Veo API 不支持 duration 参数，时长由模型固定（通常 8 秒）
       const perfMode = useSettingsStore.getState().performanceMode || 'off'
       const forceFast = perfMode === 'ultra'
       const ep = modelCfg.defaultParams?.enhancePrompt
       if (typeof ep === 'boolean') payload.enhance_prompt = forceFast ? false : ep
       const up = modelCfg.defaultParams?.enableUpsample
       if (typeof up === 'boolean') payload.enable_upsample = forceFast ? false : up
+    } else if (modelCfg.format === 'veo-openai') {
+      // Veo 3.1 系列（云雾API OpenAI视频格式）：multipart/form-data
+      // 文档：https://yunwu.apifox.cn/api-370109881
+      // 参数：model, prompt, seconds (4/6/8), size (16x9/9x16), input_reference
+      const fd = new FormData()
+      fd.append('model', modelCfg.key)
+      fd.append('prompt', prompt)
+
+      // seconds参数：4/6/8秒，字符串格式
+      const secondsValue = Number.isFinite(duration) && duration > 0 ? String(duration) : '8'
+      fd.append('seconds', secondsValue)
+
+      // size参数：使用x分隔符（16x9或9x16），不是冒号
+      const sizeValue = ratio === '9:16' ? '9x16' : '16x9'
+      fd.append('size', sizeValue)
+
+      // 添加图片（优先使用首帧，否则使用参考图，再尝试images数组）
+      const imgUrl = firstFrame || refImages[0] || images[0] || ''
+      console.log('[veo-openai] 图片来源检查:', {
+        hasFirstFrame: !!firstFrame,
+        firstFrameLen: firstFrame?.length || 0,
+        firstFramePrefix: firstFrame?.slice(0, 50) || '',
+        refImagesCount: refImages?.length || 0,
+        imagesCount: images?.length || 0,
+        finalImgUrlLen: imgUrl?.length || 0,
+        finalImgUrlPrefix: imgUrl?.slice(0, 50) || ''
+      })
+      if (imgUrl) {
+        const blob = await resolveImageToBlob(imgUrl)
+        console.log('[veo-openai] resolveImageToBlob 结果:', blob ? `Blob size=${blob.size}` : 'null')
+        if (blob) {
+          fd.append('input_reference', blob, 'input.png')
+          console.log('[veo-openai] 已添加 input_reference 图片')
+        }
+      } else {
+        console.log('[veo-openai] 未提供图片，仅文生视频')
+      }
+
+      requestType = 'formdata'
+      payload = fd
     } else if (modelCfg.format === 'sora-unified') {
       const orientation = ratio === '9:16' ? 'portrait' : 'landscape'
       const size = overrides?.size || d.size || modelCfg.defaultParams?.size || 'large'

@@ -5,12 +5,20 @@ import { getNodeAccent, getNodeSize } from '@/graph/nodeSizing'
 
 type CanvasTool = 'select' | 'pan' | 'add' | 'connect'
 
-type ConnectPreview = {
-  from: Vec2
-  to: Vec2
-  fromSide: PortSide
-  toSide: PortSide
-}
+type ConnectPreview =
+  | {
+      kind?: 'single'
+      from: Vec2
+      to: Vec2
+      fromSide: PortSide
+      toSide: PortSide
+    }
+  | {
+      kind: 'multi'
+      sources: Array<{ nodeId: string; from: Vec2; fromSide: PortSide }>
+      to: Vec2
+      toSide: PortSide
+    }
 
 type SelectBox = {
   start: Vec2
@@ -779,23 +787,43 @@ export default function WebGLGraphCanvas({
         // 支持外部连接预览状态
         const connectPreview = useExternalEvents ? externalConnectPreview : (showConnectPreview ? connectPreviewRef.current : null)
         if (connectPreview) {
-          const prev = connectPreview
-          const from = prev.from
-          const to = prev.to
-          const { c1, c2 } = bezierControls(from, to, prev.fromSide, prev.toSide)
-
-          const p0 = { x: from.x * zoom + vp.x, y: from.y * zoom + vp.y }
-          const p1 = { x: c1.x * zoom + vp.x, y: c1.y * zoom + vp.y }
-          const p2 = { x: c2.x * zoom + vp.x, y: c2.y * zoom + vp.y }
-          const p3 = { x: to.x * zoom + vp.x, y: to.y * zoom + vp.y }
-
           ctx.save()
           ctx.lineWidth = 2
           ctx.strokeStyle = 'rgba(0,122,255,0.55)'
-          ctx.beginPath()
-          ctx.moveTo(p0.x, p0.y)
-          ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
-          ctx.stroke()
+
+          if ('kind' in connectPreview && connectPreview.kind === 'multi') {
+            // 多源预览：绘制多条贝塞尔曲线
+            const to = connectPreview.to
+            for (const src of connectPreview.sources) {
+              const { c1, c2 } = bezierControls(src.from, to, src.fromSide, connectPreview.toSide)
+              const p0 = { x: src.from.x * zoom + vp.x, y: src.from.y * zoom + vp.y }
+              const p1 = { x: c1.x * zoom + vp.x, y: c1.y * zoom + vp.y }
+              const p2 = { x: c2.x * zoom + vp.x, y: c2.y * zoom + vp.y }
+              const p3 = { x: to.x * zoom + vp.x, y: to.y * zoom + vp.y }
+
+              ctx.beginPath()
+              ctx.moveTo(p0.x, p0.y)
+              ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
+              ctx.stroke()
+            }
+          } else {
+            // 单源预览
+            const prev = connectPreview
+            const from = prev.from
+            const to = prev.to
+            const { c1, c2 } = bezierControls(from, to, prev.fromSide, prev.toSide)
+
+            const p0 = { x: from.x * zoom + vp.x, y: from.y * zoom + vp.y }
+            const p1 = { x: c1.x * zoom + vp.x, y: c1.y * zoom + vp.y }
+            const p2 = { x: c2.x * zoom + vp.x, y: c2.y * zoom + vp.y }
+            const p3 = { x: to.x * zoom + vp.x, y: to.y * zoom + vp.y }
+
+            ctx.beginPath()
+            ctx.moveTo(p0.x, p0.y)
+            ctx.bezierCurveTo(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
+            ctx.stroke()
+          }
+
           ctx.restore()
         }
 

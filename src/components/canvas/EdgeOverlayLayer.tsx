@@ -298,14 +298,8 @@ export default function EdgeOverlayLayer({ isInteracting, viewportOverride }: { 
           )
         }
 
-        return (
-          <div
-            key={it.id}
-            className="pointer-events-auto absolute"
-            style={{ transform: `translate3d(${it.x}px, ${it.y}px, 0) translate(-50%, -50%)` }}
-          >
-          </div>
-        )
+        // TypeScript exhaustiveness check - should never reach here
+        return null
       })}
     </div>
   )

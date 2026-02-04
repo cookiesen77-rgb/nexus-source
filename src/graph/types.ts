@@ -15,6 +15,8 @@ export type GraphNode = {
   type: NodeType
   x: number
   y: number
+  width?: number
+  height?: number
   zIndex: number
   data: Record<string, unknown>
 }
@@ -25,6 +27,8 @@ export type GraphEdge = {
   id: string
   source: string
   target: string
+  sourceHandle?: string
+  targetHandle?: string
   type?: EdgeType
   data?: Record<string, unknown>
 }

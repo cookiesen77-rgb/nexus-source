@@ -1,5 +1,5 @@
 import React from 'react'
-import { Brush, Film, Hand, LayoutGrid, Link2, MousePointer, Music, Plus, Video, BookOpen, Undo2, Redo2, ScanSearch, Save } from 'lucide-react'
+import { Brush, Camera, Film, Hand, LayoutGrid, Link2, MousePointer, Music, Plus, Video, BookOpen, Undo2, Redo2, ScanSearch, Save } from 'lucide-react'
 
 export type CanvasTool = 'select' | 'pan' | 'connect'
 
@@ -15,6 +15,7 @@ type Props = {
   onOpenAudio?: () => void
   onOpenPromptLibrary?: () => void
   onOpenPromptReverse?: () => void
+  onOpenCameraControl?: () => void
   onSaveAsTemplate?: () => void
   onUndo?: () => void
   onRedo?: () => void
@@ -67,6 +68,7 @@ export default function CanvasSidebar({
   onOpenAudio,
   onOpenPromptLibrary,
   onOpenPromptReverse,
+  onOpenCameraControl,
   onSaveAsTemplate,
   onUndo,
   onRedo,
@@ -141,6 +143,15 @@ export default function CanvasSidebar({
         onClick={() => onSaveAsTemplate?.()}
       >
         <Save className="h-5 w-5" />
+      </IconButton>
+
+      <div className="my-1 h-px w-8 bg-[var(--border-color)]" />
+
+      <IconButton
+        title="多角度相机控制"
+        onClick={() => onOpenCameraControl?.()}
+      >
+        <Camera className="h-5 w-5" />
       </IconButton>
 
       <div className="my-1 h-px w-8 bg-[var(--border-color)]" />

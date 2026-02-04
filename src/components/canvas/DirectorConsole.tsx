@@ -3,7 +3,7 @@
  * 分镜规划 + 预设模板 + AI 润色 + 自动生成
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { streamChatCompletions, chatCompletions } from '@/api'
@@ -11,6 +11,7 @@ import { streamAiAssistant } from '@/lib/nexusApi'
 import { generateImage } from '@/api/image'
 import { postJson } from '@/lib/workflow/request'
 import { useSettingsStore } from '@/store/settings'
+import { useGraphStore } from '@/graph/store'
 import {
   X,
   Sparkles,
@@ -24,7 +25,9 @@ import {
   ChevronDown,
   Eye,
   Copy,
-  Check
+  Check,
+  Layers,
+  History
 } from 'lucide-react'
 import {
   DIRECTOR_PRESETS,
@@ -34,7 +37,7 @@ import {
   POLISH_SYSTEM_PROMPT,
   getAspectRatioOptions
 } from '@/lib/directorPresets'
-import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, SEEDREAM_SIZE_OPTIONS, SEEDREAM_4K_SIZE_OPTIONS } from '@/config/models'
+import { IMAGE_MODELS, DEFAULT_IMAGE_MODEL, DEFAULT_CHAT_MODEL, SEEDREAM_SIZE_OPTIONS, SEEDREAM_4K_SIZE_OPTIONS } from '@/config/models'
 import { useAssetsStore } from '@/store/assets'
 
 interface HistoryEntry {
@@ -183,6 +186,7 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
   // 参考图
   const [referenceImage, setReferenceImage] = useState<string | null>(null)
   const [referenceImageFile, setReferenceImageFile] = useState<File | null>(null)
+  const [showImagePicker, setShowImagePicker] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   
   // Form state
@@ -220,6 +224,25 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
 
   // 当前预设配置
   const currentPreset = getPresetById(selectedPreset) || DIRECTOR_PRESETS[0]
+
+  // 获取画布中的图片节点（打开选择器时刷新）
+  const canvasImages = useMemo(() => {
+    if (!showImagePicker) return []
+    const nodes = useGraphStore.getState().nodes
+    return nodes
+      .filter(n => n.type === 'image' && (n.data as any)?.url)
+      .map(n => ({
+        id: n.id,
+        src: (n.data as any).url as string,
+        title: (n.data as any)?.label || (n.data as any)?.fileName || '画布图片'
+      }))
+  }, [showImagePicker])
+
+  // 获取历史素材中的图片（打开选择器时刷新）
+  const historyImages = useMemo(() => {
+    if (!showImagePicker) return []
+    return useAssetsStore.getState().getAssetsByType('image').slice(0, 50)
+  }, [showImagePicker])
 
   // 切换预设时更新默认值
   useEffect(() => {
@@ -308,6 +331,14 @@ export default function DirectorConsole({ open, onClose, onCreateNodes }: Props)
     setReferenceImage(null)
     setReferenceImageFile(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
+  }, [])
+
+  // 从画布或历史选择参考图
+  const handleSelectFromPicker = useCallback((src: string) => {
+    setReferenceImage(src)
+    setReferenceImageFile(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    setShowImagePicker(false)
   }, [])
 
   const parsePolishDualLang = useCallback((raw: string): { zh: string; en: string } => {
@@ -1020,14 +1051,27 @@ Output STRICT JSON only (no markdown, no code fences):
             {/* 参考图上传 */}
             {currentPreset.supportsReferenceImage && (
               <div className="flex flex-col gap-2">
-                <label className="text-xs font-bold text-[var(--text-primary)]">
-                  参考图（可选）
-                  {currentPreset.referenceImageGuide && (
-                    <span className="ml-2 font-normal text-[var(--text-secondary)]">
-                      {currentPreset.referenceImageGuide}
-                    </span>
-                  )}
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[var(--text-primary)]">
+                    参考图（可选）
+                    {currentPreset.referenceImageGuide && (
+                      <span className="ml-2 font-normal text-[var(--text-secondary)]">
+                        {currentPreset.referenceImageGuide}
+                      </span>
+                    )}
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowImagePicker(true)}
+                      className="flex items-center gap-1 rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:border-[var(--accent-color)] hover:text-[var(--accent-color)] transition-colors"
+                      title="从画布或历史选择"
+                    >
+                      <Layers className="h-3 w-3" />
+                      选择素材
+                    </button>
+                  </div>
+                </div>
                 <div
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
@@ -1045,7 +1089,7 @@ Output STRICT JSON only (no markdown, no code fences):
                     onChange={handleImageUpload}
                     className="absolute inset-0 cursor-pointer opacity-0"
                   />
-                  
+
                   {referenceImage ? (
                     <div className="relative h-full w-full p-2">
                       <img
@@ -1070,6 +1114,103 @@ Output STRICT JSON only (no markdown, no code fences):
                     </div>
                   )}
                 </div>
+
+                {/* 图片选择器弹窗 */}
+                {showImagePicker && (
+                  <div
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+                    onClick={(e) => e.target === e.currentTarget && setShowImagePicker(false)}
+                  >
+                    <div
+                      className="flex h-[min(70vh,600px)] w-[min(700px,90vw)] flex-col overflow-hidden rounded-2xl border border-[var(--border-color)] bg-[var(--bg-secondary)] shadow-2xl"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between border-b border-[var(--border-color)] px-5 py-4">
+                        <h3 className="text-base font-semibold text-[var(--text-primary)]">选择参考图</h3>
+                        <button
+                          onClick={() => setShowImagePicker(false)}
+                          className="rounded-full p-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] hover:text-[var(--text-primary)]"
+                        >
+                          <X className="h-5 w-5" />
+                        </button>
+                      </div>
+
+                      <div className="flex-1 overflow-auto p-4">
+                        {/* 画布图片 */}
+                        {canvasImages.length > 0 && (
+                          <div className="mb-6">
+                            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+                              <Layers className="h-4 w-4 text-[var(--accent-color)]" />
+                              画布中的图片
+                            </div>
+                            <div className="grid grid-cols-4 gap-3">
+                              {canvasImages.map((img) => (
+                                <button
+                                  key={img.id}
+                                  onClick={() => handleSelectFromPicker(img.src)}
+                                  className="group relative aspect-square overflow-hidden rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] hover:border-[var(--accent-color)] transition-colors"
+                                >
+                                  <img
+                                    src={img.src}
+                                    alt={img.title}
+                                    className="h-full w-full object-cover"
+                                  />
+                                  <div className="absolute inset-0 flex items-end bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <span className="w-full truncate px-2 py-1.5 text-[10px] text-white">
+                                      {img.title}
+                                    </span>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 历史素材 */}
+                        {historyImages.length > 0 && (
+                          <div>
+                            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+                              <History className="h-4 w-4 text-[var(--accent-color)]" />
+                              历史素材
+                            </div>
+                            <div className="grid grid-cols-4 gap-3">
+                              {historyImages.map((asset) => (
+                                <button
+                                  key={asset.id}
+                                  onClick={() => handleSelectFromPicker(asset.src)}
+                                  className="group relative aspect-square overflow-hidden rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] hover:border-[var(--accent-color)] transition-colors"
+                                >
+                                  <img
+                                    src={asset.src}
+                                    alt={asset.title || '历史图片'}
+                                    className="h-full w-full object-cover"
+                                  />
+                                  <div className="absolute inset-0 flex items-end bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <span className="w-full truncate px-2 py-1.5 text-[10px] text-white">
+                                      {asset.title || asset.model || '历史图片'}
+                                    </span>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {canvasImages.length === 0 && historyImages.length === 0 && (
+                          <div className="flex h-full items-center justify-center text-sm text-[var(--text-secondary)]">
+                            暂无可选图片，请先在画布中添加图片或生成图片
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex justify-end border-t border-[var(--border-color)] p-4">
+                        <Button variant="ghost" onClick={() => setShowImagePicker(false)}>
+                          取消
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

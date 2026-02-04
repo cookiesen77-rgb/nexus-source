@@ -28,6 +28,7 @@ import DirectorConsole from '@/components/canvas/DirectorConsole'
 import SketchEditor from '@/components/canvas/SketchEditor'
 import SonicStudio from '@/components/canvas/SonicStudio'
 import PromptReverseModal from '@/components/canvas/PromptReverseModal'
+import CameraControlModal from '@/components/cameraControl/CameraControlModal'
 import { getWorkflowById } from '@/config/workflows'
 import { getNodeSize } from '@/graph/nodeSizing'
 import { useSettingsStore } from '@/store/settings'
@@ -71,6 +72,7 @@ export default function Canvas() {
   const [sketchOpen, setSketchOpen] = useState(false)
   const [audioOpen, setAudioOpen] = useState(false)
   const [promptReverseOpen, setPromptReverseOpen] = useState(false)
+  const [cameraControlOpen, setCameraControlOpen] = useState(false)
   const [batchGenerating, setBatchGenerating] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
   const [saveTemplateName, setSaveTemplateName] = useState('')
@@ -725,7 +727,10 @@ export default function Canvas() {
   }, [connectMenu, triggerConnectMenuFileUpload])
 
   // 新事件系统状态
-  const [connectPreview, setConnectPreview] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' } | null>(null)
+  type ConnectPreviewState =
+    | { kind?: 'single'; from: { x: number; y: number }; to: { x: number; y: number }; fromSide: 'left' | 'right'; toSide: 'left' | 'right' }
+    | { kind: 'multi'; sources: Array<{ nodeId: string; from: { x: number; y: number }; fromSide: 'left' | 'right' }>; to: { x: number; y: number }; toSide: 'left' | 'right' }
+  const [connectPreview, setConnectPreview] = useState<ConnectPreviewState | null>(null)
   const [selectBox, setSelectBox] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null)
   const [alignGuide, setAlignGuide] = useState<{ x?: number; y?: number } | null>(null)
   const handledInitRef = useRef<string | null>(null)
@@ -860,6 +865,25 @@ export default function Canvas() {
       // 如果用户正在选择文本（例如 AI 助手消息、检查器等），不要劫持 ⌘C
       const editing = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as any)?.isContentEditable || hasTextSelection
       const meta = e.metaKey || e.ctrlKey
+
+      // 工具切换快捷键 (优先处理，不需要 meta 键)
+      if (!editing && !meta) {
+        if (e.key === 'v' || e.key === 'V') {
+          e.preventDefault()
+          setTool('select')
+          return
+        }
+        if (e.key === 'h' || e.key === 'H') {
+          e.preventDefault()
+          setTool('pan')
+          return
+        }
+        if (e.key === 'l' || e.key === 'L') {
+          e.preventDefault()
+          setTool('connect')
+          return
+        }
+      }
 
       if (meta && !editing && (e.key === 'c' || e.key === 'C')) {
         const s = useGraphStore.getState()
@@ -1516,6 +1540,7 @@ export default function Canvas() {
               canRedo={canRedo}
               onOpenWorkflow={() => setWorkflowTemplatesOpen(true)}
               onOpenShortDrama={() => nav(`/short-drama/${String(projectId || '').trim() || 'default'}`)}
+              onOpenCameraControl={() => setCameraControlOpen(true)}
               onOpenDirector={() => setDirectorOpen(true)}
               onOpenSketch={() => setSketchOpen(true)}
               onOpenAudio={() => setAudioOpen(true)}
@@ -1829,6 +1854,12 @@ export default function Canvas() {
       <PromptReverseModal
         open={promptReverseOpen}
         onClose={() => setPromptReverseOpen(false)}
+      />
+
+      <CameraControlModal
+        open={cameraControlOpen}
+        onClose={() => setCameraControlOpen(false)}
+        projectId={projectId}
       />
       
       {historyPanelOpen && (

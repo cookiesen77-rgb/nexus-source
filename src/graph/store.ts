@@ -390,7 +390,7 @@ export type GraphState = {
   setSelectedEdge: (id: string | null) => void
   setViewport: (vp: Viewport) => void
 
-  addNode: (type: NodeType, pos: { x: number; y: number }, data?: Record<string, unknown>) => string
+  addNode: (type: NodeType | string, pos: { x: number; y: number }, data?: Record<string, unknown>) => string
   duplicateNode: (id: string) => string | null
   updateNode: (id: string, patch: Partial<Omit<GraphNode, 'id'>>) => void
   commitNodePosition: (id: string) => void

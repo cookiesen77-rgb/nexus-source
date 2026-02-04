@@ -17,7 +17,7 @@ import nanoBananaPrompts from '@/assets/prompt-libraries/nano_banana_pro_prompts
 import comicPrompts from '@/assets/prompt-libraries/baoyu_comic_prompts.json'
 
 interface CameraMove {
-  id: string
+  id: string | number
   en: string
   zh: string
   category: string

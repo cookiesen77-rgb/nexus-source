@@ -117,7 +117,7 @@ async function loadImageToCanvas(
       return ''
     }
     const mime = inferMime(url)
-    const blob = mime ? new Blob([bytes], { type: mime }) : new Blob([bytes])
+    const blob = mime ? new Blob([bytes.slice().buffer], { type: mime }) : new Blob([bytes.slice().buffer])
     const objectUrl = URL.createObjectURL(blob)
     try {
       const img = new Image()

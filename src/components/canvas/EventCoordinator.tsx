@@ -49,13 +49,27 @@ type DragState =
         fixedSide: PortSide
       }
     }
+  | {
+      kind: 'multi-connect'
+      sources: Array<{ nodeId: string; from: Vec2; fromSide: PortSide }>
+      to: Vec2
+      toSide: PortSide
+    }
 
-type ConnectPreview = {
-  from: Vec2
-  to: Vec2
-  fromSide: PortSide
-  toSide: PortSide
-}
+type ConnectPreview =
+  | {
+      kind?: 'single'
+      from: Vec2
+      to: Vec2
+      fromSide: PortSide
+      toSide: PortSide
+    }
+  | {
+      kind: 'multi'
+      sources: Array<{ nodeId: string; from: Vec2; fromSide: PortSide }>
+      to: Vec2
+      toSide: PortSide
+    }
 
 type Props = {
   children: React.ReactNode
@@ -167,10 +181,14 @@ export default function EventCoordinator({
           const portSide = hitTestPort(world, hitNode, getNodeSize(hitNode.type), 14 / vp.zoom)
           const fromSide: PortSide = portSide || inferPortSide(world, hitNode, getNodeSize(hitNode.type))
 
-          // 多选快速连接逻辑
-          if (!portSide && store.selectedNodeIds.length >= 2) {
+          // 检查是否点击的是选中节点之一（用于判断是开始拖拽还是快速连接）
+          const selectedIds = store.selectedNodeIds
+          const clickedOnSelectedNode = selectedIds.includes(hitNode.id)
+
+          // 多选快速连接逻辑：点击未选中的目标节点时，将所有选中节点连接到该目标
+          if (!portSide && selectedIds.length >= 2 && !clickedOnSelectedNode) {
             const targetId = hitNode.id
-            const sources = store.selectedNodeIds.filter((x) => x !== targetId)
+            const sources = selectedIds.filter((x) => x !== targetId)
             const existingKeys = new Set(
               store.edges.map((e) => {
                 const d: any = e.data || {}
@@ -193,16 +211,45 @@ export default function EventCoordinator({
           }
 
           // 开始绘制连接线
-          const from = getPortWorldPos(hitNode, fromSide, getNodeSize(hitNode.type))
-          dragRef.current = {
-            kind: 'connect',
-            fromId: hitNode.id,
-            fromSide,
-            from,
-            to: world,
-            toSide: 'left'
+          const isMultiConnect = selectedIds.length >= 2 && clickedOnSelectedNode
+
+          if (isMultiConnect) {
+            // 多选连接：收集所有选中节点的端口位置
+            const sources = selectedIds.map(id => {
+              const node = store.nodes.find(n => n.id === id)!
+              return {
+                nodeId: id,
+                from: getPortWorldPos(node, 'right', getNodeSize(node.type)),
+                fromSide: 'right' as PortSide
+              }
+            })
+
+            dragRef.current = {
+              kind: 'multi-connect',
+              sources,
+              to: world,
+              toSide: 'left'
+            }
+
+            onConnectPreviewChange?.({
+              kind: 'multi',
+              sources,
+              to: world,
+              toSide: 'left'
+            })
+          } else {
+            // 单节点连接
+            const from = getPortWorldPos(hitNode, fromSide, getNodeSize(hitNode.type))
+            dragRef.current = {
+              kind: 'connect',
+              fromId: hitNode.id,
+              fromSide,
+              from,
+              to: world,
+              toSide: 'left'
+            }
+            onConnectPreviewChange?.({ from, to: world, fromSide, toSide: 'left' })
           }
-          onConnectPreviewChange?.({ from, to: world, fromSide, toSide: 'left' })
 
           store.setSelected(hitNode.id)
           onPickNode?.(hitNode.id)
@@ -502,6 +549,29 @@ export default function EventCoordinator({
         return
       }
 
+      if (drag.kind === 'multi-connect') {
+        const hitNode = hitTestNode(world, store.nodes, getNodeSize, vp.zoom)
+        let to = world
+        let toSide: PortSide = 'left'
+
+        // 如果命中节点且不在源节点列表中
+        const sourceIds = drag.sources.map(s => s.nodeId)
+        if (hitNode && !sourceIds.includes(hitNode.id)) {
+          const portSide = hitTestPort(world, hitNode, getNodeSize(hitNode.type), 14 / vp.zoom)
+          toSide = portSide || inferPortSide(world, hitNode, getNodeSize(hitNode.type))
+          to = getPortWorldPos(hitNode, toSide, getNodeSize(hitNode.type))
+        }
+
+        dragRef.current = { ...drag, to, toSide }
+        onConnectPreviewChange?.({
+          kind: 'multi',
+          sources: drag.sources,
+          to,
+          toSide
+        })
+        return
+      }
+
       if (drag.kind === 'select-box') {
         dragRef.current = { ...drag, currentWorld: world }
         onSelectBoxChange?.({ start: drag.startWorld, current: world })
@@ -598,6 +668,61 @@ export default function EventCoordinator({
 
             store.addEdge(drag.fromId, hitNode.id, data)
           }
+        }
+      }
+
+      // 处理多选连接完成
+      if (drag?.kind === 'multi-connect') {
+        onConnectPreviewChange?.(null)
+        const hitNode = hitTestNode(world, store.nodes, getNodeSize, vp.zoom)
+        const sourceIds = drag.sources.map(s => s.nodeId)
+
+        // 如果命中节点且不在源节点列表中
+        if (hitNode && !sourceIds.includes(hitNode.id)) {
+          const targetId = hitNode.id
+          const portSide = hitTestPort(world, hitNode, getNodeSize(hitNode.type), 14 / vp.zoom)
+          const toSide: PortSide = portSide || inferPortSide(world, hitNode, getNodeSize(hitNode.type))
+
+          // 收集已存在的连接 key
+          const existingKeys = new Set(
+            store.edges.map(e => {
+              const d: any = e.data || {}
+              return `${e.source}|${e.target}|${readPortSide(d.sourcePort, 'right')}|${readPortSide(d.targetPort, 'left')}`
+            })
+          )
+
+          store.withBatchUpdates(() => {
+            for (const src of drag.sources) {
+              const key = `${src.nodeId}|${targetId}|${src.fromSide}|${toSide}`
+              if (existingKeys.has(key)) continue
+
+              const data: Record<string, unknown> = {
+                sourcePort: src.fromSide,
+                targetPort: toSide
+              }
+
+              // 处理 image → videoConfig 的 imageRole
+              const srcNode = nodesById.get(src.nodeId)
+              if (srcNode?.type === 'image' && hitNode.type === 'videoConfig') {
+                const existingRoles = store.edges
+                  .filter((e) => e.target === hitNode.id)
+                  .map((e) => String((e.data as any)?.imageRole || '').trim())
+                const hasFirst = existingRoles.includes('first_frame_image')
+                const hasLast = existingRoles.includes('last_frame_image')
+                data.imageRole = !hasFirst
+                  ? 'first_frame_image'
+                  : !hasLast
+                    ? 'last_frame_image'
+                    : 'input_reference'
+              }
+
+              store.addEdge(src.nodeId, targetId, data)
+              existingKeys.add(key)
+            }
+          })
+
+          store.setSelected(targetId)
+          onPickNode?.(targetId)
         }
       }
 

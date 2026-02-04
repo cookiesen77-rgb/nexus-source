@@ -413,6 +413,9 @@ export const generateImageFromConfigNode = async (
     }
   }
 
+  // After this point, imageNodeId is guaranteed to be non-null
+  const outputNodeId = imageNodeId as string
+
   // 4. 调用 API 生成图片
   try {
     let imageUrl = ''
@@ -644,7 +647,7 @@ export const generateImageFromConfigNode = async (
     // Tauri 极速模式：先回写 URL（让画布立刻结束 loading），缓存/落库改为后台进行
     if (preferFastWriteback && isHttpUrl(imageUrl)) {
       try {
-        latestStore.updateNode(imageNodeId, {
+        latestStore.updateNode(outputNodeId, {
           data: {
             url: imageUrl,
             sourceUrl: imageUrl,
@@ -667,12 +670,12 @@ export const generateImageFromConfigNode = async (
           console.log('[generateImage] resolveCachedImageUrl 耗时(ms):', Date.now() - cacheT1, '总耗时(ms):', Date.now() - t0)
 
           const storeNow = useGraphStore.getState()
-          const stillExists = storeNow.nodes.some((n) => n.id === imageNodeId)
+          const stillExists = storeNow.nodes.some((n) => n.id === outputNodeId)
           if (!stillExists) return
 
           const displayUrl = cached.displayUrl
           if (displayUrl && displayUrl !== imageUrl) {
-            storeNow.updateNode(imageNodeId, {
+            storeNow.updateNode(outputNodeId, {
               data: {
                 url: displayUrl,
                 localPath: cached.localPath,
@@ -693,7 +696,7 @@ export const generateImageFromConfigNode = async (
 
       // 选中新创建的图片节点
       if (selectOutput) {
-        latestStore.setSelected(imageNodeId)
+        latestStore.setSelected(outputNodeId)
       }
       // 同步到历史素材（先用原始 URL；若后续缓存成功会更新节点 url，但历史不强制回写）
       try {
@@ -708,7 +711,7 @@ export const generateImageFromConfigNode = async (
       }
       // 标记配置节点已执行
       if (markConfigExecuted) {
-        latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: imageNodeId } } as any)
+        latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: outputNodeId } } as any)
       }
       return
     }
@@ -718,14 +721,14 @@ export const generateImageFromConfigNode = async (
     console.log('[generateImage] resolveCachedImageUrl 耗时(ms):', Date.now() - cacheT1, '总耗时(ms):', Date.now() - t0)
     
     // 确认节点存在
-    const existingNode = latestStore.nodes.find(n => n.id === imageNodeId)
+    const existingNode = latestStore.nodes.find(n => n.id === outputNodeId)
     console.log('[generateImage] 节点存在检查:', existingNode ? '存在' : '不存在', existingNode?.type)
     
     const displayUrl = cached.displayUrl
-    console.log('[generateImage] 准备更新节点:', imageNodeId, 'url长度:', displayUrl?.length || 0)
+    console.log('[generateImage] 准备更新节点:', outputNodeId, 'url长度:', displayUrl?.length || 0)
 
     // 先更新节点显示（不要被 IndexedDB 落库阻塞）
-    latestStore.updateNode(imageNodeId, {
+    latestStore.updateNode(outputNodeId, {
       data: {
         url: displayUrl,
         localPath: cached.localPath,
@@ -747,14 +750,14 @@ export const generateImageFromConfigNode = async (
         // 如果数据是大型数据（base64/dataURL），保存到 IndexedDB
         if (isLargeData(displayUrl) || isBase64Data(displayUrl)) {
           mediaId = await saveMedia({
-            nodeId: imageNodeId,
+            nodeId: outputNodeId,
             projectId,
             type: 'image',
             data: displayUrl,
             sourceUrl: imageUrl !== displayUrl ? imageUrl : undefined,
             model: modelKey,
           })
-          if (mediaId) useGraphStore.getState().patchNodeDataSilent(imageNodeId, { mediaId })
+          if (mediaId) useGraphStore.getState().patchNodeDataSilent(outputNodeId, { mediaId })
           return
         }
 
@@ -766,14 +769,14 @@ export const generateImageFromConfigNode = async (
           if (inline?.data) {
             const dataUrl = toDataUrl(inline.data, inline.mimeType || 'image/png')
             mediaId = await saveMedia({
-              nodeId: imageNodeId,
+              nodeId: outputNodeId,
               projectId,
               type: 'image',
               data: dataUrl,
               sourceUrl: displayUrl,
               model: modelKey,
             })
-            if (mediaId) useGraphStore.getState().patchNodeDataSilent(imageNodeId, { mediaId })
+            if (mediaId) useGraphStore.getState().patchNodeDataSilent(outputNodeId, { mediaId })
           }
         }
       } catch (err) {
@@ -785,13 +788,13 @@ export const generateImageFromConfigNode = async (
     await new Promise(r => setTimeout(r, 50))
     
     // 验证更新是否成功
-    const afterUpdate = useGraphStore.getState().nodes.find(n => n.id === imageNodeId)
+    const afterUpdate = useGraphStore.getState().nodes.find(n => n.id === outputNodeId)
     console.log('[generateImage] 更新后验证:', afterUpdate?.id, 'url长度:', (afterUpdate?.data as any)?.url?.length || 0, 'loading:', (afterUpdate?.data as any)?.loading, 'mediaId:', (afterUpdate?.data as any)?.mediaId)
     
     // 如果验证失败，尝试重新更新
     if (!afterUpdate || !(afterUpdate.data as any)?.url) {
       console.warn('[generateImage] 节点更新验证失败，尝试重新更新')
-      useGraphStore.getState().updateNode(imageNodeId, {
+      useGraphStore.getState().updateNode(outputNodeId, {
         data: { url: displayUrl, loading: false, error: '', model: modelKey }
       } as any)
       await new Promise(r => setTimeout(r, 50))
@@ -799,7 +802,7 @@ export const generateImageFromConfigNode = async (
     
     // 触发 React Flow 节点刷新事件
     try {
-      const event = new CustomEvent('nexus:node-updated', { detail: { nodeId: imageNodeId, type: 'image' } })
+      const event = new CustomEvent('nexus:node-updated', { detail: { nodeId: outputNodeId, type: 'image' } })
       window.dispatchEvent(event)
     } catch (e) {
       console.warn('[generateImage] 触发刷新事件失败:', e)
@@ -807,7 +810,7 @@ export const generateImageFromConfigNode = async (
     
     // 选中新创建的图片节点
     if (selectOutput) {
-      latestStore.setSelected(imageNodeId)
+      latestStore.setSelected(outputNodeId)
     }
 
     // 同步到历史素材
@@ -824,13 +827,13 @@ export const generateImageFromConfigNode = async (
 
     // 标记配置节点已执行
     if (markConfigExecuted) {
-      latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: imageNodeId } } as any)
+      latestStore.updateNode(configNodeId, { data: { executed: true, outputNodeId: outputNodeId } } as any)
     }
 
   } catch (err: any) {
     // 6. 失败：更新图片节点显示错误
     const latestStore = useGraphStore.getState()
-    latestStore.updateNode(imageNodeId, {
+    latestStore.updateNode(outputNodeId, {
       data: {
         loading: false,
         error: err?.message || '生成失败',

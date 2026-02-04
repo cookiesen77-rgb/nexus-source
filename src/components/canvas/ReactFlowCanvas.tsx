@@ -20,7 +20,7 @@ import {
   EdgeTypes,
   useReactFlow,
   ReactFlowProvider,
-  NodeDragHandler,
+  OnNodeDrag,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '@/graph/store'
@@ -537,8 +537,8 @@ function ReactFlowCanvasInner({ onContextMenu, onConnectEnd, onFileDrop }: React
   }, [debugFlags.perfProbe])
 
   // 处理节点拖拽结束 - 只在这里同步位置到 Zustand
-  const handleNodeDragStop: NodeDragHandler<Node> = useCallback(
-    (_event, node) => {
+  const handleNodeDragStop: OnNodeDrag<Node> = useCallback(
+    (_event: any, node: any) => {
       reactFlowWrapper.current?.classList.remove('rf-moving')
       // 使用 requestIdleCallback 延迟同步，不阻塞 UI
       const sync = () => {
@@ -559,7 +559,7 @@ function ReactFlowCanvasInner({ onContextMenu, onConnectEnd, onFileDrop }: React
     []
   )
 
-  const handleNodeDragStart: NodeDragHandler<Node> = useCallback(() => {
+  const handleNodeDragStart: OnNodeDrag<Node> = useCallback(() => {
     reactFlowWrapper.current?.classList.add('rf-moving')
   }, [])
 
@@ -694,9 +694,9 @@ function ReactFlowCanvasInner({ onContextMenu, onConnectEnd, onFileDrop }: React
 
   // 处理画布右键菜单
   const handlePaneContextMenu = useCallback(
-    (event: React.MouseEvent) => {
+    (event: React.MouseEvent | MouseEvent) => {
       event.preventDefault()
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      const position = screenToFlowPosition({ x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY })
       onContextMenu?.({
         kind: 'canvas',
         clientX: event.clientX,

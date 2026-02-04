@@ -127,14 +127,30 @@ async function fetchFileData(url: string): Promise<Uint8Array> {
       const arrayBuffer = await response.arrayBuffer()
       return new Uint8Array(arrayBuffer)
     } else {
+      // Web mode: try fetch first, fallback to window.open for CORS issues
       const token = getApiKeySafe()
       const headers = shouldAttachBearer(url) && token ? { Authorization: `Bearer ${token}` } : undefined
-      const response = await fetch(url, headers ? { headers } : undefined)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
+      try {
+        const response = await fetch(url, headers ? { headers, mode: 'cors' } : { mode: 'cors' })
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+        const arrayBuffer = await response.arrayBuffer()
+        return new Uint8Array(arrayBuffer)
+      } catch (err: any) {
+        // CORS error or network error - throw special error to trigger fallback
+        const isCorsError = err?.message?.includes('CORS') ||
+                           err?.message?.includes('Failed to fetch') ||
+                           err?.message?.includes('NetworkError') ||
+                           err?.name === 'TypeError'
+        if (isCorsError) {
+          const corsErr = new Error('CORS_BLOCKED') as any
+          corsErr.originalUrl = url
+          corsErr.isCorsError = true
+          throw corsErr
+        }
+        throw err
       }
-      const arrayBuffer = await response.arrayBuffer()
-      return new Uint8Array(arrayBuffer)
     }
   }
 }
@@ -196,7 +212,7 @@ export async function saveBytesAsFile(opts: { data: Uint8Array; filename: string
     return true
   }
 
-  const blob = new Blob([data], { type: opts.mimeType || '' })
+  const blob = new Blob([data.slice().buffer], { type: opts.mimeType || '' })
   const blobUrl = URL.createObjectURL(blob)
 
   const link = document.createElement('a')
@@ -226,8 +242,21 @@ export async function downloadFile(options: DownloadOptions): Promise<boolean> {
     const data = await fetchUrlAsBytes(url)
     return await saveBytesAsFile({ data, filename, mimeType: options.mimeType })
   } catch (err: any) {
+    // Handle CORS error in web mode - open URL directly for browser download
+    if (err?.isCorsError && err?.originalUrl) {
+      console.warn('[download] CORS blocked, falling back to direct link:', err.originalUrl)
+      // Use anchor element to trigger browser's native download
+      const link = document.createElement('a')
+      link.href = err.originalUrl
+      link.download = filename
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      document.body.appendChild(link)
+      link.click()
+      setTimeout(() => document.body.removeChild(link), 100)
+      return true
+    }
     console.error('[download] 下载失败:', err)
-    // 提供更详细的错误信息
     const errMsg = err?.message || String(err) || '未知错误'
     throw new Error(`下载失败: ${errMsg}`)
   }

@@ -107,7 +107,7 @@ export default function NodePalettePanel({
         saveMedia({
           nodeId: id,
           projectId,
-          type,
+          type: type as 'image' | 'video' | 'audio',
           data: dataUrl,
         }).then((mediaId) => {
           if (mediaId) {
@@ -222,7 +222,7 @@ export default function NodePalettePanel({
             saveMedia({
               nodeId: id,
               projectId,
-              type,
+              type: type as 'image' | 'video' | 'audio',
               data: dataUrl,
             }).then((mediaId) => {
               if (mediaId) {

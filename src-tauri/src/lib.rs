@@ -739,6 +739,8 @@ async fn cache_remote_image(
   let client = reqwest::Client::builder()
     .user_agent("Nexus/1.0")
     .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+    .connect_timeout(Duration::from_secs(30))
+    .pool_max_idle_per_host(5)
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -827,6 +829,8 @@ async fn cache_remote_media(
   let client = reqwest::Client::builder()
     .user_agent("Nexus/1.0")
     .timeout(Duration::from_secs(MEDIA_DOWNLOAD_TIMEOUT_SECS))
+    .connect_timeout(Duration::from_secs(30))
+    .pool_max_idle_per_host(5)
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -901,13 +905,15 @@ fn sanitize_seconds(v: f64) -> f64 {
 }
 
 async fn run_ffmpeg_sidecar(app: &tauri::AppHandle, job: &EditorExportJobState, args: Vec<String>) -> Result<(), String> {
+  // 使用系统PATH中的ffmpeg（用户需自行安装FFmpeg）
   let command = app
     .shell()
-    .sidecar("ffmpeg")
-    .map_err(|e| format!("未找到 FFmpeg sidecar：{e}"))?;
+    .command("ffmpeg");
 
   // spawn and keep child handle for cancellation
-  let (mut rx, child) = command.args(args).spawn().map_err(|e| e.to_string())?;
+  let (mut rx, child) = command.args(args).spawn().map_err(|e| {
+    format!("未找到 FFmpeg，请先安装FFmpeg并确保在系统PATH中：{e}")
+  })?;
   {
     let mut guard = job.child.lock().map_err(|_| "导出任务锁异常".to_string())?;
     *guard = Some(child);

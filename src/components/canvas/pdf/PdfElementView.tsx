@@ -177,10 +177,9 @@ export default function PdfElementView({
           className="h-full w-full"
           style={{
             objectFit: ((element as any).fit as PdfImageFit) === 'contain' ? 'contain' : 'cover',
-            WebkitUserDrag: 'none' as any,
             userSelect: 'none',
             pointerEvents: 'none',
-          }}
+          } as React.CSSProperties}
         />
       ) : null}
 

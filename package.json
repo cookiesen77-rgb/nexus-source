@@ -2,7 +2,7 @@
   "name": "nexus",
   "description": "Nexus - AI workflow canvas",
   "private": true,
-  "version": "0.1.24",
+  "version": "1.30.0",
   "author": "Nexus",
   "type": "module",
   "main": "electron/main.js",
@@ -26,6 +26,7 @@
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.9.0",
+    "@types/three": "^0.182.0",
     "@xyflow/react": "^12.10.0",
     "axios": "^1.13.2",
     "clsx": "^2.1.1",
@@ -36,6 +37,7 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
     "tailwind-merge": "^2.5.4",
+    "three": "^0.182.0",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

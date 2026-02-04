@@ -10,9 +10,19 @@ import React, { memo, useCallback, useState } from 'react'
 import { shallow } from 'zustand/shallow'
 import type { GraphNode, NodeType } from '@/graph/types'
 import { useGraphStore } from '@/graph/store'
+import { useSettingsStore } from '@/store/settings'
 import { getNodeWidth } from '@/graph/nodeSizing'
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, VIDEO_MODELS, DEFAULT_VIDEO_MODEL } from '@/config/models'
-import { Copy, Image, Video } from 'lucide-react'
+import { Copy, Image, Video, Loader2 } from 'lucide-react'
+import { callAiAssistant } from '@/lib/nexusApi'
+import {
+  inferPolishModeFromText,
+  inferPolishModeFromGraph,
+  selectBestPromptTemplate,
+  collectUpstreamInputsForFocus,
+  buildPolishUserText,
+  buildPolishSystemPrompt
+} from '@/lib/polish'
 
 const getString = (v: unknown, fallback = '') => (typeof v === 'string' ? v : v == null ? fallback : String(v))
 
@@ -186,7 +196,8 @@ const NodeShell = memo(function NodeShell({
 // ============= 文本节点 =============
 const TextNodeContent = memo(function TextNodeContent({ node }: { node: GraphNode }) {
   const d = node.data as any || {}
-  const content = getString(d.content)
+  const [displayContent, setDisplayContent] = useState(getString(d.content))
+  const [polishing, setPolishing] = useState(false)
 
   const handleSpawn = useCallback((type: NodeType) => {
     const store = useGraphStore.getState()
@@ -195,34 +206,78 @@ const TextNodeContent = memo(function TextNodeContent({ node }: { node: GraphNod
     store.setSelected(id)
   }, [node.id, node.x, node.y])
 
+  const handlePolish = useCallback(async () => {
+    const text = displayContent.trim()
+    if (!text) {
+      window.$message?.warning?.('请先输入文本内容')
+      return
+    }
+
+    setPolishing(true)
+    try {
+      const store = useGraphStore.getState()
+      const { nodes, edges } = store
+      const aiModel = useSettingsStore.getState().aiAssistantModel || 'gpt-5-mini'
+
+      const modeFromGraph = inferPolishModeFromGraph(node.id, nodes, edges)
+      const mode = modeFromGraph || inferPolishModeFromText(text)
+
+      const upstreamInputs = collectUpstreamInputsForFocus({ focusNodeId: node.id, nodes, edges })
+      const promptTemplate = await selectBestPromptTemplate({ mode, userText: text, contextText: '' })
+      const userMessage = buildPolishUserText({ mode, userText: text, promptTemplate, upstreamInputs })
+      const systemPrompt = buildPolishSystemPrompt(mode)
+
+      const polished = await callAiAssistant(
+        aiModel,
+        [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMessage }],
+        { filterThinking: true }
+      )
+
+      if (polished) {
+        setDisplayContent(polished)
+        store.updateNode(node.id, { data: { ...(node.data || {}), content: polished } })
+        window.$message?.success?.('润色完成')
+      } else {
+        window.$message?.error?.('润色失败：未获取到结果')
+      }
+    } catch (err: any) {
+      console.error('[TextNode] AI 润色失败:', err)
+      window.$message?.error?.(`润色失败: ${err?.message || '未知错误'}`)
+    } finally {
+      setPolishing(false)
+    }
+  }, [node.id, node.data, displayContent])
+
   return (
     <div className="space-y-2">
       <textarea
         className="w-full bg-transparent resize-none outline-none text-sm min-h-[80px]"
         placeholder="请输入文本内容..."
-        defaultValue={content}
+        value={displayContent}
+        onChange={e => setDisplayContent(e.target.value)}
         onBlur={e => {
           useGraphStore.getState().updateNode(node.id, { data: { ...(node.data || {}), content: e.target.value } })
         }}
         onPointerDown={e => e.stopPropagation()}
         onWheel={e => e.stopPropagation()}
       />
-      <button 
-        className="px-3 py-1.5 text-xs rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-color)] disabled:opacity-50" 
-        disabled
+      <button
+        className="px-3 py-1.5 text-xs rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-color)] disabled:opacity-50 hover:bg-[var(--accent-color)] hover:text-white flex items-center gap-1"
+        disabled={!displayContent.trim() || polishing}
         onPointerDown={e => e.stopPropagation()}
+        onClick={handlePolish}
       >
-        ✨ AI 润色
+        {polishing ? <Loader2 size={12} className="animate-spin" /> : '✨'} AI 润色
       </button>
       <div className="flex gap-2 pt-1 border-t border-[var(--border-color)]">
-        <button 
+        <button
           className="flex-1 px-2 py-1.5 text-xs rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent-color)] hover:text-white"
           onPointerDown={e => e.stopPropagation()}
           onClick={() => handleSpawn('imageConfig')}
         >
           图片生成
         </button>
-        <button 
+        <button
           className="flex-1 px-2 py-1.5 text-xs rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--accent-color)] hover:text-white"
           onPointerDown={e => e.stopPropagation()}
           onClick={() => handleSpawn('videoConfig')}
@@ -454,7 +509,7 @@ const NodeCard = memo(function NodeCard({
 })
 
 // ============= 主组件 =============
-export default memo(function NodeCardsLayer() {
+export default memo(function NodeCardsLayer({ viewportOverride }: { viewportOverride?: { x: number; y: number; zoom: number } | null }) {
   // 使用 shallow 比较，只有当这些值真正变化时才重新渲染
   // 注意：不订阅 viewport.zoom，因为 DOMGraphCanvas 通过 CSS transform 处理缩放
   const { nodes, selectedId, selectedIds } = useGraphStore(
@@ -466,8 +521,8 @@ export default memo(function NodeCardsLayer() {
     shallow
   )
   
-  // 通过 getState 获取 zoom，不触发订阅
-  const zoom = useGraphStore.getState().viewport.zoom
+  // 通过 getState 获取 zoom，不触发订阅（或使用 viewportOverride 如果提供）
+  const zoom = viewportOverride?.zoom ?? useGraphStore.getState().viewport.zoom
   if (zoom < 0.2) return null
 
   // 按 zIndex 排序
